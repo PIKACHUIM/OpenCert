@@ -1,6 +1,6 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="server" type="js.build_tools.npm">
-    <package-json value="$PROJECT_DIR$/servers/front/package.json" />
+  <configuration default="false" name="clients" type="js.build_tools.npm">
+    <package-json value="$PROJECT_DIR$/clients/front/package.json" />
     <command value="run" />
     <scripts>
       <script value="dev" />
