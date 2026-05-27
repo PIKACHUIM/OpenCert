@@ -117,7 +117,7 @@ func TestTPM2KeyGenAndSign(t *testing.T) {
 		CertType: storage.CertTypeX509,
 		KeyType:  "ec256",
 		Remark:   "TPM2 EC 密钥",
-	}, masterKey)
+	}, masterKey, card)
 	if err != nil {
 		t.Fatalf("生成 EC 密钥对失败: %v", err)
 	}

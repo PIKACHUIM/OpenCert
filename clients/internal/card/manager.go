@@ -47,6 +47,13 @@ func (m *Manager) GetSlotList(tokenPresent bool) []pkcs11types.SlotID {
 	return ids
 }
 
+// GetSlot 返回指定 Slot 的 Provider 实例，不存在返回 nil。
+func (m *Manager) GetSlot(slotID pkcs11types.SlotID) SlotProvider {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.slots[slotID]
+}
+
 // GetSlotInfo 返回指定 Slot 的信息。
 func (m *Manager) GetSlotInfo(slotID pkcs11types.SlotID) (pkcs11types.SlotInfo, error) {
 	m.mu.RLock()

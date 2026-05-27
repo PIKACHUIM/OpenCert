@@ -138,7 +138,7 @@ export default function ArchitecturePage() {
       </table>
 
       <h2>🗄️ 数据模型</h2>
-      <h3>卡片管理</h3>
+      <h3>💳 智能卡片管理</h3>
       <table>
         <thead>
           <tr><th>字段</th><th>类型</th><th>说明</th></tr>

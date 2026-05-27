@@ -61,12 +61,43 @@ const (
 	CmdGetSessionInfo   CmdCode = 0x0022
 	CmdInitPIN          CmdCode = 0x0023
 	CmdSetPIN           CmdCode = 0x0024
+	// 流式 Digest / Verify 与 SeedRandom（v1.1 扩展）
+	CmdDigestUpdate     CmdCode = 0x0025
+	CmdDigestKey        CmdCode = 0x0026
+	CmdDigestFinal      CmdCode = 0x0027
+	CmdVerifyUpdate     CmdCode = 0x0028
+	CmdVerifyFinal      CmdCode = 0x0029
+	CmdSeedRandom       CmdCode = 0x002A
 	CmdHandshake        CmdCode = 0x00FF // 版本协商命令
 
 	// CmdSlotChanged 是服务端主动推送事件：卡片（Slot）列表发生变化，
 	// 客户端收到后应重置内部 slot 缓存并重新调用 CmdGetSlotList。
 	// 该事件不需要请求/响应配对，服务端可随时向所有已建立的长连接广播。
 	CmdSlotChanged CmdCode = 0x0100
+
+	// ---- KSP 专用命令（0x0200 系列）----
+	// 这些命令供 Windows KSP DLL 使用，不需要 PKCS#11 Session 模型，
+	// 直接按容器名（container_name）定位密钥并执行操作。
+
+	// CmdKSPEnumKeys 枚举所有可用的密钥容器。
+	// 请求: {} (无参数)
+	// 响应: {"keys":[{"container":"OpenCert_xxx_yyy","algorithm":"RSA","bits":2048,"has_cert":true},...]}
+	CmdKSPEnumKeys CmdCode = 0x0200
+
+	// CmdKSPGetKeyInfo 获取指定容器的密钥属性。
+	// 请求: {"container":"OpenCert_xxx_yyy"}
+	// 响应: {"algorithm":"RSA","bits":2048,"public_key":"base64..."}
+	CmdKSPGetKeyInfo CmdCode = 0x0201
+
+	// CmdKSPSign 按容器名直接签名（无需 Session/Login）。
+	// 请求: {"container":"OpenCert_xxx_yyy","algorithm":"RSA","hash_alg":"SHA256","data":"base64...","flags":0}
+	// 响应: {"signature":"base64..."}
+	CmdKSPSign CmdCode = 0x0202
+
+	// CmdKSPDecrypt 按容器名直接解密。
+	// 请求: {"container":"OpenCert_xxx_yyy","algorithm":"RSA","data":"base64...","flags":0}
+	// 响应: {"plaintext":"base64..."}
+	CmdKSPDecrypt CmdCode = 0x0203
 )
 
 // 协议版本号。

@@ -22,8 +22,8 @@ func verifyPassword(password, hash string) bool {
 }
 
 // createLocalCard 创建本地智能卡（保留作兼容封装；新代码推荐直接用 local.CreateCardWithCreds）。
-func createLocalCard(ctx context.Context, cardRepo *storage.CardRepo, userUUID, cardName, userPassword, cardPassword, remark string) (*storage.Card, error) {
-	return local.CreateCard(ctx, cardRepo, userUUID, cardName, userPassword, cardPassword, remark)
+func createLocalCard(ctx context.Context, cardRepo *storage.CardRepo, userUUID, cardName, pin, cardPassword, remark string) (*storage.Card, error) {
+	return local.CreateCard(ctx, cardRepo, userUUID, cardName, pin, cardPassword, remark)
 }
 
 // newUUID 生成新 UUID。
@@ -43,9 +43,9 @@ func isNotFoundErr(err error) bool {
 // validateSlotType 验证 SlotType 合法性。
 func validateSlotType(t string) error {
 	switch storage.SlotType(t) {
-	case storage.SlotTypeLocal, storage.SlotTypeTPM2, storage.SlotTypeCloud:
+	case storage.SlotTypeLocal, storage.SlotTypeTPM2, storage.SlotTypeTPMSC, storage.SlotTypeCloud:
 		return nil
 	default:
-		return fmt.Errorf("不支持的 slot_type: %s（支持 local/tpm2/cloud）", t)
+		return fmt.Errorf("不支持的 slot_type: %s（支持 local/tpm2/tpmsc/cloud）", t)
 	}
 }

@@ -41,6 +41,82 @@ static CK_OBJECT_HANDLE  pkcs11_mock_decrypt_key = 0;
 static CK_MECHANISM_TYPE pkcs11_mock_encrypt_mechanism = 0;
 static CK_OBJECT_HANDLE  pkcs11_mock_encrypt_key = 0;
 
+/* ---- 摘要上下文（本地回退用）---- */
+static CK_MECHANISM_TYPE pkcs11_mock_digest_mechanism = 0;
+#define PKCS11_MOCK_DIGEST_BUF_MAX (1024 * 1024)  /* 本地回退最大 1MB */
+static CK_BYTE  *pkcs11_mock_digest_buf = NULL;
+static CK_ULONG  pkcs11_mock_digest_buf_len = 0;
+
+/* 简易 SHA-1 / SHA-256 / SHA-384 / SHA-512 / MD5 本地实现（仅用于 IPC 不可用时的回退）*/
+#ifdef _WIN32
+#  include <wincrypt.h>
+   /* Windows CryptoAPI 摘要辅助 */
+   static int local_digest(CK_MECHANISM_TYPE mech, const CK_BYTE *data, CK_ULONG len,
+                           CK_BYTE *out, CK_ULONG *out_len)
+   {
+       ALG_ID alg;
+       CK_ULONG hash_size;
+       switch (mech) {
+           case CKM_MD5:    alg = CALG_MD5;    hash_size = 16; break;
+           case CKM_SHA_1:  alg = CALG_SHA1;   hash_size = 20; break;
+           case CKM_SHA256: alg = CALG_SHA_256; hash_size = 32; break;
+           case CKM_SHA384: alg = CALG_SHA_384; hash_size = 48; break;
+           case CKM_SHA512: alg = CALG_SHA_512; hash_size = 64; break;
+           default: return -1;
+       }
+       if (out == NULL) { *out_len = hash_size; return 0; }
+       if (*out_len < hash_size) { *out_len = hash_size; return -2; }
+       HCRYPTPROV hProv = 0; HCRYPTHASH hHash = 0;
+       if (!CryptAcquireContextW(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) return -1;
+       if (!CryptCreateHash(hProv, alg, 0, 0, &hHash)) { CryptReleaseContext(hProv, 0); return -1; }
+       CryptHashData(hHash, data, (DWORD)len, 0);
+       DWORD hl = (DWORD)hash_size;
+       CryptGetHashParam(hHash, HP_HASHVAL, out, &hl, 0);
+       *out_len = (CK_ULONG)hl;
+       CryptDestroyHash(hHash); CryptReleaseContext(hProv, 0);
+       return 0;
+   }
+#else
+   /* POSIX: 使用 OpenSSL EVP（链接 -lcrypto）*/
+#  include <openssl/evp.h>
+   static int local_digest(CK_MECHANISM_TYPE mech, const CK_BYTE *data, CK_ULONG len,
+                           CK_BYTE *out, CK_ULONG *out_len)
+   {
+       const EVP_MD *md;
+       CK_ULONG hash_size;
+       switch (mech) {
+           case CKM_MD5:    md = EVP_md5();    hash_size = 16; break;
+           case CKM_SHA_1:  md = EVP_sha1();   hash_size = 20; break;
+           case CKM_SHA256: md = EVP_sha256(); hash_size = 32; break;
+           case CKM_SHA384: md = EVP_sha384(); hash_size = 48; break;
+           case CKM_SHA512: md = EVP_sha512(); hash_size = 64; break;
+           default: return -1;
+       }
+       if (out == NULL) { *out_len = hash_size; return 0; }
+       if (*out_len < hash_size) { *out_len = hash_size; return -2; }
+       unsigned int hl = 0;
+       EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+       EVP_DigestInit_ex(ctx, md, NULL);
+       EVP_DigestUpdate(ctx, data, (size_t)len);
+       EVP_DigestFinal_ex(ctx, out, &hl);
+       EVP_MD_CTX_free(ctx);
+       *out_len = (CK_ULONG)hl;
+       return 0;
+   }
+#endif
+
+static CK_ULONG digest_hash_size(CK_MECHANISM_TYPE mech)
+{
+    switch (mech) {
+        case CKM_MD5:    return 16;
+        case CKM_SHA_1:  return 20;
+        case CKM_SHA256: return 32;
+        case CKM_SHA384: return 48;
+        case CKM_SHA512: return 64;
+        default:         return 0;
+    }
+}
+
 
 CK_FUNCTION_LIST pkcs11_mock_2_40_functions =
 {
@@ -2369,11 +2445,25 @@ CK_DEFINE_FUNCTION(CK_RV, C_DigestInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM
 	if ((CK_FALSE == pkcs11_mock_session_opened) || (PKCS11_MOCK_CK_SESSION_ID != hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 
-	if (CKM_SHA_1 != pMechanism->mechanism)
-		return CKR_MECHANISM_INVALID;
+	/* 支持多种摘要机制 */
+	switch (pMechanism->mechanism) {
+		case CKM_MD5:
+		case CKM_SHA_1:
+		case CKM_SHA256:
+		case CKM_SHA384:
+		case CKM_SHA512:
+			break;
+		default:
+			return CKR_MECHANISM_INVALID;
+	}
 
 	if ((NULL != pMechanism->pParameter) || (0 != pMechanism->ulParameterLen))
 		return CKR_MECHANISM_PARAM_INVALID;
+
+	/* 初始化摘要上下文 */
+	pkcs11_mock_digest_mechanism = pMechanism->mechanism;
+	if (pkcs11_mock_digest_buf) { free(pkcs11_mock_digest_buf); pkcs11_mock_digest_buf = NULL; }
+	pkcs11_mock_digest_buf_len = 0;
 
 	switch (pkcs11_mock_active_operation)
 	{
@@ -2396,8 +2486,6 @@ CK_DEFINE_FUNCTION(CK_RV, C_DigestInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM
 
 CK_DEFINE_FUNCTION(CK_RV, C_Digest)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pDigest, CK_ULONG_PTR pulDigestLen)
 {
-	CK_BYTE hash[20] = { 0x7B, 0x50, 0x2C, 0x3A, 0x1F, 0x48, 0xC8, 0x60, 0x9A, 0xE2, 0x12, 0xCD, 0xFB, 0x63, 0x9D, 0xEE, 0x39, 0x67, 0x3F, 0x5E };
-
 	if (CK_FALSE == pkcs11_mock_initialized)
 		return CKR_CRYPTOKI_NOT_INITIALIZED;
 
@@ -2456,24 +2544,29 @@ CK_DEFINE_FUNCTION(CK_RV, C_Digest)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDat
 		}
 	}
 
-	/* IPC 不可用时回退到本地硬编码哈希 */
+	/* IPC 不可用时回退到本地真实摘要计算 */
 	if ((CK_FALSE == pkcs11_mock_session_opened) || (PKCS11_MOCK_CK_SESSION_ID != hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 
-	if (NULL != pDigest)
 	{
-		if (sizeof(hash) > *pulDigestLen)
-		{
+		CK_ULONG hash_size = digest_hash_size(pkcs11_mock_digest_mechanism);
+		if (hash_size == 0) return CKR_MECHANISM_INVALID;
+
+		if (NULL == pDigest) {
+			*pulDigestLen = hash_size;
+			return CKR_OK;
+		}
+		if (*pulDigestLen < hash_size) {
+			*pulDigestLen = hash_size;
 			return CKR_BUFFER_TOO_SMALL;
 		}
-		else
-		{
-			memcpy(pDigest, hash, sizeof(hash));
-			pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_NONE;
-		}
-	}
 
-	*pulDigestLen = sizeof(hash);
+		CK_ULONG out_len = *pulDigestLen;
+		int rc = local_digest(pkcs11_mock_digest_mechanism, pData, ulDataLen, pDigest, &out_len);
+		if (rc != 0) return CKR_FUNCTION_FAILED;
+		*pulDigestLen = out_len;
+		pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_NONE;
+	}
 
 	return CKR_OK;
 }
@@ -2495,6 +2588,17 @@ CK_DEFINE_FUNCTION(CK_RV, C_DigestUpdate)(CK_SESSION_HANDLE hSession, CK_BYTE_PT
 
 	if (0 >= ulPartLen)
 		return CKR_ARGUMENTS_BAD;
+
+	/* 累积数据到摘要缓冲区（本地回退用） */
+	if (pkcs11_mock_digest_buf_len + ulPartLen > PKCS11_MOCK_DIGEST_BUF_MAX)
+		return CKR_DATA_LEN_RANGE;
+
+	CK_BYTE *new_buf = (CK_BYTE *)realloc(pkcs11_mock_digest_buf, pkcs11_mock_digest_buf_len + ulPartLen);
+	if (NULL == new_buf)
+		return CKR_HOST_MEMORY;
+	memcpy(new_buf + pkcs11_mock_digest_buf_len, pPart, ulPartLen);
+	pkcs11_mock_digest_buf = new_buf;
+	pkcs11_mock_digest_buf_len += ulPartLen;
 
 	return CKR_OK;
 }
@@ -2520,8 +2624,6 @@ CK_DEFINE_FUNCTION(CK_RV, C_DigestKey)(CK_SESSION_HANDLE hSession, CK_OBJECT_HAN
 
 CK_DEFINE_FUNCTION(CK_RV, C_DigestFinal)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest, CK_ULONG_PTR pulDigestLen)
 {
-	CK_BYTE hash[20] = { 0x7B, 0x50, 0x2C, 0x3A, 0x1F, 0x48, 0xC8, 0x60, 0x9A, 0xE2, 0x12, 0xCD, 0xFB, 0x63, 0x9D, 0xEE, 0x39, 0x67, 0x3F, 0x5E };
-
 	if (CK_FALSE == pkcs11_mock_initialized)
 		return CKR_CRYPTOKI_NOT_INITIALIZED;
 
@@ -2536,34 +2638,47 @@ CK_DEFINE_FUNCTION(CK_RV, C_DigestFinal)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR
 	if (NULL == pulDigestLen)
 		return CKR_ARGUMENTS_BAD;
 
-	if (NULL != pDigest)
 	{
-		if (sizeof(hash) > *pulDigestLen)
-		{
+		CK_ULONG hash_size = digest_hash_size(pkcs11_mock_digest_mechanism);
+		if (hash_size == 0) return CKR_MECHANISM_INVALID;
+
+		if (NULL == pDigest) {
+			*pulDigestLen = hash_size;
+			return CKR_OK;
+		}
+		if (*pulDigestLen < hash_size) {
+			*pulDigestLen = hash_size;
 			return CKR_BUFFER_TOO_SMALL;
 		}
-		else
-		{
-			memcpy(pDigest, hash, sizeof(hash));
 
-			switch (pkcs11_mock_active_operation)
-			{
-				case PKCS11_MOCK_CK_OPERATION_DIGEST:
-					pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_NONE;
-					break;
-				case PKCS11_MOCK_CK_OPERATION_DIGEST_ENCRYPT:
-					pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_ENCRYPT;
-					break;
-				case PKCS11_MOCK_CK_OPERATION_DECRYPT_DIGEST:
-					pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_DECRYPT;
-					break;
-				default:
-					return CKR_FUNCTION_FAILED;
-			}
+		/* 使用累积的数据进行真实摘要计算 */
+		CK_ULONG out_len = *pulDigestLen;
+		const CK_BYTE *data = pkcs11_mock_digest_buf ? pkcs11_mock_digest_buf : (const CK_BYTE *)"";
+		CK_ULONG data_len = pkcs11_mock_digest_buf_len;
+		int rc = local_digest(pkcs11_mock_digest_mechanism, data, data_len, pDigest, &out_len);
+
+		/* 释放摘要缓冲区 */
+		if (pkcs11_mock_digest_buf) { free(pkcs11_mock_digest_buf); pkcs11_mock_digest_buf = NULL; }
+		pkcs11_mock_digest_buf_len = 0;
+
+		if (rc != 0) return CKR_FUNCTION_FAILED;
+		*pulDigestLen = out_len;
+
+		switch (pkcs11_mock_active_operation)
+		{
+			case PKCS11_MOCK_CK_OPERATION_DIGEST:
+				pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_NONE;
+				break;
+			case PKCS11_MOCK_CK_OPERATION_DIGEST_ENCRYPT:
+				pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_ENCRYPT;
+				break;
+			case PKCS11_MOCK_CK_OPERATION_DECRYPT_DIGEST:
+				pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_DECRYPT;
+				break;
+			default:
+				return CKR_FUNCTION_FAILED;
 		}
 	}
-
-	*pulDigestLen = sizeof(hash);
 
 	return CKR_OK;
 }
@@ -2931,17 +3046,24 @@ CK_DEFINE_FUNCTION(CK_RV, C_VerifyInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM
 	if (NULL == pMechanism)
 		return CKR_ARGUMENTS_BAD;
 
-	if ((CKM_RSA_PKCS == pMechanism->mechanism) || (CKM_SHA1_RSA_PKCS == pMechanism->mechanism))
-	{
-		if ((NULL != pMechanism->pParameter) || (0 != pMechanism->ulParameterLen))
-			return CKR_MECHANISM_PARAM_INVALID;
-
-		if (PKCS11_MOCK_CK_OBJECT_HANDLE_PUBLIC_KEY != hKey)
-			return CKR_KEY_TYPE_INCONSISTENT;
-	}
-	else
-	{
-		return CKR_MECHANISM_INVALID;
+	/* 放宽机制白名单：覆盖 RSA/ECDSA/EdDSA 主流验签 */
+	switch (pMechanism->mechanism) {
+		case CKM_RSA_PKCS:
+		case CKM_SHA1_RSA_PKCS:
+		case CKM_SHA256_RSA_PKCS:
+		case CKM_SHA384_RSA_PKCS:
+		case CKM_SHA512_RSA_PKCS:
+		case CKM_ECDSA:
+		case CKM_ECDSA_SHA1:
+		case CKM_ECDSA_SHA256:
+		case CKM_ECDSA_SHA384:
+		case CKM_ECDSA_SHA512:
+		case CKM_EDDSA:
+			if ((NULL != pMechanism->pParameter) || (0 != pMechanism->ulParameterLen))
+				return CKR_MECHANISM_PARAM_INVALID;
+			break;
+		default:
+			return CKR_MECHANISM_INVALID;
 	}
 
 	if (PKCS11_MOCK_CK_OPERATION_NONE == pkcs11_mock_active_operation)
@@ -2977,8 +3099,6 @@ CK_DEFINE_FUNCTION(CK_RV, C_VerifyInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM
 
 CK_DEFINE_FUNCTION(CK_RV, C_Verify)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen, CK_BYTE_PTR pSignature, CK_ULONG ulSignatureLen)
 {
-	CK_BYTE signature[10] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09 };
-
 	if (CK_FALSE == pkcs11_mock_initialized)
 		return CKR_CRYPTOKI_NOT_INITIALIZED;
 
@@ -3000,11 +3120,44 @@ CK_DEFINE_FUNCTION(CK_RV, C_Verify)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDat
 	if (0 >= ulSignatureLen)
 		return CKR_ARGUMENTS_BAD;
 
-	if (sizeof(signature) != ulSignatureLen)
-		return CKR_SIGNATURE_LEN_RANGE;
+	/* 通过 IPC 转发验签 */
+	{
+		ipc_fd_t fd = ipc_global_fd();
+		if (ipc_is_connected(fd)) {
+			json_buf_t req;
+			json_buf_init(&req);
+			json_buf_append(&req, "{\"session_id\":");
+			json_buf_appendf(&req, "%lu", (unsigned long)hSession);
+			json_buf_append(&req, ",\"data\":");
+			json_buf_append_b64(&req, pData, (size_t)ulDataLen);
+			json_buf_append(&req, ",\"signature\":");
+			json_buf_append_b64(&req, pSignature, (size_t)ulSignatureLen);
+			json_buf_append(&req, "}");
 
-	if (0 != memcmp(pSignature, signature, sizeof(signature)))
-		return CKR_SIGNATURE_INVALID;
+			char *resp = NULL;
+			uint32_t rv = 0;
+			int ret = ipc_call(fd, CMD_VERIFY, req.buf, &resp, &rv);
+			json_buf_free(&req);
+			if (resp) free(resp);
+
+			if (ret == 0) {
+				pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_NONE;
+				return (CK_RV)rv;
+			}
+			/* IPC 失败，降级到本地 mock */
+		}
+	}
+
+	/* 本地 mock 降级：固定签名比对 */
+	{
+		CK_BYTE mock_sig[10] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09 };
+
+		if (sizeof(mock_sig) != ulSignatureLen)
+			return CKR_SIGNATURE_LEN_RANGE;
+
+		if (0 != memcmp(pSignature, mock_sig, sizeof(mock_sig)))
+			return CKR_SIGNATURE_INVALID;
+	}
 
 	pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_NONE;
 
@@ -3029,14 +3182,33 @@ CK_DEFINE_FUNCTION(CK_RV, C_VerifyUpdate)(CK_SESSION_HANDLE hSession, CK_BYTE_PT
 	if (0 >= ulPartLen)
 		return CKR_ARGUMENTS_BAD;
 
+	/* 通过 IPC 转发 VerifyUpdate */
+	{
+		ipc_fd_t fd = ipc_global_fd();
+		if (ipc_is_connected(fd)) {
+			json_buf_t req;
+			json_buf_init(&req);
+			json_buf_append(&req, "{\"session_id\":");
+			json_buf_appendf(&req, "%lu", (unsigned long)hSession);
+			json_buf_append(&req, ",\"part\":");
+			json_buf_append_b64(&req, pPart, (size_t)ulPartLen);
+			json_buf_append(&req, "}");
+
+			char *resp = NULL;
+			uint32_t rv = 0;
+			int ret = ipc_call(fd, CMD_VERIFY_UPDATE, req.buf, &resp, &rv);
+			json_buf_free(&req);
+			if (resp) free(resp);
+			if (ret == 0) return (CK_RV)rv;
+		}
+	}
+
 	return CKR_OK;
 }
 
 
 CK_DEFINE_FUNCTION(CK_RV, C_VerifyFinal)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature, CK_ULONG ulSignatureLen)
 {
-	CK_BYTE signature[10] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09 };
-
 	if (CK_FALSE == pkcs11_mock_initialized)
 		return CKR_CRYPTOKI_NOT_INITIALIZED;
 
@@ -3053,11 +3225,42 @@ CK_DEFINE_FUNCTION(CK_RV, C_VerifyFinal)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR
 	if (0 >= ulSignatureLen)
 		return CKR_ARGUMENTS_BAD;
 
-	if (sizeof(signature) != ulSignatureLen)
-		return CKR_SIGNATURE_LEN_RANGE;
+	/* 通过 IPC 转发 VerifyFinal */
+	{
+		ipc_fd_t fd = ipc_global_fd();
+		if (ipc_is_connected(fd)) {
+			json_buf_t req;
+			json_buf_init(&req);
+			json_buf_append(&req, "{\"session_id\":");
+			json_buf_appendf(&req, "%lu", (unsigned long)hSession);
+			json_buf_append(&req, ",\"signature\":");
+			json_buf_append_b64(&req, pSignature, (size_t)ulSignatureLen);
+			json_buf_append(&req, "}");
 
-	if (0 != memcmp(pSignature, signature, sizeof(signature)))
-		return CKR_SIGNATURE_INVALID;
+			char *resp = NULL;
+			uint32_t rv = 0;
+			int ret = ipc_call(fd, CMD_VERIFY_FINAL, req.buf, &resp, &rv);
+			json_buf_free(&req);
+			if (resp) free(resp);
+
+			if (ret == 0) {
+				if (PKCS11_MOCK_CK_OPERATION_VERIFY == pkcs11_mock_active_operation)
+					pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_NONE;
+				else
+					pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_DECRYPT;
+				return (CK_RV)rv;
+			}
+		}
+	}
+
+	/* 本地 mock 降级：固定签名比对（用于离线开发） */
+	{
+		CK_BYTE signature[10] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09 };
+		if (sizeof(signature) != ulSignatureLen)
+			return CKR_SIGNATURE_LEN_RANGE;
+		if (0 != memcmp(pSignature, signature, sizeof(signature)))
+			return CKR_SIGNATURE_INVALID;
+	}
 
 	if (PKCS11_MOCK_CK_OPERATION_VERIFY == pkcs11_mock_active_operation)
 		pkcs11_mock_active_operation = PKCS11_MOCK_CK_OPERATION_NONE;
@@ -3587,6 +3790,28 @@ CK_DEFINE_FUNCTION(CK_RV, C_SeedRandom)(CK_SESSION_HANDLE hSession, CK_BYTE_PTR 
 	if (0 >= ulSeedLen)
 		return CKR_ARGUMENTS_BAD;
 
+	/* 通过 IPC 转发，让 client-card 记录种子数据（标准库 CSPRNG 不可手动 seed） */
+	{
+		ipc_fd_t fd = ipc_global_fd();
+		if (ipc_is_connected(fd)) {
+			char *seed_b64 = base64_encode(pSeed, ulSeedLen);
+			if (seed_b64) {
+				json_buf_t req;
+				json_buf_init(&req);
+				json_buf_appendf(&req, "{\"session_id\":%lu,\"seed\":\"%s\"}",
+					(unsigned long)hSession, seed_b64);
+				free(seed_b64);
+
+				char *resp = NULL;
+				uint32_t rv = 0;
+				int ret = ipc_call(fd, CMD_SEED_RANDOM, req.buf, &resp, &rv);
+				json_buf_free(&req);
+				if (resp) free(resp);
+				if (ret == 0) return (CK_RV)rv;
+			}
+		}
+	}
+
 	return CKR_OK;
 }
 
@@ -3635,13 +3860,30 @@ CK_DEFINE_FUNCTION(CK_RV, C_GenerateRandom)(CK_SESSION_HANDLE hSession, CK_BYTE_
 		if (ret == 0 && rv != CKR_OK) return (CK_RV)rv;
 	}
 
-	/* IPC 不可用时回退到本地随机 */
+	/* IPC 不可用时回退到本地 CSPRNG */
 	if ((CK_FALSE == pkcs11_mock_session_opened) || (PKCS11_MOCK_CK_SESSION_ID != hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 
-	memset(RandomData, 1, ulRandomLen);
-
-	return CKR_OK;
+#ifdef _WIN32
+	{
+		HCRYPTPROV hProv = 0;
+		if (CryptAcquireContextA(&hProv, NULL, NULL, PROV_RSA_FULL,
+			CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+			BOOL ok = CryptGenRandom(hProv, (DWORD)ulRandomLen, (BYTE *)RandomData);
+			CryptReleaseContext(hProv, 0);
+			if (ok) return CKR_OK;
+		}
+		return CKR_DEVICE_ERROR;
+	}
+#else
+	{
+		FILE *f = fopen("/dev/urandom", "rb");
+		if (NULL == f) return CKR_DEVICE_ERROR;
+		size_t got = fread(RandomData, 1, (size_t)ulRandomLen, f);
+		fclose(f);
+		return (got == (size_t)ulRandomLen) ? CKR_OK : CKR_DEVICE_ERROR;
+	}
+#endif
 }
 
 

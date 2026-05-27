@@ -7,7 +7,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/License-MIT-green)](./drivers/LICENSE)
-[![Version](https://img.shields.io/badge/Version-v2.0.0-blue)](./roadmap/11-ROADMAP.MD)
+[![Version](https://img.shields.io/badge/Version-v2.1.0-blue)](./roadmap/11-ROADMAP.MD)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)]()
 
 [📖 在线文档](https://pikachuim.github.io/PKCS11MiniDriver) · [🚀 快速开始](#快速开始) · [📋 路线图](./roadmap/11-ROADMAP.MD) · [🐛 问题反馈](https://github.com/PIKACHUIM/PKCS11MiniDriver/issues)
@@ -127,11 +127,11 @@ pkcs11-mock (C DLL)  ←→  client-card (Go + Electron)  ←→  server-card (G
 
 ### 密钥安全等级
 
-| 等级 | 存储方式 | 可恢复 | 可导出 |
-|------|---------|--------|--------|
-| 🔴 高安全性 | TPM 内部，密钥不可导出 | ❌ | ❌ |
-| 🟡 中安全性 | 本地 DB + TPM 加密 + 云端公钥加密 | ✅ | ❌ |
-| 🟢 低安全性 | 本地 DB + 密码加密 + 云端公钥加密 | ✅ | ❌ |
+| 等级 | 存储方式                  | 可恢复 | 可导出 |
+|------|-----------------------|--------|--------|
+| 🟢 高安全性 | TPM 内部，密钥不可导出         | ❌ | ❌ |
+| 🟡 中安全性 | 本地 DB + TPM 加密/云端公钥加密 | ✅ | ❌ |
+| 🔴 低安全性 | 本地 DB + 密码加密/云端公钥加密   | ✅ | ✅ |
 
 ---
 
@@ -311,10 +311,11 @@ PKCS11Driver/
 | Phase 1–3 | 项目骨架、Local Slot、REST API | ✅ 已完成 |
 | Phase 4–5 | TPM2 Slot、Cloud Slot + server-card | ✅ 已完成 |
 | Phase 6–7 | 前端界面、pkcs11-mock C 驱动 | ✅ 已完成 |
-| Phase 8 | 集成测试、CI/CD 流水线 | 🚧 进行中 |
-| Phase 9 | 云端平台完善（CA/模板/订单/支付） | ⬜ 规划中 |
-| Phase 10 | PKI 服务（ACME/CRL/OCSP/CT） | ⬜ 规划中 |
-| Phase 11 | 安全加固、正式发布 v1.0.0 | ⬜ 规划中 |
+| Phase 8 | 集成测试、CI/CD 流水线、安全审计自动化 | ✅ 已完成 |
+| Phase 9 | 云端平台完善（CA/模板/订单/支付插件） | ✅ 已完成 |
+| Phase 10 | PKI 服务（ACME TLS-ALPN-01/CRL/OCSP/CT） | ✅ 已完成 |
+| Phase 11 | TPM EK 认证、安全凭据、GPG/SSH 映射、i18n | ✅ 已完成 |
+| Phase 12 | 安全加固、性能优化、正式发布 v2.1.0 | 🚧 进行中 |
 
 详细计划见 [roadmap/11-ROADMAP.MD](./roadmap/11-ROADMAP.MD)。
 
@@ -373,5 +374,5 @@ PKCS11Driver/
 ---
 
 <div align="center">
-<sub>OpenCert Manager · v2.0.0 · 2026-04-17</sub>
+<sub>OpenCert Manager · v2.1.0 · 2026-05-26</sub>
 </div>

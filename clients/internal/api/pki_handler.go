@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 
+	"github.com/globaltrusts/client-card/internal/card/local"
 	"github.com/globaltrusts/client-card/internal/pki"
 	"github.com/globaltrusts/client-card/internal/storage"
 )
@@ -24,10 +26,14 @@ func (s *Server) handleSelfSignFromCSR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "csr_uuid 不能为空")
 		return
 	}
-	cert, err := pki.SelfSignFromCSR(r.Context(), s.csrRepo, s.pkiCertRepo, &req)
+	cert, err := pki.SelfSignFromCSR(r.Context(), s.csrRepo, s.pkiCertRepo, s.cardRepo, s.certRepo, &req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "生成自签名证书失败: "+err.Error())
 		return
+	}
+	// 自签名证书生成后，自动传播到系统证书存储
+	if cert != nil && cert.CertPEM != "" {
+		s.propagateCertAdd(cert.CertPEM, cert.UUID, cert.CardUUID, cert.CommonName, cert.KeyType, cert.HasPrivateKey)
 	}
 	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: cert})
 }
@@ -85,7 +91,7 @@ func (s *Server) handleCreateCSR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "common_name 不能为空")
 		return
 	}
-	record, err := pki.CreateAndSaveCSR(r.Context(), s.csrRepo, &req)
+	record, err := pki.CreateAndSaveCSR(r.Context(), s.csrRepo, s.certRepo, s.cardRepo, &req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "生成 CSR 失败: "+err.Error())
 		return
@@ -274,10 +280,14 @@ func (s *Server) handleIssuePKICert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "csr_uuid 和 ca_uuid 不能为空")
 		return
 	}
-	cert, err := pki.IssueCertFromCSR(r.Context(), s.csrRepo, s.caRepo, s.pkiCertRepo, &req)
+	cert, err := pki.IssueCertFromCSR(r.Context(), s.csrRepo, s.caRepo, s.pkiCertRepo, s.certRepo, &req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "签发证书失败: "+err.Error())
 		return
+	}
+	// 签发成功后，自动传播到系统证书存储
+	if cert != nil && cert.CertPEM != "" {
+		s.propagateCertAdd(cert.CertPEM, cert.UUID, cert.CardUUID, cert.CommonName, cert.KeyType, cert.HasPrivateKey)
 	}
 	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: cert})
 }
@@ -303,6 +313,12 @@ func (s *Server) handleImportPKICert(w http.ResponseWriter, r *http.Request) {
 			result.MatchedSource = src
 			// 不迁移私钥，仅做提示。前端据此可引导用户"将该证书绑定到该卡片"
 		}
+	}
+
+	// 导入成功后，自动传播到系统证书存储
+	if result.Cert != nil && result.Cert.CertPEM != "" {
+		s.propagateCertAdd(result.Cert.CertPEM, result.Cert.UUID, result.Cert.CardUUID,
+			result.Cert.CommonName, result.Cert.KeyType, result.Cert.HasPrivateKey)
 	}
 
 	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: result})
@@ -332,9 +348,9 @@ func (s *Server) findMatchingCardCert(ctx context.Context, certPEM string) (stri
 			if len(cc.CertContent) == 0 {
 				continue
 			}
-			// certificates.cert_content 可能是 DER 证书或 PKIX 公钥 DER；
-			// 这里先尝试把它当作证书解析，再退回当作公钥 DER 直接比较。
-			if matchPubKeyAgainstCardCert(pubDER, cc.CertContent) {
+			// certificates.cert_content 可能是 PEM 证书或 PKIX 公钥；
+			// 使用 DERContent() 提取 DER 后进行比较。
+			if matchPubKeyAgainstCardCert(pubDER, cc.DERContent()) {
 				return fmt.Sprintf("card:%s/cert:%s", c.UUID, cc.UUID), true
 			}
 		}
@@ -364,6 +380,8 @@ func (s *Server) handleDeletePKICert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "删除证书失败: "+err.Error())
 		return
 	}
+	// 删除后，从系统证书存储中移除
+	s.propagateCertRemove(id)
 	writeOK(w, nil)
 }
 
@@ -416,10 +434,12 @@ func (s *Server) handleExportPKICert(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleImportPKICertToCard POST /api/pki/certs/{uuid}/import-to-card
+// 将 PKI 证书（含私钥时同时导入私钥）写入指定智能卡。
 func (s *Server) handleImportPKICertToCard(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("uuid")
 	var req struct {
-		CardUUID string `json:"card_uuid"`
+		CardUUID     string `json:"card_uuid"`
+		CardPassword string `json:"card_password"` // 卡片密码，用于解锁主密钥
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
@@ -430,16 +450,116 @@ func (s *Server) handleImportPKICertToCard(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// 查询 PKI 证书
 	cert, err := s.pkiCertRepo.GetByUUID(r.Context(), id)
 	if err != nil || cert == nil {
 		writeError(w, http.StatusNotFound, "证书不存在")
 		return
 	}
+	if cert.CertPEM == "" {
+		writeError(w, http.StatusBadRequest, "证书内容为空，无法导入")
+		return
+	}
 
-	// TODO: 调用 card manager 将证书写入智能卡
-	// 此处为 MVP 实现，仅更新记录中的 card_uuid
-	_ = cert
-	writeOK(w, map[string]string{"message": "证书已导入到智能卡（功能待完善）"})
+	// 查询目标卡片
+	targetCard, err := s.cardRepo.GetByUUID(r.Context(), req.CardUUID)
+	if err != nil || targetCard == nil {
+		writeError(w, http.StatusNotFound, "目标卡片不存在")
+		return
+	}
+	if targetCard.SlotType == storage.SlotTypeCloud {
+		writeError(w, http.StatusBadRequest, "不能导入到云端卡片，请选择本地或 TPM2 卡片")
+		return
+	}
+
+	// 解锁卡片主密钥
+	slot := local.New(0, targetCard, s.certRepo)
+	if err := slot.Login(r.Context(), 1, req.CardPassword); err != nil {
+		writeError(w, http.StatusForbidden, "卡片密码错误")
+		return
+	}
+	defer slot.Logout(r.Context())
+
+	masterKey := slot.MasterKey()
+	if masterKey == nil {
+		writeError(w, http.StatusInternalServerError, "获取卡片主密钥失败")
+		return
+	}
+
+	km := local.NewKeyManager(s.certRepo, s.cardRepo)
+
+	// 将证书 PEM 转为 DER
+	certDER, err := certPEMToDER(cert.CertPEM)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "解析证书 PEM 失败: "+err.Error())
+		return
+	}
+
+	var resultMsg string
+
+	// 如果有私钥，同时导入私钥
+	if cert.HasPrivateKey && len(cert.PrivateKeyEnc) > 0 {
+		keyDER, keyType, err := parsePrivateKeyPEM(string(cert.PrivateKeyEnc))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "解析私钥失败: "+err.Error())
+			return
+		}
+
+		// 提取公钥 DER
+		pubDER, err := parseCertPublicKeyPEM(cert.CertPEM)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "提取证书公钥失败: "+err.Error())
+			return
+		}
+
+		result, err := km.ImportPrivateKey(r.Context(), local.KeyGenRequest{
+			CardUUID: targetCard.UUID,
+			CertType: storage.CertTypeX509,
+			KeyType:  keyType,
+			Remark:   fmt.Sprintf("从 PKI 导入: %s", cert.CommonName),
+		}, masterKey, keyDER, pubDER)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "导入私钥到卡片失败: "+err.Error())
+			return
+		}
+
+		// 修正 CertContent：将证书 DER 以 CERTIFICATE PEM 格式存储（而非 PUBLIC KEY）
+		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+		certRecord, _ := s.certRepo.GetByUUID(r.Context(), result.CertUUID)
+		if certRecord != nil {
+			certRecord.CertContent = certPEM
+			_ = s.certRepo.Update(r.Context(), certRecord)
+		}
+
+		resultMsg = "证书和私钥已导入到智能卡"
+	} else {
+		// 仅导入证书（无私钥）
+		_, err = km.ImportCertificate(r.Context(), targetCard.UUID, certDER, fmt.Sprintf("从 PKI 导入: %s", cert.CommonName))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "导入证书到卡片失败: "+err.Error())
+			return
+		}
+		resultMsg = "证书已导入到智能卡（无私钥）"
+	}
+
+	// 广播 slot 变更事件
+	s.notifySlotChanged("import")
+
+	// 写审计日志
+	s.auditRepo.Write(r.Context(), &storage.AuditLog{
+		LogType:  "operation",
+		LogLevel: "info",
+		SlotType: string(targetCard.SlotType),
+		CardUUID: targetCard.UUID,
+		Title:    "PKI 证书导入到智能卡",
+		Content:  fmt.Sprintf("cert=%s card=%s has_key=%v", cert.CommonName, targetCard.CardName, cert.HasPrivateKey),
+	})
+
+	writeOK(w, map[string]string{
+		"message":   resultMsg,
+		"card_uuid": targetCard.UUID,
+		"card_name": targetCard.CardName,
+	})
 }
 
 // handleRevokePKICert POST /api/pki/certs/{uuid}/revoke
@@ -526,6 +646,13 @@ func (s *Server) handleParseCert(w http.ResponseWriter, r *http.Request) {
 	cert, err := pki.ParseCertificateAuto(inputData)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "解析证书失败: "+err.Error())
+		return
+	}
+	if cert == nil {
+		// 证书包含不兼容的策略扩展，无法完整解析但证书本身有效
+		writeOK(w, map[string]interface{}{
+			"error_hint": "证书包含不兼容的 Certificate Policies 扩展，部分信息无法解析",
+		})
 		return
 	}
 

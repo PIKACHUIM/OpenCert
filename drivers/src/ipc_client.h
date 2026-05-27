@@ -67,6 +67,13 @@
 #define CMD_GET_SESSION_INFO   0x0022u
 #define CMD_INIT_PIN           0x0023u
 #define CMD_SET_PIN            0x0024u
+/* 流式 Digest / Verify 与 SeedRandom（v1.1 扩展） */
+#define CMD_DIGEST_UPDATE      0x0025u
+#define CMD_DIGEST_KEY         0x0026u
+#define CMD_DIGEST_FINAL       0x0027u
+#define CMD_VERIFY_UPDATE      0x0028u
+#define CMD_VERIFY_FINAL       0x0029u
+#define CMD_SEED_RANDOM        0x002Au
 #define CMD_HANDSHAKE          0x00FFu
 
 /* ---- CK_RV 常用返回码 ---- */

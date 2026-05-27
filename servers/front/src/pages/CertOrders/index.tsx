@@ -43,7 +43,7 @@ const StoreTab: React.FC = () => {
   useEffect(() => {
     setLoading(true);
     listIssuanceTemplates({ page: 1, page_size: 50 })
-      .then(r => setTemplates((r.items || []).filter((t: IssuanceTemplate) => t.enabled)))
+      .then(r => setTemplates((Array.isArray(r?.items) ? r.items : []).filter((t: IssuanceTemplate) => t.enabled)))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -112,14 +112,14 @@ const OrdersTab: React.FC = () => {
 
   const load = async (p = 1) => {
     setLoading(true);
-    try { const res = await listCertOrders({ page: p, page_size: 20 }); setOrders(res.items || []); setTotal(res.total); }
+    try { const res = await listCertOrders({ page: p, page_size: 20 }); setOrders(Array.isArray(res?.items) ? res.items : []); setTotal(res?.total ?? 0); }
     catch (e: any) { message.error(e.message); } finally { setLoading(false); }
   };
 
   useEffect(() => {
     load();
-    listSubjectInfos({ page: 1, page_size: 100 }).then(r => setSubjectInfos((r.items || []).filter((s: SubjectInfo) => s.status === 'approved'))).catch(() => {});
-    listExtensionInfos({ page: 1, page_size: 100 }).then(r => setExtensionInfos((r.items || []).filter((e: ExtensionInfo) => e.status === 'verified'))).catch(() => {});
+    listSubjectInfos({ page: 1, page_size: 100 }).then(r => setSubjectInfos((Array.isArray(r?.items) ? r.items : []).filter((s: SubjectInfo) => s.status === 'approved'))).catch(() => {});
+    listExtensionInfos({ page: 1, page_size: 100 }).then(r => setExtensionInfos((Array.isArray(r?.items) ? r.items : []).filter((e: ExtensionInfo) => e.status === 'verified'))).catch(() => {});
   }, []);
 
   const handleApply = async (values: any) => {
@@ -188,7 +188,7 @@ const ApplicationsTab: React.FC = () => {
 
   const load = async (p = 1) => {
     setLoading(true);
-    try { const res = await listCertApplications({ page: p, page_size: 20 }); setApps(res.items || []); setTotal(res.total); }
+    try { const res = await listCertApplications({ page: p, page_size: 20 }); setApps(Array.isArray(res?.items) ? res.items : []); setTotal(res?.total ?? 0); }
     catch (e: any) { message.error(e.message); } finally { setLoading(false); }
   };
 

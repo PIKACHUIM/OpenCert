@@ -14,7 +14,7 @@ all: $(OBJS)
 	$(CC) $(ARCH_FLAGS) -shared -o $(LIBNAME) \
 	-Wl,-soname,$(LIBNAME) \
 	-Wl,--version-script,pkcs11-mock.version \
-	$(OBJS)
+	$(OBJS) -lcrypto
 	strip --strip-all $(LIBNAME)
 
 pkcs11-mock.o: $(SRC_DIR)/pkcs11-mock.c $(SRC_DIR)/*.h

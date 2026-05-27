@@ -30,7 +30,7 @@ func TestCreateCardWithCreds_GeneratesPUKAndAdmin(t *testing.T) {
 	res, err := CreateCardWithCreds(ctx, cardRepo, CreateCardArgs{
 		UserUUID:      "user-1",
 		CardName:      "test-card",
-		UserPassword:  "user-pass",
+		PIN:           "123456",
 		GeneratePUK:   true,
 		GenerateAdmin: true,
 	})
@@ -52,12 +52,12 @@ func TestCreateCardWithCreds_GeneratesPUKAndAdmin(t *testing.T) {
 	if err != nil || card == nil {
 		t.Fatalf("卡片未落库: %v", err)
 	}
-	// 至少 3 条 CardKey 条目：user / puk / admin
+	// 至少 3 条 CardKey 条目：pin / puk / admin
 	countByType := map[string]int{}
 	for _, e := range card.CardKeys {
 		countByType[e.KeyType]++
 	}
-	for _, kt := range []string{"user", "puk", "admin"} {
+	for _, kt := range []string{"pin", "puk", "admin"} {
 		if countByType[kt] != 1 {
 			t.Fatalf("期望 %s 条目 1 条, 实际 %d (all=%v)", kt, countByType[kt], countByType)
 		}
@@ -72,7 +72,6 @@ func TestResetPIN_WithPUK(t *testing.T) {
 	res, err := CreateCardWithCreds(ctx, cardRepo, CreateCardArgs{
 		UserUUID:      "u1",
 		CardName:      "c",
-		UserPassword:  "upass",
 		PIN:           "111111",
 		GeneratePUK:   true,
 		GenerateAdmin: true,
@@ -113,7 +112,7 @@ func TestResetPUK_WithAdmin(t *testing.T) {
 	res, err := CreateCardWithCreds(ctx, cardRepo, CreateCardArgs{
 		UserUUID:      "u1",
 		CardName:      "c",
-		UserPassword:  "upass",
+		PIN:           "mypin",
 		GeneratePUK:   true,
 		GenerateAdmin: true,
 	})
@@ -122,7 +121,7 @@ func TestResetPUK_WithAdmin(t *testing.T) {
 	}
 	card := res.Card
 
-	if err := ResetPUK(ctx, cardRepo, card, res.AdminKey, "new-puk-value"); err != nil {
+	if err := ResetPUK(ctx, cardRepo, card, res.AdminKey, "mypin", "new-puk-value"); err != nil {
 		t.Fatalf("Admin 重置 PUK 失败: %v", err)
 	}
 
@@ -130,12 +129,16 @@ func TestResetPUK_WithAdmin(t *testing.T) {
 	if err != nil || reloaded == nil {
 		t.Fatalf("reload 失败: %v", err)
 	}
-	// 新 PUK 应能解锁
-	if _, err := tryUnlockByType(reloaded, "puk", "new-puk-value"); err != nil {
-		t.Fatalf("新 PUK 无法解锁: %v", err)
+	// 新 PUK 应能解密 PIN
+	pin, err := decryptPINWithPUK(reloaded, "new-puk-value")
+	if err != nil {
+		t.Fatalf("新 PUK 无法解密 PIN: %v", err)
 	}
-	// 旧 PUK 失效
-	if _, err := tryUnlockByType(reloaded, "puk", res.PUK); err == nil {
+	if string(pin) != "mypin" {
+		t.Fatalf("解密的 PIN 不匹配: got %s", string(pin))
+	}
+	// 旧 PUK 失效（无法解密 PIN）
+	if _, err := decryptPINWithPUK(reloaded, res.PUK); err == nil {
 		t.Fatalf("旧 PUK 不应再有效")
 	}
 }
@@ -147,7 +150,7 @@ func TestResetPIN_WrongSecret(t *testing.T) {
 	res, err := CreateCardWithCreds(ctx, cardRepo, CreateCardArgs{
 		UserUUID:      "u1",
 		CardName:      "c",
-		UserPassword:  "upass",
+		PIN:           "testpin",
 		GeneratePUK:   true,
 		GenerateAdmin: true,
 	})
@@ -179,7 +182,7 @@ func TestPUKLockoutAfter10Failures(t *testing.T) {
 	res, err := CreateCardWithCreds(ctx, cardRepo, CreateCardArgs{
 		UserUUID:      "u1",
 		CardName:      "c",
-		UserPassword:  "upass",
+		PIN:           "lockpin",
 		GeneratePUK:   true,
 		GenerateAdmin: true,
 	})
@@ -218,26 +221,39 @@ func TestTryUnlockByType_SkipsOtherTypes(t *testing.T) {
 	res, err := CreateCardWithCreds(ctx, cardRepo, CreateCardArgs{
 		UserUUID:      "u1",
 		CardName:      "c",
-		UserPassword:  "upass",
-		PIN:           "secret-shared", // 故意让 PIN 与 PUK 相同
-		PUK:           "secret-shared",
-		GenerateAdmin: true,
+		PIN:           "secret-shared", // 故意让 PIN 与 AdminKey 不同
+		AdminKey:      "admin-key-123",
+		GeneratePUK:   true,
 	})
 	if err != nil {
 		t.Fatalf("创建失败: %v", err)
 	}
 
-	// 用 "puk" 凭据类型 + "secret-shared" 应只解锁 puk 条目（ok）
-	mk, err := tryUnlockByType(res.Card, "puk", "secret-shared")
+	// 用 "pin" 凭据类型 + "secret-shared" 应解锁 pin 条目（ok）
+	mk, err := tryUnlockByType(res.Card, "pin", "secret-shared")
 	if err != nil {
-		t.Fatalf("puk 解锁失败: %v", err)
+		t.Fatalf("pin 解锁失败: %v", err)
 	}
 	if len(mk) != 32 {
 		t.Fatalf("解出的主密钥长度错误")
 	}
 
-	// 用 "admin" 类型 + PUK 值应失败（类型隔离）
+	// 用 "admin" 类型 + PIN 值应失败（类型隔离）
 	if _, err := tryUnlockByType(res.Card, "admin", "secret-shared"); err == nil {
 		t.Fatalf("跨类型解锁不应成功")
+	}
+
+	// PUK 现在存储的是加密的 PIN，不能用 tryUnlockByType 解锁主密钥
+	if _, err := tryUnlockByType(res.Card, "puk", res.PUK); err == nil {
+		t.Fatalf("PUK 不应能直接解锁主密钥")
+	}
+
+	// 但 PUK 应能解密出 PIN
+	pin, err := decryptPINWithPUK(res.Card, res.PUK)
+	if err != nil {
+		t.Fatalf("PUK 解密 PIN 失败: %v", err)
+	}
+	if string(pin) != "secret-shared" {
+		t.Fatalf("PUK 解密的 PIN 不匹配: got %s", string(pin))
 	}
 }

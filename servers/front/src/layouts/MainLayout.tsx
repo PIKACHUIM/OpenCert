@@ -8,6 +8,8 @@ import {
   SafetyCertificateOutlined, UserOutlined, WalletOutlined,
   IdcardOutlined, ShoppingOutlined, AuditOutlined, SettingOutlined,
   FileTextOutlined, LogoutOutlined, ProfileOutlined, BulbOutlined,
+  CreditCardOutlined, DatabaseOutlined, NumberOutlined, StopOutlined,
+  CloudServerOutlined, ClockCircleOutlined, SafetyOutlined, LinkOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/auth';
 import { useThemeStore } from '../store/theme';
@@ -39,37 +41,59 @@ const MainLayout: React.FC = () => {
   const menuItems: any[] = [
     { key: '/dashboard', icon: <DashboardOutlined />, label: '平台概览' },
     {
-      key: 'group-mine', icon: <SafetyCertificateOutlined />, label: '证书管理',
+      key: 'group-card', icon: <CreditCardOutlined />, label: '个人业务',
       children: [
-        { key: '/certs', icon: <SafetyCertificateOutlined />, label: '我的证书管理' },
-        { key: '/identity', icon: <IdcardOutlined />, label: '个人身份信息' },
-        { key: '/cert-orders', icon: <ShoppingOutlined />, label: '证书申请管理' },
+        { key: '/cards', icon: <CreditCardOutlined />, label: '智能卡片管理' },
+        { key: '/certs', icon: <SafetyCertificateOutlined />, label: '个人证书管理' },
+        { key: '/cloud-totp', icon: <ClockCircleOutlined />, label: 'TOTP认证管理' },
+      ],
+    },
+    {
+      key: 'group-apply', icon: <ShoppingOutlined />, label: '证书申请',
+      children: [
+        { key: '/subject-infos', icon: <IdcardOutlined />, label: '证书主体信息' },
+        { key: '/extension-infos', icon: <LinkOutlined />, label: '证书扩展信息' },
+        { key: '/cert-orders', icon: <ShoppingOutlined />, label: '个人订单管理' },
+        { key: '/identity', icon: <IdcardOutlined />, label: '身份认证管理' },
         { key: '/payment', icon: <WalletOutlined />, label: '财务支付管理' },
       ],
     },
-    // 平台管理分组仅 admin/super_admin 可见
-    ...(isAdmin ? [{
+    // 平台管理分组：admin / super_admin / operator 可见
+    ...(isOperatorOrAbove ? [{
       key: 'group-admin', icon: <ApartmentOutlined />, label: '平台管理',
       children: [
-        { key: '/ca', icon: <ApartmentOutlined />, label: '证书颁发机构' },
-        { key: '/templates', icon: <AppstoreOutlined />, label: '证书模板管理' },
-        { key: '/cert-apply-templates', icon: <AppstoreOutlined />, label: '证书申请模板' },
+        { key: '/ca', icon: <ApartmentOutlined />, label: '颁发机构管理' },
+        { key: '/all-certs', icon: <SafetyCertificateOutlined />, label: '全局证书管理' },
+        { key: '/cert-applications', icon: <AuditOutlined />, label: '证书申请审核' },
         { key: '/users', icon: <UserOutlined />, label: '平台用户管理' },
         { key: '/ct-records', icon: <AuditOutlined />, label: '证书透明度CT' },
-        { key: '/audit-logs', icon: <FileTextOutlined />, label: '证书颁发审计' },
+        { key: '/audit-logs', icon: <FileTextOutlined />, label: '证书审计日志' },
       ],
     }] : []),
-    // 操作员可见的菜单
-    ...(isOperatorOrAbove && !isAdmin ? [{
-      key: 'group-operator', icon: <ApartmentOutlined />, label: '证书操作管理',
+    // 模板管理分组：admin / super_admin 可见
+    ...(isAdmin ? [{
+      key: 'group-template', icon: <AppstoreOutlined />, label: '模板管理',
       children: [
-        { key: '/cert-orders', icon: <ShoppingOutlined />, label: '证书订单管理' },
+        { key: '/templates', icon: <AppstoreOutlined />, label: '证书颁发模板' },
+        { key: '/key-storage-templates', icon: <SafetyOutlined />, label: '密钥存储模板' },
+        { key: '/cert-apply-templates', icon: <AppstoreOutlined />, label: '证书申请模板' },
+        { key: '/oids', icon: <NumberOutlined />, label: '证书OID 管理' },
+      ],
+    }] : []),
+    // 服务配置分组：admin / super_admin 可见
+    ...(isAdmin ? [{
+      key: 'group-service', icon: <CloudServerOutlined />, label: '服务配置',
+      children: [
+        { key: '/storage-zones', icon: <DatabaseOutlined />, label: '存储区域配置' },
+        { key: '/revocation-services', icon: <StopOutlined />, label: '证书吊销服务' },
+        { key: '/acme-configs', icon: <CloudServerOutlined />, label: '证书ACME服务' },
+        { key: '/payment-plugins', icon: <WalletOutlined />, label: '支付插件配置' },
       ],
     }] : []),
     {
       key: 'group-system', icon: <SettingOutlined />, label: '系统管理',
       children: [
-        { key: '/logs', icon: <FileTextOutlined />, label: '全局操作日志' },
+        { key: '/logs', icon: <FileTextOutlined />, label: '操作日志审计' },
         { key: '/settings', icon: <SettingOutlined />, label: '全局系统设置' },
       ],
     },
@@ -116,7 +140,7 @@ const MainLayout: React.FC = () => {
           theme="dark"
           mode="inline"
           selectedKeys={[selectedKey]}
-          defaultOpenKeys={['group-mine', 'group-admin', 'group-system']}
+          defaultOpenKeys={['group-card', 'group-apply', 'group-admin', 'group-template', 'group-service', 'group-system']}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
           style={{ background: 'transparent', border: 'none' }}

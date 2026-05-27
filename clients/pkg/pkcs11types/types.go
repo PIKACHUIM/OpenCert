@@ -243,6 +243,7 @@ const (
 	CKA_EC_POINT           AttributeType = 0x00000181
 	CKA_EXTRACTABLE        AttributeType = 0x00000162
 	CKA_LOCAL              AttributeType = 0x00000163
+	CKA_PUBLIC_KEY_INFO    AttributeType = 0x00000129
 	CKA_NEVER_EXTRACTABLE  AttributeType = 0x00000164
 	CKA_ALWAYS_SENSITIVE   AttributeType = 0x00000165
 	CKA_KEY_GEN_MECHANISM  AttributeType = 0x00000166

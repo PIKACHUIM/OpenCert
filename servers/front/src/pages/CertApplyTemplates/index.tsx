@@ -35,7 +35,7 @@ const CertApplyTemplates: React.FC = () => {
     setLoading(true);
     try {
       const data = await apiRequest('/api/templates/cert-apply');
-      setTemplates(data.items || []);
+      setTemplates(Array.isArray(data?.items) ? data.items : []);
     } catch (e) {
       console.error(e);
     } finally {

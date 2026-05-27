@@ -10,3 +10,7 @@ clients/data/
 *.db-shm
 *.db-wal
 *.masterkey
+.idea/editor.xml
+.idea/CopilotChatTabs.xml
+.idea/CopilotChatHistory.xml
+.codebuddy

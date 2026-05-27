@@ -54,6 +54,12 @@ var cmdNames = map[CmdCode]string{
 	CmdGenerateRandom:   "GenerateRandom",
 	CmdDigestInit:       "DigestInit",
 	CmdDigest:           "Digest",
+	CmdDigestUpdate:     "DigestUpdate",
+	CmdDigestKey:        "DigestKey",
+	CmdDigestFinal:      "DigestFinal",
+	CmdVerifyUpdate:     "VerifyUpdate",
+	CmdVerifyFinal:      "VerifyFinal",
+	CmdSeedRandom:       "SeedRandom",
 }
 
 // cmdName 返回命令码的可读名称。

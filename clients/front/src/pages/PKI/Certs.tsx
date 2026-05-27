@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Table, Button, Space, Tag, Typography, Modal, Form, Input, Select,
   Popconfirm, message, Tooltip, Card, Drawer, Descriptions, Divider,
-  Row, Col, Alert, DatePicker,
+  Row, Col, Alert, DatePicker, Checkbox, Collapse, InputNumber, Switch,
 } from 'antd';
 import dayjs from 'dayjs';
 import {
@@ -17,7 +17,7 @@ import {
 } from '../../api';
 import type {
   PKICert, IssueCertRequest, ImportCertRequest, ImportCertMode,
-  LocalCA, CSRRecord, Card as CardType, ExportCertFormat,
+  LocalCA, CSRRecord, Card as CardType, ExportCertFormat, CertExtensions,
 } from '../../types';
 import { useAppStore } from '../../store/appStore';
 
@@ -29,6 +29,24 @@ const IMPORT_MODE_OPTIONS = [
   { label: '证书 + 私钥', value: 'cert_key' },
   { label: 'PKCS#12 文件（Base64）', value: 'pkcs12' },
   { label: '仅私钥（等待未来关联证书）', value: 'key_only' },
+];
+
+const KEY_USAGE_OPTIONS = [
+  { label: '数字签名', value: 'digitalSignature' },
+  { label: '内容加密', value: 'keyEncipherment' },
+  { label: '数据加密', value: 'dataEncipherment' },
+  { label: '密钥协商', value: 'keyAgreement' },
+  { label: '证书签名', value: 'certSign' },
+  { label: 'CRL 签名', value: 'crlSign' },
+];
+
+const EXT_KEY_USAGE_OPTIONS = [
+  { label: 'TLS 服务器认证', value: 'serverAuth' },
+  { label: 'TLS 客户端认证', value: 'clientAuth' },
+  { label: '代码签名', value: 'codeSigning' },
+  { label: '邮件保护', value: 'emailProtection' },
+  { label: '时间戳', value: 'timeStamping' },
+  { label: 'OCSP 签名', value: 'ocspSigning' },
 ];
 
 // 自签名标识（CA 选择器中的特殊值）
@@ -103,6 +121,20 @@ const CertsPage: React.FC = () => {
       const [notBefore, notAfter] = values.date_range;
       const validityDays = notAfter.diff(notBefore, 'day');
 
+      // 构建证书扩展选项
+      const extensions: CertExtensions = {};
+      if (values.key_usage?.length) extensions.key_usage = values.key_usage;
+      if (values.ext_key_usage?.length) extensions.ext_key_usage = values.ext_key_usage;
+      if (values.is_ca !== undefined) extensions.is_ca = values.is_ca;
+      if (values.is_ca && values.path_len_constraint !== undefined && values.path_len_constraint !== null) {
+        extensions.path_len_constraint = values.path_len_constraint;
+      }
+      if (values.crl_urls?.trim()) extensions.crl_urls = values.crl_urls.split(',').map((s: string) => s.trim()).filter(Boolean);
+      if (values.ocsp_urls?.trim()) extensions.ocsp_urls = values.ocsp_urls.split(',').map((s: string) => s.trim()).filter(Boolean);
+      if (values.aia_urls?.trim()) extensions.aia_urls = values.aia_urls.split(',').map((s: string) => s.trim()).filter(Boolean);
+      if (values.csp_name?.trim()) extensions.csp_name = values.csp_name.trim();
+      const hasExtensions = Object.keys(extensions).length > 0;
+
       if (values.ca_uuid === SELF_SIGN_KEY) {
         // 自签名：用 CSR 的私钥对自身签名
         await selfSignFromCSR(
@@ -111,6 +143,8 @@ const CertsPage: React.FC = () => {
           values.remark,
           notBefore.toISOString(),
           notAfter.toISOString(),
+          values.card_password,
+          hasExtensions ? extensions : undefined,
         );
         message.success('自签名证书已生成');
       } else {
@@ -122,6 +156,7 @@ const CertsPage: React.FC = () => {
           not_after: notAfter.toISOString(),
           validity_days: validityDays,
           remark: values.remark,
+          extensions: hasExtensions ? extensions : undefined,
         } as IssueCertRequest);
         message.success('证书已签发');
       }
@@ -184,10 +219,39 @@ const CertsPage: React.FC = () => {
     borderRadius: 12,
   };
 
+  // 格式化密钥用途显示
+  const formatKeyUsage = (raw?: string): string => {
+    if (!raw) return '-';
+    const map: Record<string, string> = {
+      digitalSignature: '数字签名', keyEncipherment: '密钥加密',
+      dataEncipherment: '数据加密', keyAgreement: '密钥协商',
+      certSign: '证书签名', crlSign: 'CRL签名',
+      contentCommitment: '内容承诺', encipherOnly: '仅加密', decipherOnly: '仅解密',
+    };
+    try {
+      const arr: string[] = JSON.parse(raw);
+      return arr.map((k) => map[k] || k).join(', ');
+    } catch { return raw; }
+  };
+
+  const formatExtKeyUsage = (raw?: string): string => {
+    if (!raw) return '-';
+    const map: Record<string, string> = {
+      serverAuth: '服务器认证', clientAuth: '客户端认证',
+      codeSigning: '代码签名', emailProtection: '邮件保护',
+      timeStamping: '时间戳', ocspSigning: 'OCSP签名',
+    };
+    try {
+      const arr: string[] = JSON.parse(raw);
+      return arr.map((k) => map[k] || k).join(', ');
+    } catch { return raw; }
+  };
+
   const columns = [
     {
       title: '通用名称 (CN)',
       dataIndex: 'common_name',
+      ellipsis: true,
       render: (v: string, r: PKICert) => (
         <Space>
           <SafetyCertificateOutlined style={{ color: r.revoked ? '#ff4d4f' : '#52c41a' }} />
@@ -198,24 +262,25 @@ const CertsPage: React.FC = () => {
     {
       title: '颁发 CA',
       dataIndex: 'ca_name',
-      width: 140,
-      render: (v: string) => <Text style={{ color: darkMode ? '#8b949e' : '#666', fontSize: 12 }}>{v || '-'}</Text>,
+      width: 120,
+      ellipsis: true,
+      render: (v: string) => <Text style={{ color: darkMode ? '#8b949e' : '#666', fontSize: 12 }}>{v || '自签名'}</Text>,
     },
     {
-      title: '密钥类型',
-      dataIndex: 'key_type',
-      width: 90,
-      render: (v: string) => <Tag color="blue">{v?.toUpperCase()}</Tag>,
-    },
-    {
-      title: '私钥',
-      dataIndex: 'has_private_key',
-      width: 60,
-      render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? '有' : '无'}</Tag>,
+      title: '密钥',
+      width: 110,
+      render: (_: any, r: PKICert) => (
+        <Space direction="vertical" size={0}>
+          <Tag color="blue" style={{ margin: 0 }}>{r.key_type?.toUpperCase()}</Tag>
+          <Text style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#999' }}>
+            {r.key_storage === 'smartcard' ? '智能卡' : '数据库'} | {r.has_private_key ? '有私钥' : '无私钥'}
+          </Text>
+        </Space>
+      ),
     },
     {
       title: '有效期',
-      width: 200,
+      width: 190,
       render: (_: any, r: PKICert) => {
         const expired = dayjs(r.not_after).isBefore(dayjs());
         return (
@@ -226,8 +291,51 @@ const CertsPage: React.FC = () => {
       },
     },
     {
+      title: '密钥用途',
+      width: 150,
+      ellipsis: true,
+      render: (_: any, r: PKICert) => {
+        const usage = formatKeyUsage(r.key_usage);
+        return (
+          <Tooltip title={usage}>
+            <Text style={{ fontSize: 12, color: darkMode ? '#8b949e' : '#666' }}>{usage}</Text>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: '扩展用途',
+      width: 140,
+      ellipsis: true,
+      render: (_: any, r: PKICert) => {
+        const usage = formatExtKeyUsage(r.ext_key_usage);
+        return (
+          <Tooltip title={usage}>
+            <Text style={{ fontSize: 12, color: darkMode ? '#8b949e' : '#666' }}>{usage}</Text>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: 'SAN',
+      width: 140,
+      ellipsis: true,
+      render: (_: any, r: PKICert) => {
+        const parts: string[] = [];
+        if (r.san_dns) parts.push(r.san_dns);
+        if (r.san_ip) parts.push(r.san_ip);
+        if (r.san_email) parts.push(r.san_email);
+        const san = parts.join(', ') || '-';
+        return (
+          <Tooltip title={san}>
+            <Text style={{ fontSize: 12, color: darkMode ? '#8b949e' : '#666' }}>{san}</Text>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: '状态',
-      width: 80,
+      width: 70,
       render: (_: any, r: PKICert) => {
         if (r.revoked) return <Tag color="red">已吊销</Tag>;
         if (dayjs(r.not_after).isBefore(dayjs())) return <Tag color="orange">已过期</Tag>;
@@ -236,9 +344,10 @@ const CertsPage: React.FC = () => {
     },
     {
       title: '操作',
-      width: 210,
+      width: 200,
+      fixed: 'right' as const,
       render: (_: any, record: PKICert) => (
-        <Space>
+        <Space size={2} wrap>
           <Tooltip title="查看详情">
             <Button type="text" size="small" icon={<EyeOutlined />}
               onClick={() => { setViewRecord(record); setViewOpen(true); }} />
@@ -285,7 +394,7 @@ const CertsPage: React.FC = () => {
     <div style={{ padding: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <Text strong style={{ fontSize: 16, color: darkMode ? '#c9d1d9' : undefined }}>
-          <SafetyCertificateOutlined style={{ marginRight: 8 }} />证书管理
+          <SafetyCertificateOutlined style={{ marginRight: 8 }} />证书签发管理
         </Text>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => load()}>刷新</Button>
@@ -296,13 +405,14 @@ const CertsPage: React.FC = () => {
 
       <Card style={cardStyle} bodyStyle={{ padding: 0 }}>
         <Table dataSource={list} columns={columns} rowKey="uuid" loading={loading}
+          scroll={{ x: 1200 }}
           pagination={{ current: page, total, pageSize: 10, onChange: (p) => { setPage(p); load(p); }, showTotal: (t) => `共 ${t} 条` }} />
       </Card>
 
       {/* 签发证书弹窗 */}
       <Modal title={<Space><PlusOutlined />签发证书</Space>} open={issueOpen}
         onOk={handleIssue} onCancel={() => { setIssueOpen(false); issueForm.resetFields(); }}
-        okText="签发" cancelText="取消" confirmLoading={issuing} width={540}>
+        okText="签发" cancelText="取消" confirmLoading={issuing} width={700}>
         <Form form={issueForm} layout="vertical" style={{ marginTop: 16 }}
           initialValues={{
             date_range: [dayjs(), dayjs().add(1, 'year')],
@@ -328,15 +438,34 @@ const CertsPage: React.FC = () => {
           </Form.Item>
           <Form.Item
             noStyle
-            shouldUpdate={(prev, cur) => prev.ca_uuid !== cur.ca_uuid}
+            shouldUpdate={(prev, cur) => prev.ca_uuid !== cur.ca_uuid || prev.csr_uuid !== cur.csr_uuid}
           >
-            {({ getFieldValue }) => getFieldValue('ca_uuid') === SELF_SIGN_KEY && (
-              <Alert
-                type="warning" showIcon
-                message="自签名模式：仅支持存储在数据库中的 CSR（含私钥）"
-                style={{ marginBottom: 12 }}
-              />
-            )}
+            {({ getFieldValue }) => {
+              if (getFieldValue('ca_uuid') !== SELF_SIGN_KEY) return null;
+              const selectedCSR = csrList.find((c) => c.uuid === getFieldValue('csr_uuid'));
+              const isSmartcard = selectedCSR?.key_storage === 'smartcard';
+              return (
+                <>
+                  <Alert
+                    type="warning" showIcon
+                    message={isSmartcard
+                      ? '自签名模式：私钥存储在智能卡上，需要输入卡片密码解密私钥'
+                      : '自签名模式：使用 CSR 中存储的私钥进行自签名'
+                    }
+                    style={{ marginBottom: 12 }}
+                  />
+                  {isSmartcard && (
+                    <Form.Item
+                      name="card_password"
+                      label="卡片密码"
+                      rules={[{ required: true, message: '智能卡模式需要输入卡片密码' }]}
+                    >
+                      <Input.Password placeholder="请输入智能卡密码以解密私钥" />
+                    </Form.Item>
+                  )}
+                </>
+              );
+            }}
           </Form.Item>
           <Form.Item
             name="date_range"
@@ -357,6 +486,60 @@ const CertsPage: React.FC = () => {
               ]}
             />
           </Form.Item>
+
+          {/* 证书扩展选项（折叠面板） */}
+          <Collapse ghost size="small" style={{ marginBottom: 8 }}
+            items={[{
+              key: 'extensions',
+              label: <Text type="secondary" style={{ fontSize: 13 }}>高级扩展选项（密钥用途、基本约束、CRL/OCSP/AIA、CSP）</Text>,
+              children: (
+                <>
+                  <Divider plain style={{ fontSize: 12, margin: '4px 0 12px' }}>密钥用途</Divider>
+                  <Form.Item name="key_usage" label="密钥用途 (Key Usage)">
+                    <Checkbox.Group options={KEY_USAGE_OPTIONS} />
+                  </Form.Item>
+                  <Form.Item name="ext_key_usage" label="扩展密钥用途 (Extended Key Usage)">
+                    <Checkbox.Group options={EXT_KEY_USAGE_OPTIONS} />
+                  </Form.Item>
+
+                  <Divider plain style={{ fontSize: 12, margin: '4px 0 12px' }}>基本约束</Divider>
+                  <Row gutter={16}>
+                    <Col span={8}>
+                      <Form.Item name="is_ca" label="是否 CA" valuePropName="checked">
+                        <Switch checkedChildren="是" unCheckedChildren="否" />
+                      </Form.Item>
+                    </Col>
+                    <Col span={16}>
+                      <Form.Item noStyle shouldUpdate={(prev, cur) => prev.is_ca !== cur.is_ca}>
+                        {({ getFieldValue }) => getFieldValue('is_ca') && (
+                          <Form.Item name="path_len_constraint" label="路径长度约束" tooltip="CA 链最大深度，-1 表示不限制">
+                            <InputNumber min={-1} max={10} placeholder="-1 不限制" style={{ width: '100%' }} />
+                          </Form.Item>
+                        )}
+                      </Form.Item>
+                    </Col>
+                  </Row>
+
+                  <Divider plain style={{ fontSize: 12, margin: '4px 0 12px' }}>CRL / OCSP / AIA</Divider>
+                  <Form.Item name="crl_urls" label="CRL 分发点 URL" tooltip="多个地址用逗号分隔">
+                    <Input placeholder="http://crl.example.com/ca.crl" />
+                  </Form.Item>
+                  <Form.Item name="ocsp_urls" label="OCSP 响应者 URL" tooltip="多个地址用逗号分隔">
+                    <Input placeholder="http://ocsp.example.com" />
+                  </Form.Item>
+                  <Form.Item name="aia_urls" label="AIA 颁发者信息访问 URL" tooltip="多个地址用逗号分隔">
+                    <Input placeholder="http://ca.example.com/ca.crt" />
+                  </Form.Item>
+
+                  <Divider plain style={{ fontSize: 12, margin: '4px 0 12px' }}>CSP 信息</Divider>
+                  <Form.Item name="csp_name" label="CSP 名称" tooltip="Microsoft Cryptographic Service Provider 名称">
+                    <Input placeholder="Microsoft Enhanced RSA and AES Cryptographic Provider" />
+                  </Form.Item>
+                </>
+              ),
+            }]}
+          />
+
           <Form.Item name="remark" label="备注">
             <Input placeholder="可选备注" />
           </Form.Item>

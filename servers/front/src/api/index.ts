@@ -11,6 +11,7 @@ import type {
   PaymentOrder, UserBalance, RechargeRequest, RefundRequest, PaymentPlugin,
   StorageZone, CustomOID, RevocationService, ACMEConfig,
   CTEntry, CloudTOTPEntry, TOTPCodeResponse, Log,
+  Card, CreateCardRequest, VerifyPINRequest, UnlockPUKRequest, ResetAdminKeyRequest,
 } from '../types';
 
 // API 基础地址，连接 server-card :1027
@@ -75,6 +76,14 @@ export const logout = () =>
 
 export const changePassword = (data: ChangePasswordRequest) =>
   http.put('/api/auth/password', data).then((r) => r.data);
+
+// 找回密码：发送验证码到邮箱
+export const forgotPassword = (email: string) =>
+  http.post<{ message: string }>('/api/auth/forgot-password', { email }).then((r) => r.data);
+
+// 重置密码：使用验证码重置
+export const resetPassword = (data: { email: string; code: string; new_password: string }) =>
+  http.post<{ message: string }>('/api/auth/reset-password', data).then((r) => r.data);
 
 export const getMe = () =>
   http.get<User>('/api/users/me').then((r) => r.data);
@@ -364,3 +373,44 @@ export const deleteCloudTOTP = (uuid: string) =>
 // ---- 日志 ----
 export const getLogs = (params?: { user_uuid?: string; level?: string; page?: number; page_size?: number }) =>
   http.get<PageResult<Log>>('/api/logs', { params }).then((r) => r.data);
+
+// ---- 云端智能卡 ----
+interface CardListResp { cards: Card[]; total: number }
+
+export const listCards = () =>
+  http.get<CardListResp>('/api/cards').then((r) => r.data.cards ?? []);
+
+export const createCard = (data: CreateCardRequest) =>
+  http.post<Card>('/api/cards', data).then((r) => r.data);
+
+export const getCard = (uuid: string) =>
+  http.get<Card>(`/api/cards/${uuid}`).then((r) => r.data);
+
+export const deleteCard = (uuid: string) =>
+  http.delete(`/api/cards/${uuid}`).then((r) => r.data);
+
+export const listCardCerts = (cardUUID: string) =>
+  http.get<{ certs: Certificate[]; total: number }>(`/api/cards/${cardUUID}/certs`)
+    .then((r) => r.data.certs ?? []);
+
+export const importCardCert = (cardUUID: string, data: { cert_pem: string; private_key_pem?: string; remark?: string }) =>
+  http.post(`/api/cards/${cardUUID}/certs`, data).then((r) => r.data);
+
+export const deleteCardCert = (cardUUID: string, certUUID: string) =>
+  http.delete(`/api/cards/${cardUUID}/certs/${certUUID}`).then((r) => r.data);
+
+// 卡片 PIN/PUK/AdminKey 操作
+export const verifyCardPIN = (cardUUID: string, data: VerifyPINRequest) =>
+  http.post<{ session_token: string; expires_in: number }>(
+    `/api/cards/${cardUUID}/verify-pin`, data,
+  ).then((r) => r.data);
+
+export const logoutCardPINSession = (cardUUID: string) =>
+  http.delete(`/api/cards/${cardUUID}/pin-session`).then((r) => r.data);
+
+export const unlockCardWithPUK = (cardUUID: string, data: UnlockPUKRequest) =>
+  http.post(`/api/cards/${cardUUID}/unlock-puk`, data).then((r) => r.data);
+
+export const resetCardWithAdminKey = (cardUUID: string, data: ResetAdminKeyRequest) =>
+  http.post(`/api/cards/${cardUUID}/reset-admin`, data).then((r) => r.data);
+

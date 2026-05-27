@@ -1,7 +1,7 @@
 # OpenCert Manager — 开发路线图与里程碑
 
-> 文档版本：v2.0.0
-> 最后更新：2026-04-17
+> 文档版本：v2.1.0
+> 最后更新：2026-04-21
 
 ---
 
@@ -45,28 +45,29 @@ mindmap
       IPC客户端
       全函数映射
       联调测试
-    Phase 8 🚧 集成测试
+    Phase 8 ✅ 集成测试
       API端到端测试
       IPC协议测试
       Cloud Slot测试
-      E2E联调
       CI/CD流水线
-    Phase 9 ⬜ 云端平台完善
+    Phase 9 ✅ 云端平台完善
       CA管理引擎
-      模板体系
-      证书颁发
-      订单系统
+      模板体系（6种）
+      证书颁发引擎
+      订单系统（9状态机）
       支付集成
-    Phase 10 ⬜ PKI服务
-      ACME服务
-      CRL/OCSP
-      CT日志
-      吊销服务
-    Phase 11 ⬜ 安全加固
+      12个前端页面补全
+    Phase 10 ✅ PKI服务
+      ACME服务 RFC8555
+      CRL/OCSP RFC6960
+      CT日志 RFC6962
+      吊销服务管理
+    Phase 11 🚧 安全加固与收尾
+      多用户架构完善
+      门户首页美化
+      找回密码功能
+      E2E联调测试
       安全审计
-      渗透测试
-      合规检查
-      性能优化
 ```
 
 ---
@@ -149,7 +150,7 @@ mindmap
 | 重连逻辑 | ✅ | 3 次无响应重连 |
 | 线程安全 | ✅ | 互斥锁保护 |
 
-### Phase 8：集成测试与 CI/CD 🚧 进行中
+### Phase 8：集成测试与 CI/CD ✅ 已完成
 
 | 任务 | 状态 | 说明 |
 |------|------|------|
@@ -157,42 +158,56 @@ mindmap
 | API 端到端测试 | ✅ | api_test.go |
 | IPC 协议测试 | ✅ | ipc_test.go |
 | Cloud Slot 测试 | ✅ | cloud_slot_test.go |
-| E2E 联调测试 | ⬜ | pkcs11-mock + client-card |
+| E2E 联调测试 | 🚧 | pkcs11-mock + client-card（移至 Phase 11） |
 | CI 流水线 | ✅ | GitHub Actions 三平台矩阵 |
 | Beta 发布 | ✅ | tag v*-beta* 触发 |
 
-### Phase 9：云端平台完善 ⬜ 待开始
+### Phase 9：云端平台完善 ✅ 已完成（第三轮开发）
+
+> 详见 [04-CHANGELOG-ROUND3.md](./04-CHANGELOG-ROUND3.md) T1-T24 全部完成
 
 | 任务 | 状态 | 说明 |
 |------|------|------|
-| CA 管理引擎 | ⬜ | 创建/导入/证书链/吊销 |
-| 模板体系实现 | ⬜ | 6 种模板 CRUD |
-| 证书颁发引擎 | ⬜ | 基于模板的证书签发 |
-| 订单系统 | ⬜ | 创建/支付/申请/审批 |
-| 支付集成 | ⬜ | 多插件架构 |
-| 主体/扩展信息管理 | ⬜ | 审核流程 + 验证 |
-| OID 管理 | ⬜ | 自定义 OID CRUD |
-| 存储区域管理 | ⬜ | 数据库/HSM 存储 |
-| 用户自助功能 | ⬜ | 购买/申请/管理 |
-| 门户首页 | ⬜ | 产品展示页 |
+| CA 管理引擎 | ✅ | 创建/导入外部CA/证书链查询/吊销 |
+| 模板体系实现 | ✅ | 6 种模板 CRUD + 预置数据 API |
+| 证书颁发引擎 | ✅ | 模板约束验证 + CertExtTemplate 写入 + KU/EKU 模板 |
+| 订单系统 | ✅ | 9 状态机（pending→completed/refunded） |
+| 支付集成 | ✅ | 多插件架构 + 余额冻结/解冻 |
+| 主体/扩展信息管理 | ✅ | 审核流程 + DNS/邮箱/HTTP 验证 |
+| OID 管理 | ✅ | 自定义 OID CRUD + 60+ 预置 OID |
+| 存储区域管理 | ✅ | 数据库/HSM 存储 |
+| 用户自助功能 | ✅ | 购买/申请/管理/TOTP |
+| 12 个前端页面 | ✅ | Cards/AllCerts/OIDs/StorageZones 等 |
+| 审批自动签发 | ✅ | ApproveApplication → IssueCert |
+| PIN 会话令牌 | ✅ | 15 分钟有效期 + X-PIN-Session |
+| 权限检查统一 | ✅ | IsAdmin/IsOperatorOrAbove 五角色 |
+| 门户首页 | 🚧 | 基础页面已有，需美化 |
 
-### Phase 10：PKI 服务 ⬜ 待开始
-
-| 任务 | 状态 | 说明 |
-|------|------|------|
-| ACME 服务 | ⬜ | RFC 8555 兼容 |
-| CRL 服务 | ⬜ | 定时生成 + 分发 |
-| OCSP 服务 | ⬜ | 在线查询响应 |
-| CAIssuer 服务 | ⬜ | CA 证书下载 |
-| CT 日志服务 | ⬜ | 提交 + 查询 |
-| 吊销服务管理 | ⬜ | 按 CA 配置 |
-
-### Phase 11：安全加固与发布 ⬜ 待开始
+### Phase 10：PKI 服务 ✅ 已完成（第三轮开发）
 
 | 任务 | 状态 | 说明 |
 |------|------|------|
+| ACME 服务 | ✅ | RFC 8555 HTTP-01/DNS-01 真实验证 + Finalize 签发 |
+| CRL 服务 | ✅ | 按 CRLInterval 独立调度 + 自定义路径 |
+| OCSP 服务 | ✅ | RFC 6960 标准 binary 响应 |
+| CAIssuer 服务 | ✅ | CA 证书下载 /ca/<path> |
+| CT 日志服务 | ✅ | RFC 6962 add-chain 真实提交 |
+| 吊销服务管理 | ✅ | 按 CA 配置 CRL/OCSP/CAIssuer |
+
+### Phase 11：安全加固与收尾 🚧 进行中
+
+> 详见 [12-FIX-SUGGESTIONS.MD](./12-FIX-SUGGESTIONS.MD) 和 [13-FIX-ROADMAP.MD](./13-FIX-ROADMAP.MD)
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| client-card 多用户切换 | 🚧 | 右上角切换、多账号同时登录 |
+| client-card 云端同步 | 🚧 | 自动/手动同步 + pkcs11-mock 注册 |
+| client-card Dashboard TOTP | 🚧 | 卡片/表格双视图 + 翻页 |
+| server-card 门户首页美化 | 🚧 | Hero + 功能卡片 + 安全特性 |
+| server-card 找回密码 | 🚧 | 邮箱验证码重置密码 |
+| server-card 证书申请模板补全 | 🚧 | 全字段可编辑 |
+| E2E 联调测试 | ⬜ | pkcs11-mock + client-card + server-card |
 | 安全审计 | ⬜ | 代码审查 + 漏洞扫描 |
-| 渗透测试 | ⬜ | API + IPC 安全测试 |
 | 性能优化 | ⬜ | 基准测试 + 瓶颈分析 |
 | 文档完善 | ⬜ | 用户手册 + API 文档 |
 | 正式发布 | ⬜ | v1.0.0 |
@@ -203,12 +218,13 @@ mindmap
 
 | 问题 | 优先级 | 说明 |
 |------|--------|------|
-| TPM2 macOS 方案 | 中 | Secure Enclave CGO 绑定验证，备选 Keychain |
-| 前端内嵌 | 低 | embed.FS 与 Vite 构建产物集成方式确认 |
-| pkcs11-mock 连接重试 | 中 | C 代码处理 client-card 未启动时的重连逻辑 |
-| Cloud Slot 离线缓存 | 中 | 证书缓存 TTL 和强制刷新策略设计 |
-| 多用户权限 | 高 | 同一张卡片多用户共享时的 CardKeys 管理逻辑 |
-| E2E 测试 | 高 | pkcs11-mock + client-card 完整联调测试 |
+| client-card 多用户切换 | 🔴 高 | 右上角切换用户、多账号同时登录管理 |
+| client-card 云端同步 | 🔴 高 | 自动/手动同步 + 增量同步 + pkcs11-mock 注册 |
+| E2E 联调测试 | 🔴 高 | pkcs11-mock + client-card + server-card 完整链路 |
+| server-card 找回密码 | 🟡 中 | 邮箱验证码重置密码流程 |
+| server-card 门户首页 | 🟡 中 | 产品展示页美化 |
+| 支付插件实际集成 | 🟡 中 | 至少一个支付渠道实际可用 |
+| pkcs11-mock Digest/Verify | 🟢 低 | 部分应用可能需要驱动端摘要/验签 |
 
 ---
 
@@ -233,7 +249,8 @@ mindmap
 | v0.1.0-beta | Phase 1-3：基础功能 | ✅ 已完成 |
 | v0.2.0-beta | Phase 4-5：TPM2 + Cloud Slot | ✅ 已完成 |
 | v0.3.0-beta | Phase 6-7：前端 + 驱动 | ✅ 已完成 |
-| v0.4.0-beta | Phase 8：集成测试 | 🚧 进行中 |
-| v0.5.0-beta | Phase 9：云端平台 | ⬜ 规划中 |
-| v0.6.0-beta | Phase 10：PKI 服务 | ⬜ 规划中 |
-| v1.0.0 | Phase 11：正式发布 | ⬜ 规划中 |
+| v0.4.0-beta | Phase 8：集成测试 | ✅ 已完成 |
+| v0.5.0-beta | Phase 9：云端平台完善（第三轮） | ✅ 已完成 |
+| v0.6.0-beta | Phase 10：PKI 服务（第三轮） | ✅ 已完成 |
+| v0.7.0-beta | Phase 11：安全加固与收尾 | 🚧 进行中 |
+| v1.0.0 | 正式发布 | ⬜ 规划中 |

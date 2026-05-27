@@ -18,6 +18,8 @@ import (
 	"github.com/globaltrusts/client-card/internal/card/cloud"
 	"github.com/globaltrusts/client-card/internal/card/local"
 	tpm2card "github.com/globaltrusts/client-card/internal/card/tpm2"
+	"github.com/globaltrusts/client-card/internal/card/tpmsc"
+	"github.com/globaltrusts/client-card/internal/certprop"
 	"github.com/globaltrusts/client-card/internal/ipc"
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/internal/tpm"
@@ -48,6 +50,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "加载配置失败: %v\n", err)
 		os.Exit(1)
 	}
+
+	// 绑定完整配置到 api 包，使 PUT /api/settings 可以热更新并写回 YAML
+	resolvedCfgPath := *configPath
+	if resolvedCfgPath == "" {
+		resolvedCfgPath = config.ResolveConfigPath()
+	}
+	api.BindFullConfig(cfg, resolvedCfgPath)
 
 	// 初始化日志
 	initLogger(cfg.Log.Level)
@@ -82,6 +91,7 @@ func main() {
 	ipcServer := ipc.NewServer(cfg.IPC.IPCPath())
 	pkcsHandler := ipc.NewPKCSHandler(manager)
 	pkcsHandler.Register(ipcServer)
+	pkcsHandler.RegisterKSPHandlers(ipcServer) // 注册 KSP 专用命令
 
 	if err := ipcServer.Start(); err != nil {
 		slog.Error("启动 IPC 服务失败", "error", err)
@@ -92,6 +102,9 @@ func main() {
 	apiServer := api.NewServer(&cfg.API, manager, db)
 	// 注入 IPC 广播回调：卡片增删改后会通知 pkcs11-mock 重新枚举 slot
 	apiServer.SetIPCBroadcaster(ipcServer.BroadcastSlotChanged)
+	// 注入证书传播器
+	propagator := certprop.New()
+	apiServer.SetCertPropagator(propagator)
 	if err := apiServer.Start(); err != nil {
 		slog.Error("启动 REST API 服务失败", "error", err)
 		os.Exit(1)
@@ -102,6 +115,13 @@ func main() {
 	// 等待退出信号
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// 启动时执行一次证书同步到系统存储，并启动定期同步
+	go startCertPropagationLoop(ctx, db, propagator)
+
+	// 启动云端自动定时同步（使用信号上下文，优雅退出时自动停止）
+	apiServer.StartAutoSync(ctx)
+
 	<-ctx.Done()
 
 	slog.Info("clients 正在关闭...")
@@ -161,6 +181,14 @@ func loadLocalSlots(manager *card.Manager, db *storage.DB) error {
 			}
 			manager.RegisterSlot(slot)
 			slog.Info("已注册 Cloud Slot", "slot_id", slotID, "card", c.CardName, "url", c.CloudURL)
+		case storage.SlotTypeTPMSC:
+			if !tpmsc.IsAvailable() {
+				slog.Warn("跳过 TPMSC 卡片（tpmvscmgr.exe 不可用）", "card", c.CardName)
+				continue
+			}
+			slot := tpmsc.New(slotID, c, certRepo)
+			manager.RegisterSlot(slot)
+			slog.Info("已注册 TPM-VSC Slot", "slot_id", slotID, "card", c.CardName)
 		default:
 			continue
 		}
@@ -187,4 +215,104 @@ func initLogger(level string) {
 		Level: lvl,
 	})
 	slog.SetDefault(slog.New(handler))
+}
+
+// certPropagationInterval 是证书定期同步的间隔时间。
+const certPropagationInterval = 5 * time.Minute
+
+// startCertPropagationLoop 启动证书传播循环：
+// 1. 启动时立即执行一次全量同步
+// 2. 之后每隔 certPropagationInterval 执行一次同步
+// 3. ctx 取消时停止循环
+func startCertPropagationLoop(ctx context.Context, db *storage.DB, propagator certprop.Propagator) {
+	// 启动时立即执行一次
+	syncCertsToSystem(db, propagator)
+
+	ticker := time.NewTicker(certPropagationInterval)
+	defer ticker.Stop()
+
+	slog.Info("证书传播：定期同步已启动", "interval", certPropagationInterval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("证书传播：定期同步已停止")
+			return
+		case <-ticker.C:
+			syncCertsToSystem(db, propagator)
+		}
+	}
+}
+
+// syncCertsToSystem 将数据库中的证书同步到操作系统证书存储。
+// 同时查询 pki_certs 表（PKI 工具签发/导入的证书）和 certificates 表（智能卡上的 X.509 证书）。
+func syncCertsToSystem(db *storage.DB, propagator certprop.Propagator) {
+	ctx := context.Background()
+	pkiCertRepo := storage.NewPKICertRepo(db)
+	certRepo := storage.NewCertRepo(db)
+
+	var certInfos []certprop.CertInfo
+
+	// 1. 查询 PKI 证书（pki_certs 表）
+	pkiCerts, _, err := pkiCertRepo.List(ctx, 1, 1000)
+	if err != nil {
+		slog.Warn("证书传播：查询 PKI 证书列表失败", "error", err)
+	} else {
+		for _, c := range pkiCerts {
+			if c.Revoked || c.CertPEM == "" {
+				continue
+			}
+			certInfos = append(certInfos, certprop.CertInfo{
+				UUID:       c.UUID,
+				CardUUID:   c.CardUUID,
+				CommonName: c.CommonName,
+				CertPEM:    c.CertPEM,
+				HasKey:     c.HasPrivateKey,
+				KeyType:    c.KeyType,
+			})
+		}
+	}
+
+	// 2. 查询智能卡证书（certificates 表，仅 X.509 类型）
+	scCerts, err := certRepo.ListX509All(ctx)
+	if err != nil {
+		slog.Warn("证书传播：查询智能卡证书列表失败", "error", err)
+	} else {
+		for _, c := range scCerts {
+			if len(c.CertContent) == 0 {
+				continue
+			}
+			hasKey := len(c.PrivateData) > 0
+			certInfos = append(certInfos, certprop.CertInfo{
+				UUID:     c.UUID,
+				CardUUID: c.CardUUID,
+				CertDER:  c.DERContent(),
+				HasKey:   hasKey,
+				KeyType:  c.KeyType,
+			})
+		}
+	}
+
+	if len(certInfos) == 0 {
+		slog.Debug("证书传播：无证书需要同步")
+		return
+	}
+
+	result, err := propagator.Sync(ctx, certInfos)
+	if err != nil {
+		slog.Warn("证书传播：同步失败", "error", err)
+		return
+	}
+
+	// 仅在有实际变更时输出 Info 日志，避免定期同步时刷屏
+	if result.Added > 0 || result.Removed > 0 || result.Errors > 0 {
+		slog.Info("证书传播：同步完成",
+			"added", result.Added,
+			"removed", result.Removed,
+			"skipped", result.Skipped,
+			"errors", result.Errors,
+		)
+	} else {
+		slog.Debug("证书传播：同步完成，无变更", "skipped", result.Skipped)
+	}
 }

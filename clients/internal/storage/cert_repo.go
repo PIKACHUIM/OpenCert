@@ -120,6 +120,81 @@ func (r *CertRepo) Delete(ctx context.Context, certUUID string) error {
 	return nil
 }
 
+// CertStats 是每张卡片的证书类型统计。
+type CertStats struct {
+	X509  int `json:"x509"`
+	FIDO  int `json:"fido"`
+	TOTP  int `json:"totp"`
+	Creds int `json:"creds"` // login/note/payment/text 等安全凭据
+}
+
+// CountGroupedByCard 查询所有卡片的证书类型统计，返回 map[cardUUID]*CertStats。
+func (r *CertRepo) CountGroupedByCard(ctx context.Context) (map[string]*CertStats, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT card_uuid, cert_type, COUNT(*) as cnt
+		FROM certificates
+		GROUP BY card_uuid, cert_type`)
+	if err != nil {
+		return nil, fmt.Errorf("统计证书数量失败: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]*CertStats)
+	for rows.Next() {
+		var cardUUID, certType string
+		var cnt int
+		if err := rows.Scan(&cardUUID, &certType, &cnt); err != nil {
+			return nil, fmt.Errorf("扫描统计数据失败: %w", err)
+		}
+		stats, ok := result[cardUUID]
+		if !ok {
+			stats = &CertStats{}
+			result[cardUUID] = stats
+		}
+		switch CertType(certType) {
+		case CertTypeX509, CertTypeSSH, CertTypeGPG:
+			stats.X509 += cnt
+		case CertTypeFIDO:
+			stats.FIDO += cnt
+		case CertTypeTOTP:
+			stats.TOTP += cnt
+		default:
+			// login/note/payment/text 等归类为安全凭据
+			stats.Creds += cnt
+		}
+	}
+	return result, rows.Err()
+}
+
+// ListX509All 查询所有 X.509 类型的证书（用于证书传播）。
+func (r *CertRepo) ListX509All(ctx context.Context) ([]*Certificate, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT uuid, slot_type, card_uuid, cert_type, key_type,
+			cert_content, tpm_platform, remark, created_at, updated_at,
+			CASE WHEN private_data IS NOT NULL AND length(private_data) > 0 THEN 1 ELSE 0 END as has_private,
+			temp_key_salt, temp_key_enc, private_data
+		FROM certificates WHERE cert_type=? AND cert_content IS NOT NULL AND length(cert_content) > 0
+		ORDER BY created_at DESC`, string(CertTypeX509))
+	if err != nil {
+		return nil, fmt.Errorf("查询 X.509 证书列表失败: %w", err)
+	}
+	defer rows.Close()
+
+	var certs []*Certificate
+	for rows.Next() {
+		c := &Certificate{}
+		var hasPrivate int
+		if err := rows.Scan(&c.UUID, &c.SlotType, &c.CardUUID, &c.CertType, &c.KeyType,
+			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CreatedAt, &c.UpdatedAt,
+			&hasPrivate, &c.TempKeySalt, &c.TempKeyEnc, &c.PrivateData); err != nil {
+			return nil, fmt.Errorf("扫描证书数据失败: %w", err)
+		}
+		_ = hasPrivate
+		certs = append(certs, c)
+	}
+	return certs, rows.Err()
+}
+
 // ---- LogRepo ----
 
 // LogRepo 提供日志数据的写入和查询操作。

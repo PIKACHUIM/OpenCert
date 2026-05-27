@@ -4,6 +4,7 @@ package totp
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -32,8 +33,8 @@ func (s *Store) InitTable(ctx context.Context) error {
 		digits INTEGER NOT NULL DEFAULT 6,
 		period INTEGER NOT NULL DEFAULT 30,
 		counter INTEGER NOT NULL DEFAULT 0,
-		secret_enc BLOB NOT NULL,
-		secret_salt BLOB NOT NULL,
+		secret_enc TEXT NOT NULL,
+		secret_salt TEXT NOT NULL,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`
@@ -57,7 +58,9 @@ func (s *Store) Create(ctx context.Context, entry *Entry, secretEnc, secretSalt 
 	_, err := s.db.ExecContext(ctx, query,
 		entry.UUID, entry.CardUUID, entry.OTPType, entry.Issuer, entry.Account,
 		entry.Algorithm, entry.Digits, entry.Period, entry.Counter,
-		secretEnc, secretSalt, entry.CreatedAt, entry.UpdatedAt,
+		base64.StdEncoding.EncodeToString(secretEnc),
+		base64.StdEncoding.EncodeToString(secretSalt),
+		entry.CreatedAt, entry.UpdatedAt,
 	)
 	return err
 }
@@ -69,17 +72,25 @@ func (s *Store) GetByUUID(ctx context.Context, id string) (*Entry, []byte, []byt
 	row := s.db.QueryRowContext(ctx, query, id)
 
 	var entry Entry
-	var secretEnc, secretSalt []byte
+	var secretEncB64, secretSaltB64 string
 	err := row.Scan(
 		&entry.UUID, &entry.CardUUID, &entry.OTPType, &entry.Issuer, &entry.Account,
 		&entry.Algorithm, &entry.Digits, &entry.Period, &entry.Counter,
-		&secretEnc, &secretSalt, &entry.CreatedAt, &entry.UpdatedAt,
+		&secretEncB64, &secretSaltB64, &entry.CreatedAt, &entry.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil, nil, nil
 	}
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("查询 TOTP 条目失败: %w", err)
+	}
+	secretEnc, err := base64.StdEncoding.DecodeString(secretEncB64)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("解码 secret_enc 失败: %w", err)
+	}
+	secretSalt, err := base64.StdEncoding.DecodeString(secretSaltB64)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("解码 secret_salt 失败: %w", err)
 	}
 	return &entry, secretEnc, secretSalt, nil
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"sync"
@@ -297,11 +298,23 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		passwordResetStore.set(req.Email, code)
-		// TODO: 实际发送邮件（需要邮件服务配置）
-		// 开发阶段记录到日志
+
+		// 通过 mailer 发送验证码邮件
+		if s.mailer != nil {
+			subject := "OpenCert Platform — 密码重置验证码"
+			body := fmt.Sprintf(
+				"您好，%s：\n\n您正在重置 OpenCert Platform 账号密码。\n\n验证码：%s\n\n该验证码 5 分钟内有效，请勿泄露给他人。\n如非本人操作，请忽略此邮件。\n\n—— OpenCert Platform",
+				user.DisplayName, code,
+			)
+			if err := s.mailer.Send(req.Email, subject, body); err != nil {
+				slog.Warn("发送密码重置邮件失败", "email", req.Email, "error", err)
+			}
+		}
+
+		// 审计日志（不记录明文验证码到日志，仅记录操作）
 		s.logRepo.Create(r.Context(), &storage.Log{ //nolint:errcheck
 			UserUUID: user.UUID,
-			Action:   fmt.Sprintf("forgot_password:code=%s", code),
+			Action:   "forgot_password:email_sent",
 			IPAddr:   r.RemoteAddr,
 		})
 	}

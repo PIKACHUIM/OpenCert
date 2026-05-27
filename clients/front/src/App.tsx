@@ -12,6 +12,8 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Users = lazy(() => import('./pages/Users'));
 const Cards = lazy(() => import('./pages/Cards'));
 const Certs = lazy(() => import('./pages/Certs'));
+const Credentials = lazy(() => import('./pages/Credentials'));
+const CredentialsFido = lazy(() => import('./pages/Credentials/Fido'));
 const TOTP = lazy(() => import('./pages/TOTP'));
 const PKI = lazy(() => import('./pages/PKI'));
 const PKILocalCA = lazy(() => import('./pages/PKI/LocalCA'));
@@ -21,6 +23,7 @@ const PKIImportCert = lazy(() => import('./pages/PKI/ImportCert'));
 const Logs = lazy(() => import('./pages/Logs'));
 const Settings = lazy(() => import('./pages/Settings'));
 const Login = lazy(() => import('./pages/Login'));
+const Welcome = lazy(() => import('./pages/Welcome'));
 
 const PageLoader = () => (
   <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '60vh' }}>
@@ -64,6 +67,8 @@ const App: React.FC = () => {
           <Routes>
             {/* 登录页（无需认证） */}
             <Route path="/login" element={<S><Login /></S>} />
+            {/* 首次运行向导（无需认证） */}
+            <Route path="/welcome" element={<S><Welcome /></S>} />
             {/* Manager 本地管理路由，需要登录认证 */}
             <Route path="/" element={<PrivateRoute><MainLayout /></PrivateRoute>}>
               <Route index element={<Navigate to="/dashboard" replace />} />
@@ -71,6 +76,8 @@ const App: React.FC = () => {
               <Route path="users" element={<S><Users /></S>} />
               <Route path="cards" element={<S><Cards /></S>} />
               <Route path="certs" element={<S><Certs /></S>} />
+              <Route path="credentials" element={<S><Credentials /></S>} />
+              <Route path="credentials/fido" element={<S><CredentialsFido /></S>} />
               <Route path="totp" element={<S><TOTP /></S>} />
               <Route path="pki" element={<S><PKI /></S>}>
                 <Route index element={<Navigate to="/pki/csr" replace />} />

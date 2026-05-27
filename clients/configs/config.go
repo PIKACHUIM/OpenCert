@@ -163,6 +163,12 @@ func defaultConfigPath() string {
 	return filepath.Join(userDataDir(), "config.yaml")
 }
 
+// ResolveConfigPath 返回当前默认使用的配置文件路径（导出给其它包使用，
+// 例如 api 包在 Settings 写回 YAML 时需要定位目标文件）。
+func ResolveConfigPath() string {
+	return defaultConfigPath()
+}
+
 // defaultDBPath 返回默认数据库文件路径（可执行文件所在目录的 data 子目录）。
 func defaultDBPath() string {
 	exe, err := os.Executable()

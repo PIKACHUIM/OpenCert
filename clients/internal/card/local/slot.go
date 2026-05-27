@@ -15,9 +15,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
+	"strings"
 	"sync"
+	"time"
 
 	cryptoutil "github.com/globaltrusts/client-card/internal/crypto"
+	"github.com/globaltrusts/client-card/internal/pki"
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/pkg/pkcs11types"
 )
@@ -408,17 +411,18 @@ func parsePrivateKey(der []byte) (crypto.PrivateKey, error) {
 
 // parsePublicKey 从证书内容解析公钥。
 func parsePublicKey(cert *storage.Certificate) (crypto.PublicKey, error) {
-	if len(cert.CertContent) == 0 {
+	der := certContentDER(cert)
+	if len(der) == 0 {
 		return nil, fmt.Errorf("证书内容为空")
 	}
 
 	// 尝试解析 X.509 证书
-	if x509Cert, err := x509.ParseCertificate(cert.CertContent); err == nil {
+	if x509Cert, err := x509.ParseCertificate(der); err == nil {
 		return x509Cert.PublicKey, nil
 	}
 
 	// 尝试解析 DER 公钥
-	if pub, err := x509.ParsePKIXPublicKey(cert.CertContent); err == nil {
+	if pub, err := x509.ParsePKIXPublicKey(der); err == nil {
 		return pub, nil
 	}
 
@@ -620,11 +624,19 @@ func buildAttributes(cert *storage.Certificate, attrTypes []pkcs11types.Attribut
 			}
 			attr.Value = uint32ToBytes(uint32(class))
 		case pkcs11types.CKA_LABEL:
-			attr.Value = []byte(cert.Remark)
+			// 卡片备注作为标签；为空时回落到 UUID 前缀
+			if cert.Remark != "" {
+				attr.Value = []byte(cert.Remark)
+			} else {
+				attr.Value = []byte(cert.UUID)
+			}
 		case pkcs11types.CKA_ID:
-			attr.Value = []byte(cert.UUID)
-		case pkcs11types.CKA_VALUE:
-			attr.Value = cert.CertContent
+			attr.Value = computeCKAID(cert)
+	case pkcs11types.CKA_VALUE:
+			attr.Value = certContentDER(cert)
+		case pkcs11types.CKA_PUBLIC_KEY_INFO:
+			// SubjectPublicKeyInfo DER：SSH/GPG 也尽量返回标准格式
+			attr.Value = computePublicKeyInfo(cert)
 		case pkcs11types.CKA_CERTIFICATE_TYPE:
 			attr.Value = uint32ToBytes(0) // CKC_X_509
 		case pkcs11types.CKA_TOKEN:
@@ -663,6 +675,127 @@ func uint32ToBytes(v uint32) []byte {
 	b := make([]byte, 4)
 	binary.BigEndian.PutUint32(b, v)
 	return b
+}
+
+// computeCKAID 按证书类型派生 PKCS#11 CKA_ID。
+//   - x509: 优先使用 SubjectKeyIdentifier，否则用 SHA-1(SPKI) 与 OpenSSL 习惯对齐
+//   - ssh : 公钥 wire 的 SHA-256 摘要（OpenSSH 风格指纹）
+//   - gpg : OpenPGP V4 keyid（fingerprint 末 8 字节）
+//   - 其他: UUID 字节串
+func computeCKAID(cert *storage.Certificate) []byte {
+	switch cert.CertType {
+	case storage.CertTypeSSH:
+		if id, err := sshCKAID(cert.CertContent); err == nil {
+			return id
+		}
+	case storage.CertTypeGPG:
+		if id, err := gpgCKAID(cert.CertContent); err == nil {
+			return id
+		}
+	case storage.CertTypeX509:
+		if id, err := x509CKAID(certContentDER(cert)); err == nil {
+			return id
+		}
+	}
+	return []byte(cert.UUID)
+}
+
+// certContentDER 从证书记录的 CertContent 中提取 DER 格式数据。
+// 支持 PEM 格式（自动解码）和原始 DER 格式（直接返回）。
+func certContentDER(cert *storage.Certificate) []byte {
+	return cert.DERContent()
+}
+
+// computePublicKeyInfo 构造 SubjectPublicKeyInfo DER。
+//   - x509: 从证书提取
+//   - ssh : 从 OpenSSH 公钥转换
+//   - gpg : 从 V4 公钥包体转换
+//   - 其他: 空
+func computePublicKeyInfo(cert *storage.Certificate) []byte {
+	der := certContentDER(cert)
+	switch cert.CertType {
+	case storage.CertTypeX509:
+		if x509Cert, err := x509.ParseCertificate(der); err == nil {
+			return x509Cert.RawSubjectPublicKeyInfo
+		}
+		// 也可能 cert_content 直接就是 SPKI
+		if _, err := x509.ParsePKIXPublicKey(der); err == nil {
+			return der
+		}
+	case storage.CertTypeSSH:
+		if spki, err := pki.SSHPublicKeyToPKIX(cert.CertContent); err == nil {
+			return spki
+		}
+	case storage.CertTypeGPG:
+		if spki, err := pki.GPGPublicKeyToPKIX(cert.CertContent); err == nil {
+			return spki
+		}
+	}
+	return nil
+}
+
+// sshCKAID 计算 OpenSSH 公钥的 SHA-256 指纹（原始字节）。
+func sshCKAID(content []byte) ([]byte, error) {
+	_, raw, err := pki.SSHFingerprintSHA256(content)
+	return raw, err
+}
+
+// gpgCKAID 计算 GPG V4 keyid。
+func gpgCKAID(content []byte) ([]byte, error) {
+	// 当 content 是 V4 包体时直接派生
+	if len(content) > 0 && content[0] == 0x04 {
+		fp, err := gpgFingerprintFromBody(content)
+		if err != nil {
+			return nil, err
+		}
+		return pki.GPGKeyIDFromFingerprint(fp), nil
+	}
+	// 否则尝试当作 PKIX 公钥处理（用零时间），用于兼容历史数据
+	body, err := pki.GPGPublicKeyFromPKIX(content, time.Unix(0, 0))
+	if err != nil {
+		return nil, err
+	}
+	fp, err := gpgFingerprintFromBody(body)
+	if err != nil {
+		return nil, err
+	}
+	return pki.GPGKeyIDFromFingerprint(fp), nil
+}
+
+// gpgFingerprintFromBody 通过 V4 包体直接派生 fingerprint（不依赖外部公钥构造）。
+func gpgFingerprintFromBody(body []byte) ([]byte, error) {
+	pub, err := pki.GPGPublicKeyToPKIX(body)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := x509.ParsePKIXPublicKey(pub)
+	if err != nil {
+		return nil, err
+	}
+	// V4 包体头 5 字节为 version+createdAt，从中读时间以保证 fingerprint 一致
+	if len(body) < 5 {
+		return nil, fmt.Errorf("GPG 包体过短")
+	}
+	createdAt := time.Unix(int64(binary.BigEndian.Uint32(body[1:5])), 0).UTC()
+	return pki.GPGFingerprint(parsed, createdAt)
+}
+
+// x509CKAID 计算 X.509 的 SubjectKeyIdentifier 或回落到 SPKI 的 SHA-1。
+func x509CKAID(content []byte) ([]byte, error) {
+	cert, err := x509.ParseCertificate(content)
+	if err != nil {
+		// 对 certificate policies 错误做宽松处理：直接用 SHA-256 哈希 DER 内容
+		if strings.Contains(err.Error(), "certificate policies") {
+			h := sha256.Sum256(content)
+			return h[:20], nil
+		}
+		return nil, err
+	}
+	if len(cert.SubjectKeyId) > 0 {
+		return cert.SubjectKeyId, nil
+	}
+	h := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return h[:20], nil // 取前 20 字节（与 OpenSSL ski 长度对齐）
 }
 
 func min(a, b int) int {

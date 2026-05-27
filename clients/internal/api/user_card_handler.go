@@ -1,9 +1,12 @@
 package api
 
 import (
+	"encoding/base64"
 	"net/http"
 	"time"
 
+	"github.com/globaltrusts/client-card/internal/card/local"
+	"github.com/globaltrusts/client-card/internal/card/tpmsc"
 	"github.com/globaltrusts/client-card/internal/storage"
 )
 
@@ -174,7 +177,25 @@ func (s *Server) handleListCards(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "查询卡片列表失败: "+err.Error())
 		return
 	}
-	writeOK(w, cards)
+
+	// 查询每张卡片的证书类型统计
+	certStats, _ := s.certRepo.CountGroupedByCard(r.Context())
+
+	// 构建带统计信息的响应
+	type cardWithStats struct {
+		*storage.Card
+		CertStats *storage.CertStats `json:"cert_stats"`
+	}
+	items := make([]cardWithStats, 0, len(cards))
+	for _, c := range cards {
+		stats := certStats[c.UUID]
+		if stats == nil {
+			stats = &storage.CertStats{}
+		}
+		items = append(items, cardWithStats{Card: c, CertStats: stats})
+	}
+
+	writeOK(w, items)
 }
 
 // handleCreateCard POST /api/cards
@@ -183,9 +204,9 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		SlotType     string `json:"slot_type"`
 		CardName     string `json:"card_name"`
 		UserUUID     string `json:"user_uuid"`
-		UserPassword string `json:"user_password"` // 用于加密主密钥
+		UserPassword string `json:"user_password"` // 必填，验证用户身份
 		CardPassword string `json:"card_password"` // 可选
-		PIN          string `json:"pin"`           // 可选，未提供时自动生成
+		PIN          string `json:"pin"`           // 必填，用于加密主密钥
 		PUK          string `json:"puk"`           // 可选，未提供时自动生成
 		AdminKey     string `json:"admin_key"`     // 可选，未提供时自动生成
 		ExpiresAt    string `json:"expires_at"`    // RFC3339 格式
@@ -196,29 +217,35 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.CardName == "" || req.UserUUID == "" || req.UserPassword == "" {
-		writeError(w, http.StatusBadRequest, "card_name、user_uuid、user_password 不能为空")
+	if req.CardName == "" || req.UserUUID == "" || req.PIN == "" || req.UserPassword == "" {
+		writeError(w, http.StatusBadRequest, "card_name、user_uuid、pin、user_password 不能为空")
 		return
 	}
 
-	// 验证用户存在
+	// 验证用户存在并校验密码
 	user, err := s.userRepo.GetByUUID(r.Context(), req.UserUUID)
 	if err != nil || user == nil {
 		writeError(w, http.StatusBadRequest, "用户不存在")
 		return
 	}
-
-	// 验证用户密码
 	if !verifyPassword(req.UserPassword, user.PasswordHash) {
-		writeError(w, http.StatusUnauthorized, "用户密码错误")
+		writeError(w, http.StatusForbidden, "用户密码错误")
 		return
+	}
+
+	// ---- 根据 slot_type 分发创建逻辑 ----
+	switch storage.SlotType(req.SlotType) {
+	case storage.SlotTypeTPMSC:
+		s.handleCreateTPMSCCard(w, r, req.UserUUID, req.CardName, req.PIN, req.Remark)
+		return
+	default:
+		// local / tpm2 / cloud 走原有逻辑
 	}
 
 	// 调用三级凭据版本；未提供 PUK/AdminKey 时自动生成并在响应中一次性返回
 	result, err := local.CreateCardWithCreds(r.Context(), s.cardRepo, local.CreateCardArgs{
 		UserUUID:      req.UserUUID,
 		CardName:      req.CardName,
-		UserPassword:  req.UserPassword,
 		CardPassword:  req.CardPassword,
 		PIN:           req.PIN,
 		PUK:           req.PUK,
@@ -254,7 +281,53 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: card})
+// handleCreateTPMSCCard 处理 Microsoft TPM Virtual Smart Card 的创建。
+// 使用 DEFAULT 模式非交互式创建（PIN=12345678），创建后提示用户修改 PIN。
+func (s *Server) handleCreateTPMSCCard(w http.ResponseWriter, r *http.Request, userUUID, cardName, pin, remark string) {
+	// 检查平台可用性
+	if !tpmsc.IsAvailable() {
+		writeError(w, http.StatusBadRequest, "当前系统不支持 TPM Virtual Smart Card（需要 Windows 且 tpmvscmgr.exe 可用）")
+		return
+	}
+
+	// 调用 tpmvscmgr.exe 创建虚拟智能卡（DEFAULT 模式，无需 stdin 交互）
+	vscResult, err := tpmsc.CreateCard(r.Context(), tpmsc.CreateCardArgs{
+		Name: cardName,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "创建 TPM Virtual Smart Card 失败: "+err.Error())
+		return
+	}
+
+	// 在数据库中记录卡片信息
+	card := &storage.Card{
+		UUID:          newUUID(),
+		SlotType:      storage.SlotTypeTPMSC,
+		CardName:      cardName,
+		UserUUID:      userUUID,
+		SecurityLevel: storage.SecurityLevelHigh, // TPM VSC 固定高安全性
+		Remark:        remark,
+		PINRetries:    5, // Microsoft 默认 PIN 重试次数
+	}
+
+	if err := s.cardRepo.Create(r.Context(), card); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存卡片记录失败: "+err.Error())
+		return
+	}
+
+	// Slot 变更广播
+	s.notifySlotChanged("create")
+
+	// 响应：返回卡片信息和一次性 AdminKey/PUK/PIN
+	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: map[string]interface{}{
+		"card":        card,
+		"pin":         vscResult.PIN,        // 默认 PIN（12345678），提示用户修改
+		"puk":         vscResult.PUK,        // 默认 PUK（12345678）
+		"admin_key":   vscResult.AdminKey,   // 默认 AdminKey
+		"instance_id": vscResult.InstanceID,  // Windows 设备实例 ID
+		"reader_name": vscResult.ReaderName,  // 虚拟读卡器名称
+		"output":      vscResult.Output,      // 命令行输出（调试用）
+	}})
 }
 
 // handleGetCard GET /api/cards/{uuid}
@@ -312,8 +385,34 @@ func (s *Server) handleUpdateCard(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteCard DELETE /api/cards/{uuid}
+// 请求体：{user_uuid, user_password}
 func (s *Server) handleDeleteCard(w http.ResponseWriter, r *http.Request) {
 	cardUUID := r.PathValue("uuid")
+
+	var req struct {
+		UserUUID     string `json:"user_uuid"`
+		UserPassword string `json:"user_password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
+		return
+	}
+	if req.UserUUID == "" || req.UserPassword == "" {
+		writeError(w, http.StatusBadRequest, "user_uuid 和 user_password 不能为空")
+		return
+	}
+
+	// 验证用户密码
+	user, err := s.userRepo.GetByUUID(r.Context(), req.UserUUID)
+	if err != nil || user == nil {
+		writeError(w, http.StatusBadRequest, "用户不存在")
+		return
+	}
+	if !verifyPassword(req.UserPassword, user.PasswordHash) {
+		writeError(w, http.StatusForbidden, "用户密码错误")
+		return
+	}
+
 	if err := s.cardRepo.Delete(r.Context(), cardUUID); err != nil {
 		if isNotFoundErr(err) {
 			writeError(w, http.StatusNotFound, "卡片不存在")
@@ -382,21 +481,121 @@ func (s *Server) handleResetPUK(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AdminKey string `json:"admin_key"`
-		NewPUK   string `json:"new_puk"`
+		AdminKey   string `json:"admin_key"`
+		CurrentPIN string `json:"current_pin"`
+		NewPUK     string `json:"new_puk"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
 		return
 	}
-	if req.AdminKey == "" || req.NewPUK == "" {
-		writeError(w, http.StatusBadRequest, "admin_key 与 new_puk 不能为空")
+	if req.AdminKey == "" || req.NewPUK == "" || req.CurrentPIN == "" {
+		writeError(w, http.StatusBadRequest, "admin_key、current_pin 与 new_puk 不能为空")
 		return
 	}
 
-	if err := local.ResetPUK(r.Context(), s.cardRepo, card, req.AdminKey, req.NewPUK); err != nil {
+	if err := local.ResetPUK(r.Context(), s.cardRepo, card, req.AdminKey, req.CurrentPIN, req.NewPUK); err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	writeOK(w, map[string]string{"status": "puk_reset_ok"})
+}
+
+// handleExportCard POST /api/cards/{uuid}/export
+// 导出智能卡为 .ocs 文件。请求体：{password?, admin_key?}
+func (s *Server) handleExportCard(w http.ResponseWriter, r *http.Request) {
+	cardUUID := r.PathValue("uuid")
+
+	var req struct {
+		UserUUID     string `json:"user_uuid"`
+		UserPassword string `json:"user_password"`
+		Password     string `json:"password"`
+		AdminKey     string `json:"admin_key"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
+		return
+	}
+	if req.UserUUID == "" || req.UserPassword == "" {
+		writeError(w, http.StatusBadRequest, "user_uuid 和 user_password 不能为空")
+		return
+	}
+
+	// 验证用户密码
+	user, err := s.userRepo.GetByUUID(r.Context(), req.UserUUID)
+	if err != nil || user == nil {
+		writeError(w, http.StatusBadRequest, "用户不存在")
+		return
+	}
+	if !verifyPassword(req.UserPassword, user.PasswordHash) {
+		writeError(w, http.StatusForbidden, "用户密码错误")
+		return
+	}
+
+	ocsData, err := local.ExportCard(r.Context(), s.cardRepo, s.certRepo, local.ExportCardRequest{
+		CardUUID: cardUUID,
+		Password: req.Password,
+		AdminKey: req.AdminKey,
+	})
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"card-"+cardUUID+".ocs\"")
+	w.WriteHeader(http.StatusOK)
+	w.Write(ocsData)
+}
+
+// handleRestoreCard POST /api/cards/restore
+// 从 .ocs 文件恢复智能卡。请求体：{ocs_data (base64), password, user_uuid}
+func (s *Server) handleRestoreCard(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OCSDataB64   string `json:"ocs_data"`
+		Password     string `json:"password"`
+		UserUUID     string `json:"user_uuid"`
+		UserPassword string `json:"user_password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
+		return
+	}
+	if req.OCSDataB64 == "" || req.Password == "" || req.UserUUID == "" || req.UserPassword == "" {
+		writeError(w, http.StatusBadRequest, "ocs_data、password、user_uuid 和 user_password 不能为空")
+		return
+	}
+
+	// 验证用户密码
+	user, err := s.userRepo.GetByUUID(r.Context(), req.UserUUID)
+	if err != nil || user == nil {
+		writeError(w, http.StatusBadRequest, "用户不存在")
+		return
+	}
+	if !verifyPassword(req.UserPassword, user.PasswordHash) {
+		writeError(w, http.StatusForbidden, "用户密码错误")
+		return
+	}
+
+	ocsData, err := base64.StdEncoding.DecodeString(req.OCSDataB64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "ocs_data base64 解码失败")
+		return
+	}
+
+	card, err := local.RestoreCard(r.Context(), s.cardRepo, s.certRepo, local.RestoreCardRequest{
+		OCSData:  ocsData,
+		Password: req.Password,
+		UserUUID: req.UserUUID,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, Response{
+		Code:    0,
+		Message: "卡片恢复成功",
+		Data:    card,
+	})
 }

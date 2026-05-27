@@ -335,6 +335,8 @@ export interface ACMEConfig {
   template_uuid: string;
   template_name?: string;
   enabled: boolean;
+  /** 允许的挑战类型：http-01 / dns-01 / tls-alpn-01。后端缺省为 http-01,dns-01。 */
+  allowed_challenges?: Array<'http-01' | 'dns-01' | 'tls-alpn-01'>;
   created_at: string;
 }
 
@@ -377,3 +379,44 @@ export interface Log {
   content: string;
   created_at: string;
 }
+
+// ---- 云端智能卡 ----
+
+export interface Card {
+  uuid: string;
+  user_uuid: string;
+  card_name: string;
+  remark: string;
+  storage_zone_uuid?: string;
+  pin_retries: number;
+  pin_failed_count: number;
+  pin_locked: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateCardRequest {
+  card_name: string;
+  remark?: string;
+  storage_zone_uuid?: string;
+  pin?: string;
+  puk?: string;
+  admin_key?: string;
+  pin_retries?: number;
+}
+
+export interface VerifyPINRequest {
+  pin: string;
+}
+
+export interface UnlockPUKRequest {
+  puk: string;
+  new_pin: string;
+}
+
+export interface ResetAdminKeyRequest {
+  admin_key: string;
+  new_pin?: string;
+  new_puk?: string;
+}
+

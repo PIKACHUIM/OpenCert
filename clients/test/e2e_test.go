@@ -94,7 +94,7 @@ func TestE2EFullPKCS11Sequence(t *testing.T) {
 		CertType: storage.CertTypeX509,
 		KeyType:  "ec256",
 		Remark:   "E2E 测试密钥",
-	}, slot.MasterKey())
+	}, slot.MasterKey(), testCard)
 	if err != nil {
 		t.Fatalf("C_GenerateKeyPair 失败: %v", err)
 	}

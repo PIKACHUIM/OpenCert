@@ -151,7 +151,7 @@ const RevocationTab: React.FC = () => {
   const load = async () => { setLoading(true); try { const r = await listRevocationServices(); setData(Array.isArray(r) ? r : (r as any).items || []); } catch {} finally { setLoading(false); } };
   useEffect(() => {
     load();
-    listCAs({ page: 1, page_size: 100 }).then(r => setCAs(r.items || [])).catch(() => {});
+    listCAs({ page: 1, page_size: 100 }).then(r => setCAs(Array.isArray(r?.items) ? r.items : [])).catch(() => {});
   }, []);
 
   const columns = [
@@ -211,7 +211,7 @@ const ACMETab: React.FC = () => {
   const load = async () => { setLoading(true); try { const r = await listACMEConfigs(); setData(Array.isArray(r) ? r : (r as any).items || []); } catch {} finally { setLoading(false); } };
   useEffect(() => {
     load();
-    listCAs({ page: 1, page_size: 100 }).then(r => setCAs(r.items || [])).catch(() => {});
+    listCAs({ page: 1, page_size: 100 }).then(r => setCAs(Array.isArray(r?.items) ? r.items : [])).catch(() => {});
   }, []);
 
   const columns = [

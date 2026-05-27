@@ -138,6 +138,20 @@ func (s *Service) CreateApplication(ctx context.Context, app *storage.CertApplic
 }
 
 // ListApplications 查询申请列表（管理员查看所有，用户查看自己的）。
+// GetApplication 通过 UUID 查询单个证书申请。
+func (s *Service) GetApplication(ctx context.Context, appUUID string) (*storage.CertApplication, error) {
+	app := &storage.CertApplication{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT uuid, order_uuid, user_uuid, subject_json, san_json, key_type, status, approved_by, approved_at, reject_reason, cert_uuid, created_at, updated_at
+		 FROM cert_applications WHERE uuid = ?`, appUUID,
+	).Scan(&app.UUID, &app.OrderUUID, &app.UserUUID, &app.SubjectJSON, &app.SANJSON, &app.KeyType, &app.Status,
+		&app.ApprovedBy, &app.ApprovedAt, &app.RejectReason, &app.CertUUID, &app.CreatedAt, &app.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("查询申请失败: %w", err)
+	}
+	return app, nil
+}
+
 func (s *Service) ListApplications(ctx context.Context, userUUID string, statusFilter string, page, pageSize int) ([]*storage.CertApplication, int, error) {
 	if page < 1 {
 		page = 1
@@ -348,7 +362,7 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 	}
 
 	// 解析 SAN JSON
-	dnsNames, ips, emails, err := parseSANJSON(app.SANJSON)
+	dnsNames, ips, emails, uris, err := parseSANJSON(app.SANJSON)
 	if err != nil {
 		return "", fmt.Errorf("解析 SAN JSON 失败: %w", err)
 	}
@@ -378,6 +392,7 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		DNSNames:         dnsNames,
 		IPAddresses:      ips,
 		EmailAddrs:       emails,
+		URIs:             uris,
 		IssuanceTmplUUID: issuanceTmplUUID,
 	}
 
@@ -388,6 +403,10 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 	}
 
 	// 存入证书表（不关联卡片，后续可由用户分配/下发）
+	ipStrs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		ipStrs = append(ipStrs, ip.String())
+	}
 	cert := &storage.Certificate{
 		UserUUID:         app.UserUUID,
 		CertType:         "x509",
@@ -401,6 +420,10 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		IssuerDN:         resp.IssuerDN,
 		NotBefore:        &resp.NotBefore,
 		NotAfter:         &resp.NotAfter,
+		SANDNS:           marshalJSONArray(dnsNames),
+		SANIP:            marshalJSONArray(ipStrs),
+		SANEmail:         marshalJSONArray(emails),
+		SANURI:           marshalJSONArray(uris),
 		IssuanceTmplUUID: issuanceTmplUUID,
 		RevocationStatus: "active",
 	}
@@ -446,27 +469,29 @@ func parseSubjectJSON(s string) (pkix.Name, error) {
 	return name, nil
 }
 
-// parseSANJSON 解析 SAN JSON：{"dns":["a.com"],"ip":["1.1.1.1"],"email":["a@b.com"]}。
-func parseSANJSON(s string) (dns []string, ips []net.IP, emails []string, err error) {
+// parseSANJSON 解析 SAN JSON：{"dns":["a.com"],"ip":["1.1.1.1"],"email":["a@b.com"],"uri":["https://a.com"]}。
+func parseSANJSON(s string) (dns []string, ips []net.IP, emails []string, uris []string, err error) {
 	if s == "" {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	var raw struct {
 		DNS   []string `json:"dns"`
 		IP    []string `json:"ip"`
 		Email []string `json:"email"`
+		URI   []string `json:"uri"`
 	}
 	if err = json.Unmarshal([]byte(s), &raw); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	dns = raw.DNS
 	emails = raw.Email
+	uris = raw.URI
 	for _, ipStr := range raw.IP {
 		if ip := net.ParseIP(ipStr); ip != nil {
 			ips = append(ips, ip)
 		}
 	}
-	return dns, ips, emails, nil
+	return dns, ips, emails, uris, nil
 }
 
 // firstAllowedCA 从 JSON 数组字符串中提取第一个 CA UUID。
@@ -633,4 +658,17 @@ func (s *Service) CompleteOrder(ctx context.Context, orderUUID, certUUID string)
 		)
 	}
 	return nil
+}
+
+// marshalJSONArray 将字符串切片编码为 JSON 数组字符串，空值返回 "[]"。
+// 用于填充 Certificate 记录中的 SAN 与证书策略 JSON 列（NOT NULL 约束）。
+func marshalJSONArray(ss []string) string {
+	if len(ss) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(ss)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }

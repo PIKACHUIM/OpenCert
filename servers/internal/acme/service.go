@@ -445,6 +445,8 @@ func (s *Service) ValidateChallengeReal(ctx context.Context, chUUID, domain, key
 		verr = s.ValidateHTTP01(ctx, domain, ch.Token, keyAuthOrTXT)
 	case "dns-01":
 		verr = s.ValidateDNS01(ctx, domain, keyAuthOrTXT)
+	case "tls-alpn-01":
+		verr = s.ValidateTLSALPN01(ctx, domain, keyAuthOrTXT)
 	default:
 		verr = fmt.Errorf("不支持的挑战类型: %s", ch.Type)
 	}
@@ -646,9 +648,9 @@ func (s *Service) GetCertificateForOrder(ctx context.Context, orderUUID string) 
 	if err != nil {
 		return "", err
 	}
-	// 确保是 PEM 格式
-	if _, rest := pem.Decode(pemContent); len(rest) == 0 && len(pemContent) > 0 {
-		// 已是合法 PEM
+	// 校验是否为合法 PEM 证书
+	if block, _ := pem.Decode(pemContent); block == nil {
+		return "", fmt.Errorf("证书内容不是合法的 PEM 格式")
 	}
 	return string(pemContent), nil
 }

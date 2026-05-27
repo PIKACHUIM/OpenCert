@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,8 @@ type IssueRequest struct {
 	DNSNames    []string          // SAN DNS 名称
 	IPAddresses []net.IP          // SAN IP 地址
 	EmailAddrs  []string          // SAN 邮箱
+	URIs        []string          // SAN URI （写入证书的 Subject Alternative Name - uniformResourceIdentifier）
+	PolicyOIDs  []string          // 证书策略 OID 列表（Certificate Policies 扩展，与 EVPolicyOID 合并写入）
 
 	// 模板约束（可选，签发前验证）
 	IssuanceTmplUUID string // 颁发模板 UUID（用于约束验证）
@@ -191,6 +194,26 @@ func (s *Service) IssueCert(ctx context.Context, req *IssueRequest) (*IssueRespo
 	if req.EVPolicyOID != "" {
 		if oid, err := parseOID(req.EVPolicyOID); err == nil {
 			template.PolicyIdentifiers = append(template.PolicyIdentifiers, oid)
+		}
+	}
+
+	// 证书策略 OID 列表（certificate_policies 扩展）
+	for _, p := range req.PolicyOIDs {
+		if p == "" {
+			continue
+		}
+		if oid, err := parseOID(p); err == nil {
+			template.PolicyIdentifiers = append(template.PolicyIdentifiers, oid)
+		}
+	}
+
+	// SAN URIs（x509.Certificate.URIs 接受 *url.URL）
+	for _, u := range req.URIs {
+		if u == "" {
+			continue
+		}
+		if parsed, err := url.Parse(u); err == nil && parsed != nil && parsed.IsAbs() {
+			template.URIs = append(template.URIs, parsed)
 		}
 	}
 

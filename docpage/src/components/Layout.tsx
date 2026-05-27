@@ -3,13 +3,20 @@ import { Outlet, NavLink, useLocation } from 'react-router-dom'
 import './Layout.css'
 
 const navItems = [
-  { path: '/',             label: '首页',     icon: '⌂', exact: true },
-  { path: '/overview',     label: '功能概览', icon: '◈' },
-  { path: '/architecture', label: '系统架构', icon: '⬡' },
-  { path: '/quickstart',   label: '快速开始', icon: '▶' },
-  { path: '/api',          label: 'API 文档', icon: '⚡' },
-  { path: '/driver',       label: 'PKCS #11', icon: '⚙' },
-  { path: '/security',     label: '安全设计', icon: '⬡' },
+  { path: '/',               label: '首页',       icon: '⌂', exact: true },
+  { path: '/overview',       label: '功能概览',   icon: '◈' },
+  { path: '/architecture',   label: '系统架构',   icon: '⬡' },
+  { path: '/quickstart',     label: '快速开始',   icon: '▶' },
+  { path: '/cloud-platform', label: '云端平台',   icon: '☁' },
+  { path: '/local-manager',  label: '本地管理端', icon: '🖥' },
+  { path: '/api',            label: 'API 文档',   icon: '⚡' },
+  { path: '/driver',         label: 'PKCS #11',   icon: '⚙' },
+  { path: '/security',       label: '安全设计',   icon: '🛡' },
+  { path: '/crypto-flow',    label: '加密流程',   icon: '🔐' },
+  { path: '/database',       label: '数据库',     icon: '🗄' },
+  { path: '/frontend',       label: '前端设计',   icon: '🎨' },
+  { path: '/roadmap',        label: '路线图',     icon: '🗺' },
+  { path: '/changelog',      label: '变更日志',   icon: '📋' },
 ]
 
 function SunIcon() {

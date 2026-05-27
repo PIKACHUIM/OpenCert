@@ -33,7 +33,7 @@ const SubjectInfoTab: React.FC = () => {
 
   const load = async (p = 1) => {
     setLoading(true);
-    try { const res = await listSubjectInfos({ page: p, page_size: 20 }); setData(res.items || []); setTotal(res.total); }
+    try { const res = await listSubjectInfos({ page: p, page_size: 20 }); setData(Array.isArray(res?.items) ? res.items : []); setTotal(res?.total ?? 0); }
     catch (e: any) { message.error(e.message); } finally { setLoading(false); }
   };
 
@@ -123,7 +123,7 @@ const ExtensionInfoTab: React.FC = () => {
 
   const load = async (p = 1) => {
     setLoading(true);
-    try { const res = await listExtensionInfos({ page: p, page_size: 20 }); setData(res.items || []); setTotal(res.total); }
+    try { const res = await listExtensionInfos({ page: p, page_size: 20 }); setData(Array.isArray(res?.items) ? res.items : []); setTotal(res?.total ?? 0); }
     catch (e: any) { message.error(e.message); } finally { setLoading(false); }
   };
 

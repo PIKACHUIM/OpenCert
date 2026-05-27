@@ -10,6 +10,7 @@ import (
 	config "github.com/globaltrusts/client-card/configs"
 	"github.com/globaltrusts/client-card/internal/api/middleware"
 	"github.com/globaltrusts/client-card/internal/card"
+	"github.com/globaltrusts/client-card/internal/certprop"
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/internal/totp"
 	"github.com/globaltrusts/client-card/ui"
@@ -37,6 +38,8 @@ type Server struct {
 	pkiCertRepo *storage.PKICertRepo
 	// ipcBroadcast 在卡片增删改后广播 slot_changed 事件；可为 nil。
 	ipcBroadcast func(reason string)
+	// certPropagator 证书传播器，将证书同步到操作系统证书存储。
+	certPropagator certprop.Propagator
 }
 
 // NewServer 创建 API 服务实例。
@@ -127,12 +130,18 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("DELETE /api/cards/{uuid}", s.handleDeleteCard)
 	s.mux.HandleFunc("POST /api/cards/{uuid}/reset-pin", s.handleResetPIN)
 	s.mux.HandleFunc("POST /api/cards/{uuid}/reset-puk", s.handleResetPUK)
+	s.mux.HandleFunc("POST /api/cards/{uuid}/export", s.handleExportCard)
+	s.mux.HandleFunc("POST /api/cards/restore", s.handleRestoreCard)
 
 	// ---- 证书管理 ----
 	s.mux.HandleFunc("GET /api/cards/{card_uuid}/certs", s.handleListCerts)
 	s.mux.HandleFunc("POST /api/cards/{card_uuid}/certs", s.handleCreateCert)
+	s.mux.HandleFunc("POST /api/cards/{card_uuid}/certs/import", s.handleImportCertWithKey)
 	s.mux.HandleFunc("GET /api/cards/{card_uuid}/certs/{uuid}", s.handleGetCert)
 	s.mux.HandleFunc("DELETE /api/cards/{card_uuid}/certs/{uuid}", s.handleDeleteCert)
+	s.mux.HandleFunc("POST /api/cards/{card_uuid}/certs/{uuid}/export", s.handleExportCertKey)
+	s.mux.HandleFunc("GET /api/cards/{card_uuid}/certs/{uuid}/detail", s.handleCertDetail)
+	s.mux.HandleFunc("POST /api/cards/{card_uuid}/credentials", s.handleCreateCredential)
 
 	// ---- 密钥操作 ----
 	s.mux.HandleFunc("POST /api/cards/{card_uuid}/keygen", s.handleKeyGen)
@@ -186,6 +195,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/pki/certs/{uuid}/import-to-card", s.handleImportPKICertToCard)
 	s.mux.HandleFunc("POST /api/pki/certs/{uuid}/revoke", s.handleRevokePKICert)
 
+	// 证书传播（同步到操作系统证书存储）
+	s.mux.HandleFunc("POST /api/pki/certs/propagate", s.handlePropagateCerts)
+
 	// ---- 应用指标 ----
 	s.mux.HandleFunc("GET /metrics", s.metrics.Handler())
 
@@ -193,6 +205,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/cloud/sync", s.handleCloudSync)
 	s.mux.HandleFunc("GET /api/cloud/status", s.handleCloudStatus)
 	s.mux.HandleFunc("POST /api/cloud/deliver", s.handleCloudDeliver)
+
+	// ---- Settings ----
+	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	s.mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 
 	// ---- 前端管理界面（静态文件）----
 	// 所有非 /api/ 路径的请求都由前端 SPA 处理
@@ -436,4 +452,62 @@ func (s *Server) notifySlotChanged(reason string) {
 		return
 	}
 	go s.ipcBroadcast(reason)
+}
+
+// SetCertPropagator 注入证书传播器。
+// 由 cmd/client-card/main.go 在启动时调用。
+func (s *Server) SetCertPropagator(p certprop.Propagator) {
+	s.certPropagator = p
+}
+
+// propagateCertAdd 在证书新增/导入后，异步将证书传播到系统存储。
+func (s *Server) propagateCertAdd(certPEM, certUUID, cardUUID, commonName, keyType string, hasKey bool) {
+	if s.certPropagator == nil {
+		return
+	}
+	go func() {
+		err := s.certPropagator.Add(context.Background(), certprop.CertInfo{
+			UUID:       certUUID,
+			CardUUID:   cardUUID,
+			CommonName: commonName,
+			CertPEM:    certPEM,
+			HasKey:     hasKey,
+			KeyType:    keyType,
+		})
+		if err != nil {
+			slog.Warn("证书传播到系统存储失败", "uuid", certUUID, "error", err)
+		}
+	}()
+}
+
+// propagateCertRemove 在证书删除后，异步从系统存储中移除。
+func (s *Server) propagateCertRemove(certUUID string) {
+	if s.certPropagator == nil {
+		return
+	}
+	go func() {
+		err := s.certPropagator.Remove(context.Background(), certUUID)
+		if err != nil {
+			slog.Warn("从系统存储移除证书失败", "uuid", certUUID, "error", err)
+		}
+	}()
+}
+
+// propagateCertAddDER 在智能卡证书导入后，异步将 DER 格式证书传播到系统存储。
+func (s *Server) propagateCertAddDER(certDER []byte, certUUID, cardUUID, keyType string, hasKey bool) {
+	if s.certPropagator == nil {
+		return
+	}
+	go func() {
+		err := s.certPropagator.Add(context.Background(), certprop.CertInfo{
+			UUID:     certUUID,
+			CardUUID: cardUUID,
+			CertDER:  certDER,
+			HasKey:   hasKey,
+			KeyType:  keyType,
+		})
+		if err != nil {
+			slog.Warn("证书传播到系统存储失败", "uuid", certUUID, "error", err)
+		}
+	}()
 }

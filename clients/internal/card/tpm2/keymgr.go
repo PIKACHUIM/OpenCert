@@ -33,8 +33,8 @@ func NewKeyManager(certRepo *storage.CertRepo, cardRepo *storage.CardRepo, tpmPr
 }
 
 // CreateCard 创建一张新的 TPM2 智能卡。
-// 主密钥先被 TPM Seal，再被用户密码加密存储。
-func (m *KeyManager) CreateCard(ctx context.Context, userUUID, cardName, userPassword, cardPassword, remark string) (*storage.Card, error) {
+// 主密钥先被 TPM Seal，再被 PIN 加密存储。
+func (m *KeyManager) CreateCard(ctx context.Context, userUUID, cardName, pin, cardPassword, remark string) (*storage.Card, error) {
 	// 1. 生成 32 字节随机主密钥
 	masterKey, err := cryptoutil.GenerateKey()
 	if err != nil {
@@ -56,12 +56,12 @@ func (m *KeyManager) CreateCard(ctx context.Context, userUUID, cardName, userPas
 		Remark:   remark,
 	}
 
-	// 3. 用用户密码加密 TPM blob（而非直接加密主密钥）
-	userEntry, err := encryptTPMBlob(tpmBlob, []byte(userPassword), "user", userUUID)
+	// 3. 用 PIN 加密 TPM blob
+	pinEntry, err := encryptTPMBlob(tpmBlob, []byte(pin), "pin", "")
 	if err != nil {
-		return nil, fmt.Errorf("加密 TPM blob（用户密码）失败: %w", err)
+		return nil, fmt.Errorf("加密 TPM blob（PIN）失败: %w", err)
 	}
-	card.CardKeys = append(card.CardKeys, *userEntry)
+	card.CardKeys = append(card.CardKeys, *pinEntry)
 
 	// 4. 如果设置了卡片密码，额外加密一份
 	if cardPassword != "" {
@@ -81,9 +81,9 @@ func (m *KeyManager) CreateCard(ctx context.Context, userUUID, cardName, userPas
 
 // GenerateKeyPair 在指定 TPM2 卡片中生成密钥对并存储。
 // masterKey 是已解锁的卡片主密钥（通过 TPM Unseal 获得）。
-func (m *KeyManager) GenerateKeyPair(ctx context.Context, req local.KeyGenRequest, masterKey []byte) (*local.KeyGenResult, error) {
+func (m *KeyManager) GenerateKeyPair(ctx context.Context, req local.KeyGenRequest, masterKey []byte, card *storage.Card) (*local.KeyGenResult, error) {
 	// 复用 local.KeyManager 的密钥生成逻辑（私钥加密方式相同）
-	return m.localMgr.GenerateKeyPair(ctx, req, masterKey)
+	return m.localMgr.GenerateKeyPair(ctx, req, masterKey, card)
 }
 
 // ImportPrivateKey 导入私钥到 TPM2 卡片。

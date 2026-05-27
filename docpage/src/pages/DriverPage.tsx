@@ -278,7 +278,7 @@ pkcs11-tool --module pkcs11-mock.dll --test`}</pre>
             <td><span className="badge badge-blue">低安全</span></td>
             <td>本地 DB + 密码加密</td>
             <td>❌ 纯软件加密</td>
-            <td>❌</td>
+            <td>✅</td>
             <td>✅</td>
             <td>可选</td>
           </tr>

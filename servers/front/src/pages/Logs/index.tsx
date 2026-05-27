@@ -18,8 +18,8 @@ const Logs: React.FC = () => {
     setLoading(true);
     try {
       const res = await getLogs({ level: filterLevel, page: p, page_size: 20 });
-      setLogs(res.items || []);
-      setTotal(res.total);
+      setLogs(Array.isArray(res?.items) ? res.items : []);
+      setTotal(res?.total ?? 0);
     } catch (e: any) { message.error(e.message); }
     finally { setLoading(false); }
   };

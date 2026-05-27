@@ -28,7 +28,7 @@ const TOTPPage: React.FC = () => {
 
   useEffect(() => {
     getCards({ page: 1, page_size: 100 }).then(r => {
-      const list = r.items ?? [];
+      const list = Array.isArray(r?.items) ? r.items : [];
       setCards(list);
       if (list.length > 0 && !selectedCardUUID) {
         setSelectedCardUUID(list[0].uuid);
@@ -41,7 +41,8 @@ const TOTPPage: React.FC = () => {
     setLoading(true);
     try {
       const data = await getTOTPList(selectedCardUUID);
-      setEntries((data || []).map((e: TOTPEntry) => ({ ...e })));
+      const items = Array.isArray(data) ? data : [];
+      setEntries(items.map((e: TOTPEntry) => ({ ...e })));
     } catch (err: any) {
       message.error(err.message || '加载 TOTP 列表失败');
     } finally {

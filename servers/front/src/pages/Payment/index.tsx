@@ -54,12 +54,13 @@ const Payment: React.FC = () => {
         listPaymentPlugins().catch(() => []),
       ]);
       if (bal) setBalance(bal);
-      setOrders(res.items || []);
-      setOrdersTotal(res.total);
-      setPlugins(plugs);
+      setOrders(Array.isArray(res?.items) ? res.items : []);
+      setOrdersTotal(res?.total ?? 0);
+      const plugArr = Array.isArray(plugs) ? plugs : Array.isArray((plugs as any)?.items) ? (plugs as any).items : [];
+      setPlugins(plugArr);
       if (role === 'admin') {
         const refunds = await listPaymentOrders({ page: 1, page_size: 20, status: 'refunding' }).catch(() => ({ items: [] }));
-        setPendingRefunds(refunds.items || []);
+        setPendingRefunds(Array.isArray(refunds?.items) ? refunds.items : []);
       }
     } catch (e: any) { message.error(e.message); }
     finally { setLoading(false); }
@@ -209,8 +210,8 @@ const Payment: React.FC = () => {
           </Form.Item>
           <Form.Item label="支付渠道" name="channel" rules={[{ required: true }]}>
             <Select placeholder="请选择支付渠道">
-              {plugins.filter(p => p.enabled).map(p => <Option key={p.uuid} value={p.plugin_type}>{p.name}</Option>)}
-              {plugins.length === 0 && <Option value="default">默认渠道</Option>}
+              {(Array.isArray(plugins) ? plugins : []).filter(p => p.enabled).map(p => <Option key={p.uuid} value={p.plugin_type}>{p.name}</Option>)}
+              {(!Array.isArray(plugins) || plugins.length === 0) && <Option value="default">默认渠道</Option>}
             </Select>
           </Form.Item>
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>

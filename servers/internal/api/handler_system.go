@@ -1,14 +1,27 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/globaltrusts/server-card/internal/acme"
 	"github.com/globaltrusts/server-card/internal/revocation"
 )
+
+// base64URLDecode 宽松解码 base64url 字符串（自动补 padding，兼容 RFC 8555 载荷）。
+func base64URLDecode(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	// 先尝试无 padding
+	if b, err := base64.RawURLEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	// 退回带 padding 版本
+	return base64.URLEncoding.DecodeString(s)
+}
 
 // ---- ACME 处理器 ----
 
@@ -102,6 +115,7 @@ func (s *Server) handleACMENewAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleACMENewOrder 创建 ACME 订单（RFC 8555）。
+// 同时为每个 identifier 自动创建 Authorization，并为每个 Authorization 创建 http-01 和 dns-01 挑战。
 func (s *Server) handleACMENewOrder(w http.ResponseWriter, r *http.Request) {
 	if s.acmeSvc == nil {
 		writeError(w, http.StatusServiceUnavailable, "ACME 服务未启用")
@@ -109,32 +123,72 @@ func (s *Server) handleACMENewOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	path := r.PathValue("path")
 
-	var payload map[string]interface{}
+	var payload struct {
+		Identifiers []struct {
+			Type  string `json:"type"`
+			Value string `json:"value"`
+		} `json:"identifiers"`
+		NotBefore string `json:"notBefore"`
+		NotAfter  string `json:"notAfter"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-
-	identifiers := "[]"
-	if ids, ok := payload["identifiers"]; ok {
-		if idsJSON, err := json.Marshal(ids); err == nil {
-			identifiers = string(idsJSON)
-		}
+	if len(payload.Identifiers) == 0 {
+		writeError(w, http.StatusBadRequest, "identifiers 不能为空")
+		return
 	}
 
+	idsJSON, _ := json.Marshal(payload.Identifiers)
 	baseURL := fmt.Sprintf("%s://%s/acme/%s", scheme(r), r.Host, path)
 	order := &acme.Order{
 		AccountUUID: "unknown",
-		Identifiers: identifiers,
-		FinalizeURL: baseURL + "/finalize/new",
+		Identifiers: string(idsJSON),
+		FinalizeURL: "", // 等创建后拼接
 	}
 	if err := s.acmeSvc.CreateOrder(r.Context(), order); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 回填 finalize URL（包含订单 UUID）并写回数据库
+	order.FinalizeURL = fmt.Sprintf("%s/finalize/%s", baseURL, order.UUID)
+	_, _ = s.db.ExecContext(r.Context(),
+		`UPDATE acme_orders SET finalize_url = ? WHERE uuid = ?`,
+		order.FinalizeURL, order.UUID,
+	)
+
+	// 为每个 identifier 创建 Authorization + 两种挑战
+	authzURLs := make([]string, 0, len(payload.Identifiers))
+	for _, id := range payload.Identifiers {
+		idJSON, _ := json.Marshal(id)
+		authz := &acme.Authorization{
+			OrderUUID:  order.UUID,
+			Identifier: string(idJSON),
+		}
+		if err := s.acmeSvc.CreateAuthorization(r.Context(), authz); err != nil {
+			writeError(w, http.StatusInternalServerError, "创建授权失败: "+err.Error())
+			return
+		}
+		for _, chType := range []string{"http-01", "dns-01"} {
+			ch := &acme.Challenge{AuthzUUID: authz.UUID, Type: chType}
+			if err := s.acmeSvc.CreateChallenge(r.Context(), ch); err != nil {
+				writeError(w, http.StatusInternalServerError, "创建挑战失败: "+err.Error())
+				return
+			}
+		}
+		authzURLs = append(authzURLs, fmt.Sprintf("%s/authz/%s", baseURL, authz.UUID))
+	}
 
 	w.Header().Set("Location", fmt.Sprintf("%s/order/%s", baseURL, order.UUID))
-	writeJSON(w, http.StatusCreated, order)
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"uuid":           order.UUID,
+		"status":         order.Status,
+		"identifiers":    payload.Identifiers,
+		"authorizations": authzURLs,
+		"finalize":       order.FinalizeURL,
+		"expires":        order.Expires,
+	})
 }
 
 // handleACMEGetAccount 获取 ACME 账户信息。
@@ -167,17 +221,61 @@ func (s *Server) handleACMEGetOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, order)
 }
 
-// handleACMEGetAuthorization 获取 ACME 授权信息。
+// handleACMEGetAuthorization 获取 ACME 授权信息（含关联的挑战列表）。
 func (s *Server) handleACMEGetAuthorization(w http.ResponseWriter, r *http.Request) {
 	if s.acmeSvc == nil {
 		writeError(w, http.StatusServiceUnavailable, "ACME 服务未启用")
 		return
 	}
+	path := r.PathValue("path")
 	id := r.PathValue("id")
-	// 简化实现：返回授权信息
+
+	// 读取授权
+	var identifierJSON, status string
+	var expires time.Time
+	var createdAt time.Time
+	err := s.db.QueryRowContext(r.Context(),
+		`SELECT identifier, status, expires, created_at FROM acme_authorizations WHERE uuid = ?`, id,
+	).Scan(&identifierJSON, &status, &expires, &createdAt)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "授权不存在")
+		return
+	}
+	var identifier interface{}
+	_ = json.Unmarshal([]byte(identifierJSON), &identifier)
+
+	// 读取关联挑战
+	rows, err := s.db.QueryContext(r.Context(),
+		`SELECT uuid, type, token, status FROM acme_challenges WHERE authz_uuid = ?`, id,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	baseURL := fmt.Sprintf("%s://%s/acme/%s", scheme(r), r.Host, path)
+	var challenges []map[string]interface{}
+	for rows.Next() {
+		var chUUID, chType, chToken, chStatus string
+		if err := rows.Scan(&chUUID, &chType, &chToken, &chStatus); err != nil {
+			continue
+		}
+		challenges = append(challenges, map[string]interface{}{
+			"uuid":   chUUID,
+			"type":   chType,
+			"token":  chToken,
+			"status": chStatus,
+			"url":    fmt.Sprintf("%s/chall/%s", baseURL, chUUID),
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"uuid":   id,
-		"status": "pending",
+		"uuid":       id,
+		"status":     status,
+		"identifier": identifier,
+		"expires":    expires,
+		"challenges": challenges,
 	})
 }
 
@@ -277,25 +375,21 @@ func (s *Server) handleACMEFinalize(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, order)
 }
 
-// handleACMEGetCertificate 下载 ACME 证书。
+// handleACMEGetCertificate 下载 ACME 证书（返回 PEM 证书链）。
 func (s *Server) handleACMEGetCertificate(w http.ResponseWriter, r *http.Request) {
 	if s.acmeSvc == nil {
 		writeError(w, http.StatusServiceUnavailable, "ACME 服务未启用")
 		return
 	}
 	id := r.PathValue("id")
-	order, err := s.acmeSvc.GetOrder(r.Context(), id)
+	certPEM, err := s.acmeSvc.GetCertificateForOrder(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if order.CertURL == "" {
-		writeError(w, http.StatusNotFound, "证书尚未签发")
-		return
-	}
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "# Certificate for order %s\n", id)
+	_, _ = w.Write([]byte(certPEM))
 }
 
 // ---- CT 处理器 ----

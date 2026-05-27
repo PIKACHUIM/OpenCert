@@ -29,10 +29,16 @@ type CreateCardRequest struct {
 	CardName        string `json:"card_name"`
 	Remark          string `json:"remark"`
 	StorageZoneUUID string `json:"storage_zone_uuid"` // 存储区域 UUID（可选）
-	PIN             string `json:"pin"`              // 初始 PIN（可选）
-	PUK             string `json:"puk"`              // 初始 PUK（可选）
-	AdminKey        string `json:"admin_key"`        // Admin Key（可选）
-	PINRetries      int    `json:"pin_retries"`      // PIN 错误最大次数，默认 3
+	PIN             string `json:"pin"`               // 初始 PIN（可选）
+	PUK             string `json:"puk"`               // 初始 PUK（可选）
+	AdminKey        string `json:"admin_key"`         // Admin Key（可选）
+	PINRetries      int    `json:"pin_retries"`       // PIN 错误最大次数，默认 3
+
+	// 高安全等级卡片所需字段
+	SlotType         string            `json:"slot_type,omitempty"`         // software/tpmv2/apple_t2/apple_se
+	SecurityLevel    string            `json:"security_level,omitempty"`    // low/medium/high
+	Attestation      *card.Attestation `json:"attestation,omitempty"`       // 客户端 EK 认证
+	AttestationNonce string            `json:"attestation_nonce,omitempty"` // 服务端下发的 nonce
 }
 
 func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
@@ -48,14 +54,18 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c, err := s.cardSvc.CreateCard(r.Context(), &card.CreateCardRequest{
-		UserUUID:        claims.UserUUID,
-		CardName:        req.CardName,
-		Remark:          req.Remark,
-		StorageZoneUUID: req.StorageZoneUUID,
-		PIN:             req.PIN,
-		PUK:             req.PUK,
-		AdminKey:        req.AdminKey,
-		PINRetries:      req.PINRetries,
+		UserUUID:         claims.UserUUID,
+		CardName:         req.CardName,
+		Remark:           req.Remark,
+		StorageZoneUUID:  req.StorageZoneUUID,
+		PIN:              req.PIN,
+		PUK:              req.PUK,
+		AdminKey:         req.AdminKey,
+		PINRetries:       req.PINRetries,
+		SlotType:         card.SlotType(req.SlotType),
+		SecurityLevel:    card.SecurityLevel(req.SecurityLevel),
+		Attestation:      req.Attestation,
+		AttestationNonce: req.AttestationNonce,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

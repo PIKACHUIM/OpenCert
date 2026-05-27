@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/globaltrusts/server-card/internal/auth"
+	"github.com/globaltrusts/server-card/internal/storage"
 )
 
 // ---- 云端 TOTP 处理器 ----
@@ -88,7 +89,7 @@ func (s *Server) handleCreateUserTOTP(w http.ResponseWriter, r *http.Request) {
 	_, err = s.db.ExecContext(r.Context(),
 		`INSERT INTO user_totps (uuid, user_uuid, issuer, account, secret_enc, algorithm, digits, period, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		totpUUID, claims.UserUUID, req.Issuer, req.Account, secretEnc,
+		totpUUID, claims.UserUUID, req.Issuer, req.Account, storage.Base64Bytes(secretEnc),
 		req.Algorithm, req.Digits, req.Period, time.Now(), time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -101,7 +102,7 @@ func (s *Server) handleGetTOTPCode(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
 	totpUUID := r.PathValue("uuid")
 
-	var secretEnc []byte
+	var secretEnc storage.Base64Bytes
 	var algorithm string
 	var digits, period int
 	var userUUID string
@@ -214,7 +215,7 @@ func (s *Server) verifyUserTOTPCode(ctx context.Context, userUUID, code string) 
 		return false
 	}
 
-	var secretEnc []byte
+	var secretEnc storage.Base64Bytes
 	var algorithm string
 	var digits, period int
 	if err := rows.Scan(&secretEnc, &algorithm, &digits, &period); err != nil {

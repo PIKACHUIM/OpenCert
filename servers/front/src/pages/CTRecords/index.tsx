@@ -18,8 +18,8 @@ const CTRecords: React.FC = () => {
     setLoading(true);
     try {
       const res = await listCTEntries({ cert_hash: certHash || undefined, cert_uuid: certUUID || undefined, page: p, page_size: 20 });
-      setData(res.items || []);
-      setTotal(res.total);
+      setData(Array.isArray(res?.items) ? res.items : []);
+      setTotal(res?.total ?? 0);
     } catch (e: any) { message.error(e.message || '加载失败'); }
     finally { setLoading(false); }
   };

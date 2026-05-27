@@ -178,9 +178,11 @@ func (s *Service) CreateExtensionTemplate(ctx context.Context, t *storage.Extens
 		t.VerifyExpiresDays = 90
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO extension_templates (uuid, name, max_dns, max_email, max_ip, max_uri, require_dns_verify, require_email_verify, verify_expires_days, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.UUID, t.Name, t.MaxDNS, t.MaxEmail, t.MaxIP, t.MaxURI,
+		`INSERT INTO extension_templates (uuid, name, max_dns, max_email, max_ip, max_uri, max_rid, max_other,
+		 allow_uri, allow_rid, allow_other, require_dns_verify, require_email_verify, verify_expires_days, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.UUID, t.Name, t.MaxDNS, t.MaxEmail, t.MaxIP, t.MaxURI, t.MaxRID, t.MaxOther,
+		boolToInt(t.AllowURI), boolToInt(t.AllowRID), boolToInt(t.AllowOther),
 		boolToInt(t.RequireDNSVerify), boolToInt(t.RequireEmailVerify), t.VerifyExpiresDays,
 		t.CreatedAt, t.UpdatedAt,
 	)
@@ -190,7 +192,8 @@ func (s *Service) CreateExtensionTemplate(ctx context.Context, t *storage.Extens
 // ListExtensionTemplates 查询所有扩展信息模板。
 func (s *Service) ListExtensionTemplates(ctx context.Context) ([]*storage.ExtensionTemplate, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT uuid, name, max_dns, max_email, max_ip, max_uri, require_dns_verify, require_email_verify, verify_expires_days, created_at, updated_at
+		`SELECT uuid, name, max_dns, max_email, max_ip, max_uri, max_rid, max_other,
+		 allow_uri, allow_rid, allow_other, require_dns_verify, require_email_verify, verify_expires_days, created_at, updated_at
 		 FROM extension_templates ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -201,13 +204,16 @@ func (s *Service) ListExtensionTemplates(ctx context.Context) ([]*storage.Extens
 	var templates []*storage.ExtensionTemplate
 	for rows.Next() {
 		t := &storage.ExtensionTemplate{}
-		var dnsVerify, emailVerify int
-		if err := rows.Scan(&t.UUID, &t.Name, &t.MaxDNS, &t.MaxEmail, &t.MaxIP, &t.MaxURI,
-			&dnsVerify, &emailVerify, &t.VerifyExpiresDays, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		var dnsVerify, emailVerify, allowURI, allowRID, allowOther int
+		if err := rows.Scan(&t.UUID, &t.Name, &t.MaxDNS, &t.MaxEmail, &t.MaxIP, &t.MaxURI, &t.MaxRID, &t.MaxOther,
+			&allowURI, &allowRID, &allowOther, &dnsVerify, &emailVerify, &t.VerifyExpiresDays, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		t.RequireDNSVerify = dnsVerify == 1
 		t.RequireEmailVerify = emailVerify == 1
+		t.AllowURI = allowURI == 1
+		t.AllowRID = allowRID == 1
+		t.AllowOther = allowOther == 1
 		templates = append(templates, t)
 	}
 	return templates, rows.Err()
@@ -216,17 +222,21 @@ func (s *Service) ListExtensionTemplates(ctx context.Context) ([]*storage.Extens
 // GetExtensionTemplate 按 UUID 查询扩展信息模板。
 func (s *Service) GetExtensionTemplate(ctx context.Context, tmplUUID string) (*storage.ExtensionTemplate, error) {
 	t := &storage.ExtensionTemplate{}
-	var dnsVerify, emailVerify int
+	var dnsVerify, emailVerify, allowURI, allowRID, allowOther int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT uuid, name, max_dns, max_email, max_ip, max_uri, require_dns_verify, require_email_verify, verify_expires_days, created_at, updated_at
+		`SELECT uuid, name, max_dns, max_email, max_ip, max_uri, max_rid, max_other,
+		 allow_uri, allow_rid, allow_other, require_dns_verify, require_email_verify, verify_expires_days, created_at, updated_at
 		 FROM extension_templates WHERE uuid = ?`, tmplUUID,
-	).Scan(&t.UUID, &t.Name, &t.MaxDNS, &t.MaxEmail, &t.MaxIP, &t.MaxURI,
-		&dnsVerify, &emailVerify, &t.VerifyExpiresDays, &t.CreatedAt, &t.UpdatedAt)
+	).Scan(&t.UUID, &t.Name, &t.MaxDNS, &t.MaxEmail, &t.MaxIP, &t.MaxURI, &t.MaxRID, &t.MaxOther,
+		&allowURI, &allowRID, &allowOther, &dnsVerify, &emailVerify, &t.VerifyExpiresDays, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	t.RequireDNSVerify = dnsVerify == 1
 	t.RequireEmailVerify = emailVerify == 1
+	t.AllowURI = allowURI == 1
+	t.AllowRID = allowRID == 1
+	t.AllowOther = allowOther == 1
 	return t, nil
 }
 
@@ -392,15 +402,20 @@ func (s *Service) RenewCert(ctx context.Context, cert *storage.Certificate, vali
 
 	// 创建新证书记录（复制原证书的基本信息，更新有效期）
 	newCert := &storage.Certificate{
-		CardUUID:         cert.CardUUID,
-		CertType:         cert.CertType,
-		KeyType:          cert.KeyType,
-		PrivateData:      cert.PrivateData, // 复用原私钥
-		Remark:           cert.Remark + " (续期)",
-		CAUUID:           cert.CAUUID,
-		IssuanceTmplUUID: cert.IssuanceTmplUUID,
-		StoragePolicy:    cert.StoragePolicy,
-		RevocationStatus: "active",
+		CardUUID:            cert.CardUUID,
+		CertType:            cert.CertType,
+		KeyType:             cert.KeyType,
+		PrivateData:         cert.PrivateData, // 复用原私钥
+		Remark:              cert.Remark + " (续期)",
+		CAUUID:              cert.CAUUID,
+		IssuanceTmplUUID:    cert.IssuanceTmplUUID,
+		StoragePolicy:       cert.StoragePolicy,
+		SANDNS:              cert.SANDNS,
+		SANIP:               cert.SANIP,
+		SANEmail:            cert.SANEmail,
+		SANURI:              cert.SANURI,
+		CertificatePolicies: cert.CertificatePolicies,
+		RevocationStatus:    "active",
 	}
 
 	// 记录原证书的主体信息（用于日志）

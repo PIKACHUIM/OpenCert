@@ -27,7 +27,8 @@ const Users: React.FC = () => {
     setLoading(true);
     try {
       const res = await getUsers({ page: p, page_size: 10 });
-      setUsers(res?.items ?? []);
+      const items = res?.items;
+      setUsers(Array.isArray(items) ? items : []);
       setTotal(res?.total ?? 0);
     } catch (e: any) {
       message.error(e.message);

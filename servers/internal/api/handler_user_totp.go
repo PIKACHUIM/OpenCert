@@ -119,8 +119,8 @@ func (s *Server) handleGenerateLoginTOTP(w http.ResponseWriter, r *http.Request)
 	setPendingBinding(claims.UserUUID, secret)
 
 	issuer := "PKCS11Driver"
-	if s.cfg != nil && s.cfg.Email.FromName != "" {
-		issuer = s.cfg.Email.FromName
+	if s.cfg != nil && s.cfg.SMTP.FromName != "" {
+		issuer = s.cfg.SMTP.FromName
 	}
 	otpauthURL := buildOTPAuthURL(issuer, user.Username, secret)
 

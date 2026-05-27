@@ -349,7 +349,7 @@ func (s *Server) handleDeleteStorageZone(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleListOIDs(w http.ResponseWriter, r *http.Request) {
 	usageType := r.URL.Query().Get("usage_type")
-	query := `SELECT uuid, oid_value, name, description, usage_type, asn1_type, created_at, updated_at FROM custom_oids`
+	query := `SELECT uuid, oid_value, name, description, usage_type, asn1_type, is_critical, created_at, updated_at FROM custom_oids`
 	var args []interface{}
 	if usageType != "" {
 		query += ` WHERE usage_type = ?`
@@ -365,10 +365,12 @@ func (s *Server) handleListOIDs(w http.ResponseWriter, r *http.Request) {
 	var oids []storage.CustomOID
 	for rows.Next() {
 		var o storage.CustomOID
-		if err := rows.Scan(&o.UUID, &o.OIDValue, &o.Name, &o.Description, &o.UsageType, &o.ASN1Type, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		var isCritical int
+		if err := rows.Scan(&o.UUID, &o.OIDValue, &o.Name, &o.Description, &o.UsageType, &o.ASN1Type, &isCritical, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		o.IsCritical = isCritical == 1
 		oids = append(oids, o)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"oids": oids, "total": len(oids)})
@@ -391,8 +393,8 @@ func (s *Server) handleCreateOID(w http.ResponseWriter, r *http.Request) {
 	o.CreatedAt = time.Now()
 	o.UpdatedAt = time.Now()
 	_, err := s.db.ExecContext(r.Context(),
-		`INSERT INTO custom_oids (uuid, oid_value, name, description, usage_type, asn1_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		o.UUID, o.OIDValue, o.Name, o.Description, o.UsageType, o.ASN1Type, o.CreatedAt, o.UpdatedAt)
+		`INSERT INTO custom_oids (uuid, oid_value, name, description, usage_type, asn1_type, is_critical, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		o.UUID, o.OIDValue, o.Name, o.Description, o.UsageType, o.ASN1Type, boolToIntLocal(o.IsCritical), o.CreatedAt, o.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

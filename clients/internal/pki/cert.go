@@ -5,31 +5,53 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net"
+	"net/url"
 	"strings"
 	"time"
+	"unicode/utf16"
 
+	cryptoutil "github.com/globaltrusts/client-card/internal/crypto"
 	"github.com/globaltrusts/client-card/internal/storage"
 )
 
 // ---- 自签名证书（基于 CSR）----
 
+// CertExtensions 证书扩展选项（签发时可覆盖 CSR 中的设置）。
+type CertExtensions struct {
+	KeyUsage         []string `json:"key_usage,omitempty"`          // digitalSignature, keyEncipherment, ...
+	ExtKeyUsage      []string `json:"ext_key_usage,omitempty"`      // serverAuth, clientAuth, ...
+	IsCA             *bool    `json:"is_ca,omitempty"`              // 基本约束：是否 CA
+	PathLenConstraint *int    `json:"path_len_constraint,omitempty"` // 基本约束：CA 链最大深度
+	CRLURLs          []string `json:"crl_urls,omitempty"`           // CRL 分发点
+	OCSPURLs         []string `json:"ocsp_urls,omitempty"`          // OCSP 响应者地址
+	AIAURLs          []string `json:"aia_urls,omitempty"`           // AIA（颁发者信息访问）地址
+	CSPName          string   `json:"csp_name,omitempty"`           // CSP（Cryptographic Service Provider）名称
+}
+
 // SelfSignFromCSRRequest 是通过已有 CSR 生成自签名证书的请求。
 type SelfSignFromCSRRequest struct {
-	CSRUUID      string `json:"csr_uuid"`
-	ValidityDays int    `json:"validity_days"`
-	Remark       string `json:"remark"`
+	CSRUUID      string          `json:"csr_uuid"`
+	ValidityDays int             `json:"validity_days"`
+	Remark       string          `json:"remark"`
+	CardPassword string          `json:"card_password"`  // smartcard 模式下需要卡片密码解密私钥
+	Extensions   *CertExtensions `json:"extensions,omitempty"` // 证书扩展选项
 }
 
 // SelfSignFromCSR 使用已有 CSR 的主体信息和密钥对生成自签名证书，并持久化。
-// 要求 CSR 在数据库中有对应私钥（key_storage=database）。
+// 支持 database 和 smartcard 两种密钥存储模式。
 func SelfSignFromCSR(ctx context.Context,
 	csrRepo *storage.CSRRepo,
-	certRepo *storage.PKICertRepo,
+	pkiCertRepo *storage.PKICertRepo,
+	cardRepo *storage.CardRepo,
+	scCertRepo *storage.CertRepo,
 	req *SelfSignFromCSRRequest,
 ) (*storage.PKICert, error) {
 	// 加载 CSR
@@ -41,7 +63,7 @@ func SelfSignFromCSR(ctx context.Context,
 		return nil, fmt.Errorf("CSR 不存在: %s", req.CSRUUID)
 	}
 	if !csrRecord.HasPrivateKey || len(csrRecord.PrivateKeyEnc) == 0 {
-		return nil, fmt.Errorf("该 CSR 没有存储私钥（仅 database 模式支持自签名），请先生成一个存储到数据库的 CSR")
+		return nil, fmt.Errorf("该 CSR 没有存储私钥，请先生成一个包含私钥的 CSR")
 	}
 
 	// 解析 CSR
@@ -57,10 +79,27 @@ func SelfSignFromCSR(ctx context.Context,
 		return nil, fmt.Errorf("CSR 签名验证失败: %w", err)
 	}
 
-	// 解析私钥
-	privKey, err := ParsePrivateKeyFromPEM(csrRecord.PrivateKeyEnc)
-	if err != nil {
-		return nil, fmt.Errorf("解析私钥失败: %w", err)
+	// 根据密钥存储模式解析私钥
+	var privKey crypto.PrivateKey
+	switch csrRecord.KeyStorage {
+	case storage.KeyStorageSmartcard:
+		// 智能卡模式：PrivateKeyEnc 存储的是智能卡证书记录的 UUID
+		if req.CardPassword == "" {
+			return nil, fmt.Errorf("智能卡模式需要提供卡片密码")
+		}
+		if cardRepo == nil || scCertRepo == nil {
+			return nil, fmt.Errorf("智能卡模式需要 cardRepo 和 certRepo")
+		}
+		privKey, err = decryptSmartcardPrivKey(ctx, cardRepo, scCertRepo, csrRecord, req.CardPassword)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		// database / imported 模式：PrivateKeyEnc 存储的是 PEM 格式私钥
+		privKey, err = ParsePrivateKeyFromPEM(csrRecord.PrivateKeyEnc)
+		if err != nil {
+			return nil, fmt.Errorf("解析私钥失败: %w", err)
+		}
 	}
 
 	if req.ValidityDays <= 0 {
@@ -91,6 +130,9 @@ func SelfSignFromCSR(ctx context.Context,
 		EmailAddresses:        csr.EmailAddresses,
 	}
 
+	// 应用证书扩展选项
+	applyCertExtensions(template, req.Extensions)
+
 	// 自签名：issuer = subject，用自身私钥签名
 	certDER, err := x509.CreateCertificate(rand.Reader, template, template, csr.PublicKey, privKey.(crypto.Signer))
 	if err != nil {
@@ -119,10 +161,77 @@ func SelfSignFromCSR(ctx context.Context,
 		Remark:        req.Remark,
 	}
 
-	if err := certRepo.Create(ctx, pkiCert); err != nil {
+	if err := pkiCertRepo.Create(ctx, pkiCert); err != nil {
 		return nil, err
 	}
+
+	// 如果是智能卡模式，将签发的证书 PEM 写入智能卡证书记录的 CertContent
+	if csrRecord.KeyStorage == storage.KeyStorageSmartcard && scCertRepo != nil {
+		scCertUUID := string(csrRecord.PrivateKeyEnc)
+		scCert, err := scCertRepo.GetByUUID(ctx, scCertUUID)
+		if err == nil && scCert != nil {
+			scCert.CertContent = certPEM
+			_ = scCertRepo.Update(ctx, scCert)
+		}
+	}
+
 	return pkiCert, nil
+}
+
+// decryptSmartcardPrivKey 从智能卡解密私钥。
+// CSR 的 PrivateKeyEnc 存储的是智能卡证书记录的 UUID。
+func decryptSmartcardPrivKey(ctx context.Context, cardRepo *storage.CardRepo, certRepo *storage.CertRepo, csrRecord *storage.CSRRecord, cardPassword string) (crypto.PrivateKey, error) {
+	// 获取卡片
+	card, err := cardRepo.GetByUUID(ctx, csrRecord.CardUUID)
+	if err != nil || card == nil {
+		return nil, fmt.Errorf("卡片不存在: %s", csrRecord.CardUUID)
+	}
+
+	// 用卡片密码解锁主密钥
+	masterKey, err := unlockMasterKeyByPassword(card, cardPassword)
+	if err != nil {
+		return nil, fmt.Errorf("卡片密码错误: %w", err)
+	}
+	defer cryptoutil.ZeroBytes(masterKey)
+
+	// PrivateKeyEnc 存储的是智能卡证书记录的 UUID
+	scCertUUID := string(csrRecord.PrivateKeyEnc)
+	scCert, err := certRepo.GetByUUID(ctx, scCertUUID)
+	if err != nil || scCert == nil {
+		return nil, fmt.Errorf("智能卡证书记录不存在: %s", scCertUUID)
+	}
+
+	// 解密私钥
+	if len(scCert.TempKeySalt) == 0 || len(scCert.TempKeyEnc) == 0 || len(scCert.PrivateData) == 0 {
+		return nil, fmt.Errorf("智能卡证书记录缺少加密私钥数据")
+	}
+
+	tempKeyAESKey := cryptoutil.HMACSHA256(masterKey, scCert.TempKeySalt)
+	tempKey, err := cryptoutil.DecryptAES256GCM(tempKeyAESKey, scCert.TempKeyEnc)
+	if err != nil {
+		return nil, fmt.Errorf("解密临时密钥失败: %w", err)
+	}
+	defer cryptoutil.ZeroBytes(tempKey)
+
+	privDER, err := cryptoutil.DecryptAES256GCM(tempKey, scCert.PrivateData)
+	if err != nil {
+		return nil, fmt.Errorf("解密私钥失败: %w", err)
+	}
+
+	// 解析 DER 格式私钥
+	key, parseErr := x509.ParsePKCS8PrivateKey(privDER)
+	if parseErr == nil {
+		return key, nil
+	}
+	rsaKey, parseErr := x509.ParsePKCS1PrivateKey(privDER)
+	if parseErr == nil {
+		return rsaKey, nil
+	}
+	ecKey, parseErr := x509.ParseECPrivateKey(privDER)
+	if parseErr == nil {
+		return ecKey, nil
+	}
+	return nil, fmt.Errorf("无法解析智能卡私钥格式")
 }
 
 // ---- CSR 服务（持久化版本）----
@@ -139,18 +248,21 @@ type CreateCSRRequest struct {
 	KeyType      string            `json:"key_type"`
 	KeyStorage   storage.KeyStorage `json:"key_storage"` // database / smartcard
 	CardUUID     string            `json:"card_uuid"`
+	CardPassword string            `json:"card_password"` // smartcard 模式下需要卡片密码
 	SANDN        string            `json:"san_dns"`
 	SANIP        string            `json:"san_ip"`
 	SANEmail     string            `json:"san_email"`
 	SANURI       string            `json:"san_uri"`
 	KeyUsage     []string          `json:"key_usage"`
 	ExtKeyUsage  []string          `json:"ext_key_usage"`
+	ExtraSubject map[string]string `json:"extra_subject"` // 额外 DN 字段（serialNumber/givenName 等）
 	Remark       string            `json:"remark"`
 }
 
 // CreateAndSaveCSR 生成 CSR 并持久化到数据库。
-// 若 KeyStorage=database，同时保存加密私钥；若 KeyStorage=smartcard，私钥在卡上生成不保存。
-func CreateAndSaveCSR(ctx context.Context, repo *storage.CSRRepo, req *CreateCSRRequest) (*storage.CSRRecord, error) {
+// 若 KeyStorage=database，同时保存加密私钥；
+// 若 KeyStorage=smartcard，私钥加密后存储到智能卡 certificates 表。
+func CreateAndSaveCSR(ctx context.Context, repo *storage.CSRRepo, certRepo *storage.CertRepo, cardRepo *storage.CardRepo, req *CreateCSRRequest) (*storage.CSRRecord, error) {
 	if req.KeyType == "" {
 		req.KeyType = "ec256"
 	}
@@ -167,6 +279,7 @@ func CreateAndSaveCSR(ctx context.Context, repo *storage.CSRRepo, req *CreateCSR
 		Province:     req.State,
 		Locality:     req.Locality,
 		KeyType:      req.KeyType,
+		ExtraSubject: req.ExtraSubject,
 	}
 
 	// 解析 SAN
@@ -202,20 +315,135 @@ func CreateAndSaveCSR(ctx context.Context, repo *storage.CSRRepo, req *CreateCSR
 		SANURI:       req.SANURI,
 		KeyUsage:     joinStrings(req.KeyUsage),
 		ExtKeyUsage:  joinStrings(req.ExtKeyUsage),
+		ExtraSubject: marshalExtraSubject(req.ExtraSubject),
 		CSRPEM:       string(result.CSRPEM),
 		Remark:       req.Remark,
 	}
 
-	if req.KeyStorage == storage.KeyStorageDatabase {
-		// 简单存储明文私钥（生产环境应加密，此处为 MVP）
+	switch req.KeyStorage {
+	case storage.KeyStorageDatabase:
+		// 存储明文私钥（生产环境应加密，此处为 MVP）
 		record.HasPrivateKey = true
 		record.PrivateKeyEnc = result.KeyPEM
+
+	case storage.KeyStorageSmartcard:
+		// 智能卡模式：将密钥加密后存储到 certificates 表
+		if req.CardUUID == "" {
+			return nil, fmt.Errorf("smartcard 模式需要指定 card_uuid")
+		}
+		if req.CardPassword == "" {
+			return nil, fmt.Errorf("smartcard 模式需要提供卡片密码")
+		}
+		if certRepo == nil || cardRepo == nil {
+			return nil, fmt.Errorf("smartcard 模式需要 certRepo 和 cardRepo")
+		}
+
+		// 获取卡片并解锁主密钥
+		card, err := cardRepo.GetByUUID(ctx, req.CardUUID)
+		if err != nil || card == nil {
+			return nil, fmt.Errorf("卡片不存在: %s", req.CardUUID)
+		}
+
+		// 用卡片密码解锁主密钥
+		masterKey, err := unlockMasterKeyByPassword(card, req.CardPassword)
+		if err != nil {
+			return nil, fmt.Errorf("卡片密码错误: %w", err)
+		}
+		defer cryptoutil.ZeroBytes(masterKey)
+
+		// 解析私钥 DER
+		privDER, err := parsePrivateKeyDER(result.KeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("解析私钥失败: %w", err)
+		}
+
+		// 加密私钥并存储到 certificates 表（创建空证书记录，只存储密钥）
+		certRecord, err := encryptAndStoreKeyOnly(ctx, certRepo, card, masterKey, privDER, req)
+		if err != nil {
+			return nil, fmt.Errorf("存储密钥到智能卡失败: %w", err)
+		}
+
+		record.HasPrivateKey = true
+		record.CardUUID = req.CardUUID
+		// 在 CSR 记录中关联智能卡证书 UUID（不存储明文密钥）
+		record.PrivateKeyEnc = []byte(certRecord.UUID)
 	}
 
 	if err := repo.Create(ctx, record); err != nil {
 		return nil, err
 	}
 	return record, nil
+}
+
+// unlockMasterKeyByPassword 用密码解锁卡片主密钥。
+func unlockMasterKeyByPassword(card *storage.Card, password string) ([]byte, error) {
+	pinBytes := []byte(password)
+	for _, entry := range card.CardKeys {
+		if entry.Locked {
+			continue
+		}
+		aesKey := cryptoutil.HMACSHA256(pinBytes, entry.Salt)
+		masterKey, err := cryptoutil.DecryptAES256GCM(aesKey, entry.EncMasterKey)
+		if err == nil {
+			return masterKey, nil
+		}
+	}
+	return nil, fmt.Errorf("密码错误，无法解锁卡片")
+}
+
+// parsePrivateKeyDER 从 PEM 私钥中提取 DER 字节。
+func parsePrivateKeyDER(keyPEM []byte) ([]byte, error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("无法解码私钥 PEM")
+	}
+	return block.Bytes, nil
+}
+
+// encryptAndStoreKeyOnly 加密私钥并存储到 certificates 表（创建空证书记录）。
+func encryptAndStoreKeyOnly(ctx context.Context, certRepo *storage.CertRepo, card *storage.Card, masterKey, privDER []byte, req *CreateCSRRequest) (*storage.Certificate, error) {
+	// 1. 生成临时密钥
+	tempKey, err := cryptoutil.GenerateKey()
+	if err != nil {
+		return nil, fmt.Errorf("生成临时密钥失败: %w", err)
+	}
+	defer cryptoutil.ZeroBytes(tempKey)
+
+	// 2. 生成盐值
+	tempKeySalt, err := cryptoutil.GenerateSalt()
+	if err != nil {
+		return nil, fmt.Errorf("生成盐值失败: %w", err)
+	}
+
+	// 3. 用 HMAC(masterKey, salt) 加密临时密钥
+	tempKeyAESKey := cryptoutil.HMACSHA256(masterKey, tempKeySalt)
+	tempKeyEnc, err := cryptoutil.EncryptAES256GCM(tempKeyAESKey, tempKey)
+	if err != nil {
+		return nil, fmt.Errorf("加密临时密钥失败: %w", err)
+	}
+
+	// 4. 用临时密钥加密私钥
+	privateData, err := cryptoutil.EncryptAES256GCM(tempKey, privDER)
+	if err != nil {
+		return nil, fmt.Errorf("加密私钥失败: %w", err)
+	}
+
+	// 5. 创建空证书记录（只存储密钥，CertContent 为空）
+	cert := &storage.Certificate{
+		SlotType:    storage.SlotTypeLocal,
+		CardUUID:    card.UUID,
+		CertType:    storage.CertTypeX509,
+		KeyType:     req.KeyType,
+		CertContent: nil, // 空证书，等待后续签发后填充
+		TempKeySalt: tempKeySalt,
+		TempKeyEnc:  tempKeyEnc,
+		PrivateData: privateData,
+	}
+
+	if err := certRepo.Create(ctx, cert); err != nil {
+		return nil, fmt.Errorf("保存密钥记录失败: %w", err)
+	}
+	return cert, nil
 }
 
 // ---- CA 服务 ----
@@ -299,8 +527,14 @@ func ImportAndSaveCA(ctx context.Context, repo *storage.CARepo, req *ImportCAReq
 		return nil, fmt.Errorf("解析 CA 证书失败: %w", err)
 	}
 
+	// CA 名称默认使用证书的 CN
+	name := req.Name
+	if name == "" {
+		name = cert.Subject.CommonName
+	}
+
 	ca := &storage.LocalCA{
-		Name:       req.Name,
+		Name:       name,
 		CommonName: cert.Subject.CommonName,
 		CertPEM:    req.CertPEM,
 		ChainPEM:   req.ChainPEM,
@@ -334,10 +568,13 @@ func ImportAndSaveCA(ctx context.Context, repo *storage.CARepo, req *ImportCAReq
 
 // IssueCertFromCSRRequest 是通过 CSR 签发证书的请求。
 type IssueCertFromCSRRequest struct {
-	CSRUUID     string `json:"csr_uuid"`
-	CAUUID      string `json:"ca_uuid"`
-	ValidityDays int   `json:"validity_days"`
-	Remark      string `json:"remark"`
+	CSRUUID      string          `json:"csr_uuid"`
+	CAUUID       string          `json:"ca_uuid"`
+	ValidityDays int             `json:"validity_days"`
+	Remark       string          `json:"remark"`
+	NotBefore    string          `json:"not_before,omitempty"`  // ISO8601
+	NotAfter     string          `json:"not_after,omitempty"`   // ISO8601
+	Extensions   *CertExtensions `json:"extensions,omitempty"`  // 证书扩展选项
 }
 
 // IssueCertFromCSR 通过已有 CSR 和 CA 签发证书并持久化。
@@ -345,6 +582,7 @@ func IssueCertFromCSR(ctx context.Context,
 	csrRepo *storage.CSRRepo,
 	caRepo *storage.CARepo,
 	certRepo *storage.PKICertRepo,
+	scCertRepo *storage.CertRepo,
 	req *IssueCertFromCSRRequest,
 ) (*storage.PKICert, error) {
 	// 加载 CSR
@@ -405,6 +643,17 @@ func IssueCertFromCSR(ctx context.Context,
 
 	notBefore := time.Now()
 	notAfter := notBefore.AddDate(0, 0, req.ValidityDays)
+	// 如果前端传了明确的起止时间，优先使用
+	if req.NotBefore != "" {
+		if t, e := time.Parse(time.RFC3339, req.NotBefore); e == nil {
+			notBefore = t
+		}
+	}
+	if req.NotAfter != "" {
+		if t, e := time.Parse(time.RFC3339, req.NotAfter); e == nil {
+			notAfter = t
+		}
+	}
 	if notAfter.After(caCert.NotAfter) {
 		notAfter = caCert.NotAfter
 	}
@@ -421,6 +670,9 @@ func IssueCertFromCSR(ctx context.Context,
 		IPAddresses:           csr.IPAddresses,
 		EmailAddresses:        csr.EmailAddresses,
 	}
+
+	// 应用证书扩展选项
+	applyCertExtensions(template, req.Extensions)
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, caCert, csr.PublicKey, caKey.(crypto.Signer))
 	if err != nil {
@@ -458,6 +710,16 @@ func IssueCertFromCSR(ctx context.Context,
 
 	if err := certRepo.Create(ctx, pkiCert); err != nil {
 		return nil, err
+	}
+
+	// 如果是智能卡模式，将签发的证书 PEM 写入智能卡证书记录的 CertContent
+	if csrRecord.KeyStorage == storage.KeyStorageSmartcard && scCertRepo != nil {
+		scCertUUID := string(csrRecord.PrivateKeyEnc)
+		scCert, err := scCertRepo.GetByUUID(ctx, scCertUUID)
+		if err == nil && scCert != nil {
+			scCert.CertContent = certPEM
+			_ = scCertRepo.Update(ctx, scCert)
+		}
 	}
 
 	// 更新 CA 签发计数
@@ -753,6 +1015,28 @@ func inferKeyType(cert *x509.Certificate) string {
 	}
 }
 
+// marshalExtraSubject 将 map[string]string 序列化为 JSON 字符串，用于存储额外 DN 字段。
+func marshalExtraSubject(extra map[string]string) string {
+	if len(extra) == 0 {
+		return "{}"
+	}
+	// 过滤空值
+	filtered := make(map[string]string)
+	for k, v := range extra {
+		if strings.TrimSpace(v) != "" {
+			filtered[k] = v
+		}
+	}
+	if len(filtered) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(filtered)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
 // splitTrim 按逗号分割并去除空白。
 func splitTrim(s string) []string {
 	parts := strings.Split(s, ",")
@@ -794,4 +1078,173 @@ func decodeBase64(src string, dst []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// applyCertExtensions 将 CertExtensions 中的选项应用到 x509.Certificate 模板上。
+// 如果 ext 为 nil 则不做任何修改。
+func applyCertExtensions(tmpl *x509.Certificate, ext *CertExtensions) {
+	if ext == nil {
+		return
+	}
+
+	// 密钥用途
+	if len(ext.KeyUsage) > 0 {
+		tmpl.KeyUsage = parseKeyUsage(ext.KeyUsage)
+	}
+
+	// 扩展密钥用途
+	if len(ext.ExtKeyUsage) > 0 {
+		tmpl.ExtKeyUsage = parseExtKeyUsage(ext.ExtKeyUsage)
+	}
+
+	// 基本约束
+	if ext.IsCA != nil {
+		tmpl.IsCA = *ext.IsCA
+		tmpl.BasicConstraintsValid = true
+		if *ext.IsCA && ext.PathLenConstraint != nil {
+			pl := *ext.PathLenConstraint
+			if pl >= 0 {
+				tmpl.MaxPathLen = pl
+				tmpl.MaxPathLenZero = pl == 0
+			} else {
+				tmpl.MaxPathLen = -1
+				tmpl.MaxPathLenZero = false
+			}
+		}
+	}
+
+	// CRL 分发点
+	if len(ext.CRLURLs) > 0 {
+		tmpl.CRLDistributionPoints = ext.CRLURLs
+	}
+
+	// OCSP 响应者
+	if len(ext.OCSPURLs) > 0 {
+		tmpl.OCSPServer = ext.OCSPURLs
+	}
+
+	// AIA（颁发者信息访问）
+	if len(ext.AIAURLs) > 0 {
+		for _, rawURL := range ext.AIAURLs {
+			if u, err := url.Parse(rawURL); err == nil {
+				tmpl.IssuingCertificateURL = append(tmpl.IssuingCertificateURL, u.String())
+			}
+		}
+	}
+
+	// CSP 信息：写入 Microsoft szOID_ENROLLMENT_CSP_PROVIDER 扩展 (1.3.6.1.4.1.311.13.2.2)
+	if ext.CSPName != "" {
+		cspExt, err := buildCSPProviderExtension(ext.CSPName)
+		if err == nil {
+			tmpl.ExtraExtensions = append(tmpl.ExtraExtensions, cspExt)
+		}
+	}
+}
+
+// parseKeyUsage 将字符串列表转换为 x509.KeyUsage 位掩码。
+func parseKeyUsage(usages []string) x509.KeyUsage {
+	var ku x509.KeyUsage
+	for _, u := range usages {
+		switch u {
+		case "digitalSignature":
+			ku |= x509.KeyUsageDigitalSignature
+		case "contentCommitment":
+			ku |= x509.KeyUsageContentCommitment
+		case "keyEncipherment":
+			ku |= x509.KeyUsageKeyEncipherment
+		case "dataEncipherment":
+			ku |= x509.KeyUsageDataEncipherment
+		case "keyAgreement":
+			ku |= x509.KeyUsageKeyAgreement
+		case "certSign":
+			ku |= x509.KeyUsageCertSign
+		case "crlSign":
+			ku |= x509.KeyUsageCRLSign
+		case "encipherOnly":
+			ku |= x509.KeyUsageEncipherOnly
+		case "decipherOnly":
+			ku |= x509.KeyUsageDecipherOnly
+		}
+	}
+	return ku
+}
+
+// parseExtKeyUsage 将字符串列表转换为 []x509.ExtKeyUsage。
+func parseExtKeyUsage(usages []string) []x509.ExtKeyUsage {
+	var eku []x509.ExtKeyUsage
+	for _, u := range usages {
+		switch u {
+		case "serverAuth":
+			eku = append(eku, x509.ExtKeyUsageServerAuth)
+		case "clientAuth":
+			eku = append(eku, x509.ExtKeyUsageClientAuth)
+		case "codeSigning":
+			eku = append(eku, x509.ExtKeyUsageCodeSigning)
+		case "emailProtection":
+			eku = append(eku, x509.ExtKeyUsageEmailProtection)
+		case "timeStamping":
+			eku = append(eku, x509.ExtKeyUsageTimeStamping)
+		case "ocspSigning":
+			eku = append(eku, x509.ExtKeyUsageOCSPSigning)
+		}
+	}
+	return eku
+}
+
+// szOID_ENROLLMENT_CSP_PROVIDER (1.3.6.1.4.1.311.13.2.2)
+// Microsoft CSP Provider 扩展，用于指定证书关联的 Cryptographic Service Provider。
+// ASN.1 结构：
+//
+//	SEQUENCE {
+//	    INTEGER keySpec,       -- 1=AT_KEYEXCHANGE, 2=AT_SIGNATURE
+//	    BMPString cspName,     -- UTF-16LE 编码的 CSP 名称
+//	    BIT STRING signature   -- 空（0 字节）
+//	}
+var oidCSPProvider = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 13, 2, 2}
+
+// cspProviderInfo 是 Microsoft CSP Provider 扩展的 ASN.1 结构。
+type cspProviderInfo struct {
+	KeySpec   int              `asn1:""`
+	CSPName   asn1.RawValue   `asn1:""`
+	Signature asn1.BitString  `asn1:""`
+}
+
+// buildCSPProviderExtension 构建 Microsoft CSP Provider 扩展。
+func buildCSPProviderExtension(cspName string) (pkix.Extension, error) {
+	// 将 CSP 名称编码为 BMPString（UTF-16BE）
+	bmpBytes := stringToBMPString(cspName)
+
+	info := cspProviderInfo{
+		KeySpec: 1, // AT_KEYEXCHANGE（默认）
+		CSPName: asn1.RawValue{
+			Tag:   asn1.TagBMPString,
+			Class: asn1.ClassUniversal,
+			Bytes: bmpBytes,
+		},
+		Signature: asn1.BitString{Bytes: []byte{}, BitLength: 0},
+	}
+
+	val, err := asn1.Marshal(info)
+	if err != nil {
+		return pkix.Extension{}, fmt.Errorf("编码 CSP 扩展失败: %w", err)
+	}
+
+	return pkix.Extension{
+		Id:       oidCSPProvider,
+		Critical: false,
+		Value:    val,
+	}, nil
+}
+
+// stringToBMPString 将 Go 字符串转换为 BMPString（UTF-16BE 编码，无 BOM）。
+func stringToBMPString(s string) []byte {
+	runes := []rune(s)
+	u16 := utf16.Encode(runes)
+	buf := make([]byte, len(u16)*2)
+	for i, v := range u16 {
+		// BMPString 使用大端序
+		buf[i*2] = byte(v >> 8)
+		buf[i*2+1] = byte(v)
+	}
+	return buf
 }

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/pem"
 	"time"
 )
 
@@ -25,7 +26,7 @@ type User struct {
 	Enabled      bool      `json:"enabled"`
 	CloudURL     string    `json:"cloud_url"`
 	PasswordHash string    `json:"-"` // bcrypt 哈希，不序列化到 JSON
-	AuthToken    []byte    `json:"-"` // 加密存储，不序列化到 JSON
+	AuthToken    Base64Bytes `json:"-"` // 加密存储，不序列化到 JSON
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -38,7 +39,17 @@ type SlotType string
 const (
 	SlotTypeLocal SlotType = "local"
 	SlotTypeTPM2  SlotType = "tpm2"
+	SlotTypeTPMSC SlotType = "tpmsc" // Microsoft TPM Virtual Smart Card（tpmvscmgr.exe）
 	SlotTypeCloud SlotType = "cloud"
+)
+
+// SecurityLevel 是智能卡安全等级。
+type SecurityLevel string
+
+const (
+	SecurityLevelHigh   SecurityLevel = "high"   // 高安全性：密钥存储于 TPM，不可导出
+	SecurityLevelMedium SecurityLevel = "medium" // 中安全性：TPM 证书密钥加密 + 主密钥加密，ADMINKEY 可导出
+	SecurityLevelLow    SecurityLevel = "low"    // 低安全性：仅主密钥加密，PIN/密码可导出
 )
 
 // CardKeyEntry 是卡片主密钥的一条加密记录。
@@ -67,8 +78,13 @@ type Card struct {
 	UserUUID  string         `json:"user_uuid"`
 	CreatedAt time.Time      `json:"created_at"`
 	ExpiresAt *time.Time     `json:"expires_at,omitempty"`
-	CardKeys  []CardKeyEntry `json:"card_keys"` // 存储为 JSON BLOB
+	CardKeys  []CardKeyEntry `json:"card_keys"` // 存储为 JSON TEXT
 	Remark    string         `json:"remark"`
+	// 安全等级
+	SecurityLevel SecurityLevel `json:"security_level"` // high/medium/low
+	// TPM 证书密钥（仅 medium 安全等级使用）
+	TPMCertKeyEnc  Base64Bytes `json:"-"`                // 被 ADMINKEY 加密的 TPM 证书密钥
+	TPMCertKeySalt Base64Bytes `json:"-"`                // TPM 证书密钥加密盐值
 	// PIN 安全字段
 	PINRetries      int  `json:"pin_retries"`       // PIN 错误最大次数（默认 3）
 	PINFailedCount  int  `json:"pin_failed_count"`  // 当前连续错误次数
@@ -112,20 +128,36 @@ type Certificate struct {
 	CardUUID    string   `json:"card_uuid"`
 	CertType    CertType `json:"cert_type"`
 	KeyType     string   `json:"key_type"`     // rsa2048/ec256/ed25519/...
-	CertContent []byte   `json:"cert_content"` // 公开部分
-	TempKeySalt []byte   `json:"-"`            // 32 字节随机盐值
-	TempKeyEnc  []byte   `json:"-"`            // 加密的临时密钥
-	PrivateData []byte   `json:"-"`            // 加密的私钥/私密数据
+	CertContent Base64Bytes `json:"cert_content"` // 公开部分
+	TempKeySalt Base64Bytes `json:"-"`            // 32 字节随机盐值
+	TempKeyEnc  Base64Bytes `json:"-"`            // 加密的临时密钥
+	PrivateData Base64Bytes `json:"-"`            // 加密的私钥/私密数据
 	// TPM2 专用
 	TPMPlatform    TPMPlatform `json:"tpm_platform,omitempty"`
 	TPMKeyHandle   *int64      `json:"-"`
-	TPMPublicBlob  []byte      `json:"-"`
-	TPMPrivateBlob []byte      `json:"-"`
-	TPMPCRPolicy   []byte      `json:"-"`
-	TPMAuthPolicy  []byte      `json:"-"`
+	TPMPublicBlob  Base64Bytes `json:"-"`
+	TPMPrivateBlob Base64Bytes `json:"-"`
+	TPMPCRPolicy   Base64Bytes `json:"-"`
+	TPMAuthPolicy  Base64Bytes `json:"-"`
 	Remark         string      `json:"remark"`
 	CreatedAt      time.Time   `json:"created_at"`
 	UpdatedAt      time.Time   `json:"updated_at"`
+}
+
+// DERContent 从 CertContent 中提取 DER 格式数据。
+// 如果 CertContent 是 PEM 格式，自动解码提取 DER；
+// 如果是原始 DER 格式（兼容旧数据），直接返回。
+func (c *Certificate) DERContent() []byte {
+	if len(c.CertContent) == 0 {
+		return nil
+	}
+	// 尝试 PEM 解码
+	block, _ := pem.Decode(c.CertContent)
+	if block != nil {
+		return block.Bytes
+	}
+	// 不是 PEM，直接当作 DER 返回（兼容旧数据）
+	return c.CertContent
 }
 
 // ---- 日志模型 ----
@@ -192,9 +224,10 @@ type CSRRecord struct {
 	SANURI        string     `json:"san_uri"`
 	KeyUsage      string     `json:"key_usage"`      // JSON 数组序列化
 	ExtKeyUsage   string     `json:"ext_key_usage"`  // JSON 数组序列化
+	ExtraSubject  string     `json:"extra_subject"`  // JSON 对象，额外 DN 字段
 	CSRPEM        string     `json:"csr_pem"`
 	HasPrivateKey bool       `json:"has_private_key"`
-	PrivateKeyEnc []byte     `json:"-"`              // AES256 加密的私钥（database 模式）
+	PrivateKeyEnc Base64Bytes `json:"-"`              // AES256 加密的私钥（database 模式）
 	Remark        string     `json:"remark"`
 	CreatedAt     time.Time  `json:"created_at"`
 }
@@ -210,7 +243,7 @@ type LocalCA struct {
 	CertPEM      string    `json:"cert_pem"`
 	ChainPEM     string    `json:"chain_pem"`      // 证书链（可选）
 	HasPrivKey   bool      `json:"has_priv_key"`   // 是否有私钥（有才能签发）
-	PrivKeyEnc   []byte    `json:"-"`              // AES256 加密的私钥
+	PrivKeyEnc   Base64Bytes `json:"-"`              // AES256 加密的私钥
 	CardUUID     string    `json:"card_uuid"`      // 私钥存储在智能卡时有效
 	NotBefore    time.Time `json:"not_before"`
 	NotAfter     time.Time `json:"not_after"`
@@ -232,7 +265,7 @@ type PKICert struct {
 	CardUUID      string     `json:"card_uuid"`
 	CertPEM       string     `json:"cert_pem"`
 	HasPrivateKey bool       `json:"has_private_key"`
-	PrivateKeyEnc []byte     `json:"-"`             // AES256 加密的私钥
+	PrivateKeyEnc Base64Bytes `json:"-"`             // AES256 加密的私钥
 	NotBefore     time.Time  `json:"not_before"`
 	NotAfter      time.Time  `json:"not_after"`
 	KeyUsage      string     `json:"key_usage"`     // JSON 数组序列化

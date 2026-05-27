@@ -13,7 +13,7 @@ OBJS= pkcs11-mock.o ipc_client.o ipc_json.o
 all: $(OBJS)
 	$(CC) $(ARCH_FLAGS) -dynamiclib -o $(LIBNAME) \
 	-Wl,-exported_symbols_list,pkcs11-mock.symbols \
-	$(OBJS)
+	$(OBJS) -lcrypto
 	strip -x $(LIBNAME)
 
 pkcs11-mock.o: $(SRC_DIR)/pkcs11-mock.c $(SRC_DIR)/*.h

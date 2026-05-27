@@ -11,6 +11,20 @@ files:
   - electron/**/*
   - public/**/*
 
+# 打包时将后端可执行文件和 pkcs11-mock 库一同放入 resources 目录
+extraResources:
+  - from: "../cmd/client-card/"
+    to: "."
+    filter:
+      - "client-card"
+      - "client-card.exe"
+  - from: "../"
+    to: "."
+    filter:
+      - "pkcs11-mock.dll"
+      - "pkcs11-mock.so"
+      - "pkcs11-mock.dylib"
+
 win:
   target:
     - target: nsis

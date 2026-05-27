@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/globaltrusts/client-card/internal/card/local"
 	"github.com/globaltrusts/client-card/internal/crypto"
 	"github.com/globaltrusts/client-card/internal/totp"
 )
@@ -103,15 +104,37 @@ func (s *Server) handleCreateTOTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer totp.ZeroBytes(secretBytes)
 
-	// 使用卡片密码加密密钥
+	// 使用智能卡主密钥加密 TOTP 密钥
+	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+
+	// 用卡片密码解锁主密钥
+	slot := local.New(0, card, s.certRepo)
+	if err := slot.Login(r.Context(), 1, req.CardPassword); err != nil {
+		writeError(w, http.StatusUnauthorized, "卡片密码错误")
+		return
+	}
+	defer slot.Logout(r.Context())
+
+	masterKey := slot.MasterKey()
+	if masterKey == nil {
+		writeError(w, http.StatusInternalServerError, "获取主密钥失败")
+		return
+	}
+	defer crypto.ZeroBytes(masterKey)
+
 	salt, err := crypto.GenerateRandomBytes(32)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "生成盐值失败")
 		return
 	}
 
-	encKey := crypto.DeriveKeyArgon2id([]byte(req.CardPassword), salt)
-	defer totp.ZeroBytes(encKey)
+	// 用 HMAC(masterKey, salt) 派生 AES 密钥加密
+	encKey := crypto.HMACSHA256(masterKey, salt)
+	defer crypto.ZeroBytes(encKey)
 
 	secretEnc, err := crypto.EncryptAES256GCM(encKey, secretBytes)
 	if err != nil {
@@ -147,9 +170,30 @@ func (s *Server) handleGetTOTPCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 解密密钥
-	encKey := crypto.DeriveKeyArgon2id([]byte(cardPassword), secretSalt)
-	defer totp.ZeroBytes(encKey)
+	// 获取卡片并解锁主密钥
+	card, err := s.cardRepo.GetByUUID(r.Context(), entry.CardUUID)
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+
+	slot := local.New(0, card, s.certRepo)
+	if err := slot.Login(r.Context(), 1, cardPassword); err != nil {
+		writeError(w, http.StatusUnauthorized, "卡片密码错误")
+		return
+	}
+	defer slot.Logout(r.Context())
+
+	masterKey := slot.MasterKey()
+	if masterKey == nil {
+		writeError(w, http.StatusInternalServerError, "获取主密钥失败")
+		return
+	}
+	defer crypto.ZeroBytes(masterKey)
+
+	// 用 HMAC(masterKey, salt) 派生 AES 密钥解密
+	encKey := crypto.HMACSHA256(masterKey, secretSalt)
+	defer crypto.ZeroBytes(encKey)
 
 	secretBytes, err := crypto.DecryptAES256GCM(encKey, secretEnc)
 	if err != nil {

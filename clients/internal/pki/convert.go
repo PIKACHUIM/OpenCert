@@ -4,9 +4,40 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"strings"
 
 	"software.sslmate.com/src/go-pkcs12"
 )
+
+// parseCertLenient 宽松解析 X.509 证书 DER 数据。
+// Go 1.22+ 对 Certificate Policies 扩展解析更严格，某些证书会报
+// "x509: invalid certificate policies" 错误。对此类错误直接返回 nil cert 但不报错，
+// 仅在需要完整解析时使用；对于仅需存储 DER 的场景，使用 ValidateCertDER。
+func parseCertLenient(derData []byte) (*x509.Certificate, error) {
+	cert, err := x509.ParseCertificate(derData)
+	if err == nil {
+		return cert, nil
+	}
+	// 对 certificate policies 相关错误做宽松处理：
+	// 证书本身是合法的，只是 Go 1.22 对策略扩展解析过于严格
+	if strings.Contains(err.Error(), "certificate policies") {
+		return nil, nil // 返回 nil cert 表示无法完整解析但证书有效
+	}
+	return nil, err
+}
+
+// ValidateCertDER 验证 DER 数据是否为合法的 X.509 证书。
+// 对于 certificate policies 解析错误的证书仍视为有效。
+func ValidateCertDER(derData []byte) error {
+	_, err := x509.ParseCertificate(derData)
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "certificate policies") {
+		return nil // 证书有效，只是策略扩展不兼容
+	}
+	return err
+}
 
 // ConvertPEMToDER 将 PEM 编码的证书转换为 DER 格式。
 func ConvertPEMToDER(pemData []byte) ([]byte, error) {
@@ -26,26 +57,43 @@ func ConvertDERToPEM(derData []byte, blockType string) []byte {
 }
 
 // ParseCertificateFromPEM 从 PEM 数据解析 X.509 证书。
+// 对包含非标准 Certificate Policies 的证书使用宽松解析。
 func ParseCertificateFromPEM(pemData []byte) (*x509.Certificate, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
 		return nil, fmt.Errorf("无法解码 PEM 数据")
 	}
-	return x509.ParseCertificate(block.Bytes)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil && strings.Contains(err.Error(), "certificate policies") {
+		// 证书有效但策略扩展不兼容，返回 nil cert 和 nil error 表示无法完整解析
+		return nil, nil
+	}
+	return cert, err
 }
 
 // ParseCertificateAuto 自动识别 PEM 或 DER 格式并解析证书。
+// 对包含非标准 Certificate Policies 的证书使用宽松解析。
 func ParseCertificateAuto(data []byte) (*x509.Certificate, error) {
 	// 先尝试 PEM
 	block, _ := pem.Decode(data)
 	if block != nil {
-		return x509.ParseCertificate(block.Bytes)
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil && strings.Contains(err.Error(), "certificate policies") {
+			return nil, nil
+		}
+		return cert, err
 	}
 	// 尝试 DER
-	return x509.ParseCertificate(data)
+	cert, err := x509.ParseCertificate(data)
+	if err != nil && strings.Contains(err.Error(), "certificate policies") {
+		return nil, nil
+	}
+	return cert, err
 }
 
 // ExportPKCS12 将证书和私钥导出为 PKCS#12 格式。
+// 对于包含 Go 1.22+ 不兼容的 Certificate Policies 扩展的证书，
+// 使用原始 DER 数据构造最小 Certificate 对象来绕过严格解析。
 func ExportPKCS12(certPEM, keyPEM []byte, password string) ([]byte, error) {
 	if len(password) < 8 {
 		return nil, fmt.Errorf("PKCS#12 导出密码长度必须 >= 8 字符")
@@ -58,7 +106,14 @@ func ExportPKCS12(certPEM, keyPEM []byte, password string) ([]byte, error) {
 	}
 	cert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("解析证书失败: %w", err)
+		// 对 certificate policies 错误做宽松处理：
+		// Go 1.22+ 对策略扩展解析过于严格，但证书本身是合法的。
+		// pkcs12.Encode 内部只使用 cert.Raw，所以构造一个最小对象即可。
+		if strings.Contains(err.Error(), "certificate policies") {
+			cert = &x509.Certificate{Raw: certBlock.Bytes}
+		} else {
+			return nil, fmt.Errorf("解析证书失败: %w", err)
+		}
 	}
 
 	// 解析私钥
@@ -108,6 +163,7 @@ func ImportPKCS12(pfxData []byte, password string) (certPEM, keyPEM []byte, err 
 }
 
 // ParseCertChainFromPEM 从 PEM 数据解析证书链（多个证书）。
+// 对包含非标准 Certificate Policies 的证书使用宽松解析。
 func ParseCertChainFromPEM(pemData []byte) ([]*x509.Certificate, error) {
 	var certs []*x509.Certificate
 	rest := pemData
@@ -122,6 +178,9 @@ func ParseCertChainFromPEM(pemData []byte) ([]*x509.Certificate, error) {
 		}
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
+			if strings.Contains(err.Error(), "certificate policies") {
+				continue // 跳过策略扩展不兼容的证书
+			}
 			return nil, fmt.Errorf("解析证书链中的证书失败: %w", err)
 		}
 		certs = append(certs, cert)

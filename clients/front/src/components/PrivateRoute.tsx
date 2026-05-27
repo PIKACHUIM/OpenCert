@@ -7,11 +7,14 @@ interface PrivateRouteProps {
 }
 
 const PrivateRoute: React.FC<PrivateRouteProps> = ({ children }) => {
-  const { isAuthenticated } = useAuthStore();
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated());
+  const accounts = useAuthStore((s) => s.accounts);
   const location = useLocation();
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" state={{ from: location }} replace />;
+    // 无任何账号记录 → 首次运行向导；有账号但未激活 → 登录页
+    const target = accounts.length === 0 ? '/welcome' : '/login';
+    return <Navigate to={target} state={{ from: location }} replace />;
   }
 
   return <>{children}</>;

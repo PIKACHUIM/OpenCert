@@ -50,6 +50,9 @@ func (h *PKCSHandler) Register(s *Server) {
 	s.Register(CmdEncryptInit, h.handleEncryptInit)
 	s.Register(CmdEncrypt, h.handleEncrypt)
 	s.Register(CmdGenerateKeyPair, h.handleGenerateKeyPair)
+
+	// 流式 Digest / Verify 与 Random 一族
+	h.RegisterDigestVerifyRandom(s)
 }
 
 // ---- GetSlotList ----

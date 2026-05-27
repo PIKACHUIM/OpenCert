@@ -46,15 +46,15 @@ const Certs: React.FC = () => {
     setLoading(true);
     try {
       const res = await listAllCerts({ ca_uuid: filterCAUUID, cert_type: filterCertType, page: p, page_size: 20 });
-      setCerts(res.items || []);
-      setTotal(res.total);
+      setCerts(Array.isArray(res?.items) ? res.items : []);
+      setTotal(res?.total ?? 0);
     } catch (e: any) { message.error(e.message); }
     finally { setLoading(false); }
   };
 
   useEffect(() => {
     load();
-    listCAs({ page: 1, page_size: 100 }).then(r => setCAs(r.items || [])).catch(() => {});
+    listCAs({ page: 1, page_size: 100 }).then(r => setCAs(Array.isArray(r?.items) ? r.items : [])).catch(() => {});
   }, [filterCertType, filterCAUUID]);
 
   const handleRevoke = (cert: Certificate) => {

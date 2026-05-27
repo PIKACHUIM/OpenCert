@@ -16,6 +16,7 @@ import (
 	"github.com/globaltrusts/server-card/internal/card"
 	"github.com/globaltrusts/server-card/internal/ct"
 	"github.com/globaltrusts/server-card/internal/issuance"
+	"github.com/globaltrusts/server-card/internal/mailer"
 	"github.com/globaltrusts/server-card/internal/payment"
 	"github.com/globaltrusts/server-card/internal/revocation"
 	"github.com/globaltrusts/server-card/internal/storage"
@@ -58,6 +59,12 @@ type Server struct {
 	ctSvc         *ct.Service
 	acmeSvc       *acme.Service
 	pinSessions   *card.PINSessionStore // PIN 会话令牌存储
+	mailer        mailer.Mailer         // 邮件发送器（找回密码等场景）
+}
+
+// SetMailer 注入邮件发送器（在服务装配阶段调用）。
+func (s *Server) SetMailer(m mailer.Mailer) {
+	s.mailer = m
 }
 
 // NewServer 创建 API 服务器。
@@ -173,6 +180,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/certs/{uuid}/renew", s.authMiddleware(s.handleRenewCert))
 	mux.HandleFunc("GET /api/certs/{uuid}/export", s.authMiddleware(s.handleExportCert))
 	mux.HandleFunc("GET /api/certs/{uuid}/chain", s.authMiddleware(s.handleGetCertChain))
+	mux.HandleFunc("GET /api/certs/{uuid}/chain-view", s.authMiddleware(s.handleGetCertChainView))
 
 	// 卡片 PIN/PUK/Admin Key 管理（需要认证）
 	mux.HandleFunc("POST /api/cards/{uuid}/verify-pin", s.authMiddleware(s.handleVerifyPIN))
@@ -222,6 +230,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/cas/{uuid}", s.adminOnly(s.handleDeleteCA))
 	mux.HandleFunc("POST /api/cas/{uuid}/import-chain", s.adminOnly(s.handleImportCAChain))
 	mux.HandleFunc("GET /api/cas/{uuid}/chain", s.authMiddleware(s.handleGetCAChain))
+	mux.HandleFunc("GET /api/cas/{uuid}/chain-view", s.authMiddleware(s.handleGetCAChainView))
 	mux.HandleFunc("GET /api/cas/{uuid}/revoked", s.authMiddleware(s.handleListRevokedCerts))
 	mux.HandleFunc("POST /api/cas/{uuid}/revoke", s.adminOnly(s.handleRevokeCert))
 	mux.HandleFunc("GET /api/cas/{uuid}/crl", s.handleGetCRL)
@@ -341,6 +350,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /acme/{path}/cert/{id}", s.handleACMEGetCertificate)
 	mux.HandleFunc("POST /ct/submit", s.handleCTSubmit)
 	mux.HandleFunc("GET /ct/query", s.handleCTQuery)
+
+	// 公开证书申请（无需认证，门户用户可直接提交）
+	mux.HandleFunc("POST /api/public/cert-applications", s.handlePublicCreateCertApplication)
+	mux.HandleFunc("GET /api/public/cert-applications/{uuid}", s.handlePublicGetCertApplicationStatus)
 
 	// 吊销服务管理（管理员）
 	mux.HandleFunc("GET /api/revocation-services", s.adminOnly(s.handleListRevocationServices))

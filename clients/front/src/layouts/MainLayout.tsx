@@ -1,86 +1,106 @@
 import React, { useEffect } from 'react';
 import {
-  Layout, Menu, Badge, Tooltip, Switch, Typography, Space, Tag, Button,
+  Layout, Menu, Badge, Tooltip, Switch, Typography, Space, Tag, Button, Dropdown, Avatar,
 } from 'antd';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   DashboardOutlined, UserOutlined, CreditCardOutlined, FileTextOutlined,
   SettingOutlined, SafetyCertificateOutlined, BulbOutlined, ApiOutlined,
   ClockCircleOutlined, FileProtectOutlined, BankOutlined, KeyOutlined,
-  LogoutOutlined, FileDoneOutlined,
+  LogoutOutlined, FileDoneOutlined, CloudOutlined, PlusOutlined, CheckOutlined,
+  LockOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '../store/appStore';
 import { useAuthStore } from '../store/auth';
+import { logout as apiLogout } from '../api';
 
 
 const { Sider, Content, Header } = Layout;
 const { Text } = Typography;
 
-// Manager 菜单项（只管理本地 client-card :1026 的功能）
-const menuItems = [
-  // 概览
-  {
-    type: 'group' as const,
-    label: '概览',
-    children: [
-      { key: '/dashboard', icon: <DashboardOutlined />, label: '系统概览' },
-    ],
-  },
-  {
-    key: 'group-local',
-    icon: <CreditCardOutlined />,
-    label: '设备管理',
-    children: [
-      { key: '/cards', icon: <CreditCardOutlined />, label: '智能卡片管理' },
-      { key: '/certs', icon: <SafetyCertificateOutlined />, label: '用户证书管理' },
-    ],
-  },
-  {
-    key: 'group-pki',
-    icon: <FileProtectOutlined />,
-    label: '证书工具',
-    children: [
-      { key: '/pki/csr', icon: <KeyOutlined />, label: '本地证书申请' },
-      { key: '/pki/ca', icon: <BankOutlined />, label: '本地颁发机构' },
-      { key: '/pki/certs', icon: <FileDoneOutlined />, label: '证书签发管理' },
-    ],
-  },
-  {
-    key: 'group-security',
-    icon: <ClockCircleOutlined />,
-    label: '安全凭据',
-    children: [
-      { key: '/totp', icon: <ClockCircleOutlined />, label: 'TOTP验证管理' },
-    ],
-  },
-  {
-    key: 'group-cloud',
-    icon: <ApiOutlined />,
-    label: '云端功能',
-    children: [
-      { key: '/users', icon: <UserOutlined />, label: '云端账号管理' },
-    ],
-  },
-  {
-    key: 'group-system',
-    icon: <SettingOutlined />,
-    label: '系统管理',
-    children: [
-      { key: '/logs', icon: <FileTextOutlined />, label: '平台操作日志' },
-      { key: '/settings', icon: <SettingOutlined />, label: '平台系统设置' },
-    ],
-  },
-];
-
 const MainLayout: React.FC = () => {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { connected, serverVersion, darkMode, toggleDarkMode, checkConnection, loadSlots } = useAppStore();
-  const { clearAuth, username } = useAuthStore();
+  const accounts = useAuthStore((s) => s.accounts);
+  const activeUUID = useAuthStore((s) => s.activeUUID);
+  const setActive = useAuthStore((s) => s.setActive);
+  const removeAccount = useAuthStore((s) => s.removeAccount);
+  const clearAll = useAuthStore((s) => s.clearAll);
+  const active = accounts.find((a) => a.user_uuid === activeUUID) || null;
 
-  const handleLogout = () => {
-    clearAuth();
+  // Manager 菜单项（使用 i18n key 动态构建，确保语言切换实时生效）
+  const menuItems = [
+    {
+      type: 'group' as const,
+      label: t('nav.groupOverview'),
+      children: [
+        { key: '/dashboard', icon: <DashboardOutlined />, label: t('nav.overview') },
+      ],
+    },
+    {
+      key: 'group-local',
+      icon: <CreditCardOutlined />,
+      label: t('nav.groupDevices'),
+      children: [
+        { key: '/cards', icon: <CreditCardOutlined />, label: t('nav.cardsManage') },
+        { key: '/certs', icon: <SafetyCertificateOutlined />, label: t('nav.certsManage') },
+        { key: '/users', icon: <CloudOutlined />, label: t('nav.cloudUsers') },
+      ],
+    },
+    {
+      key: 'group-pki',
+      icon: <FileProtectOutlined />,
+      label: t('nav.groupPki'),
+      children: [
+        { key: '/pki/csr', icon: <KeyOutlined />, label: t('nav.localCsr') },
+        { key: '/pki/ca', icon: <BankOutlined />, label: t('nav.localCa') },
+        { key: '/pki/certs', icon: <FileDoneOutlined />, label: t('nav.certIssuance') },
+      ],
+    },
+    {
+      key: 'group-security',
+      icon: <KeyOutlined />,
+      label: t('nav.groupSecurity'),
+      children: [
+        { key: '/credentials/fido', icon: <KeyOutlined />, label: t('nav.fidoManage') },
+        { key: '/totp', icon: <ClockCircleOutlined />, label: t('nav.totpManage') },
+        { key: '/credentials', icon: <LockOutlined />, label: t('nav.credentialsManage') },
+      ],
+    },
+    {
+      key: 'group-system',
+      icon: <SettingOutlined />,
+      label: t('nav.groupSystem'),
+      children: [
+        { key: '/logs', icon: <FileTextOutlined />, label: t('nav.opLogs') },
+        { key: '/settings', icon: <SettingOutlined />, label: t('nav.systemSettings') },
+      ],
+    },
+  ];
+
+  // 退出：仅登出当前活动账号；若还有其它账号则切到第一个，否则回到登录页
+  const handleLogout = async () => {
+    try { await apiLogout(); } catch { /* ignore */ }
+    if (activeUUID) removeAccount(activeUUID);
+    const remain = useAuthStore.getState().accounts;
+    if (remain.length === 0) {
+      navigate('/login', { replace: true });
+    }
+  };
+
+  // 全部登出：清所有账号并返回登录页
+  const handleLogoutAll = () => {
+    clearAll();
     navigate('/login', { replace: true });
+  };
+
+  // 切换账号：刷新 Slots
+  const handleSwitch = (uuid: string) => {
+    setActive(uuid);
+    loadSlots();
   };
 
   useEffect(() => {
@@ -95,7 +115,8 @@ const MainLayout: React.FC = () => {
   const getOpenKey = () => {
     const p = location.pathname;
     if (p.startsWith('/pki')) return 'group-pki';
-    if (['/users', '/cards', '/certs', '/totp'].some(r => p.startsWith(r))) return 'group-local';
+    if (['/cards', '/certs', '/users'].some(r => p.startsWith(r))) return 'group-local';
+    if (['/credentials', '/totp'].some(r => p.startsWith(r))) return 'group-security';
     return 'group-system';
   };
 
@@ -123,10 +144,10 @@ const MainLayout: React.FC = () => {
             <SafetyCertificateOutlined style={{ fontSize: 24, color: '#1677ff' }} />
             <div>
               <div style={{ color: '#fff', fontWeight: 700, fontSize: 14, lineHeight: 1.2 }}>
-                OpenCert Manager
+                {t('layout.appName')}
               </div>
               <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11 }}>
-                本地智能卡管理
+                {t('layout.appDesc')}
               </div>
             </div>
           </Space>
@@ -164,16 +185,18 @@ const MainLayout: React.FC = () => {
               status={connected ? 'success' : 'error'}
               text={
                 <Text style={{ fontSize: 13, color: darkMode ? '#c9d1d9' : undefined }}>
-                  {connected ? `已连接 client-card v${serverVersion}` : '未连接 client-card'}
+                  {connected
+                    ? t('layout.connected', { version: serverVersion })
+                    : t('layout.disconnected')}
                 </Text>
               }
             />
             {connected && <Tag color="blue" style={{ fontSize: 11 }}>:1026</Tag>}
           </Space>
 
-          {/* 右侧：用户信息 + 主题切换 */}
+          {/* 右侧：主题切换 + 多账号下拉 */}
           <Space>
-            <Tooltip title={darkMode ? '切换亮色模式' : '切换暗色模式'}>
+            <Tooltip title={darkMode ? t('layout.toggleLight') : t('layout.toggleDark')}>
               <Switch
                 checkedChildren={<BulbOutlined />}
                 unCheckedChildren={<BulbOutlined />}
@@ -182,20 +205,79 @@ const MainLayout: React.FC = () => {
                 size="small"
               />
             </Tooltip>
-            {username && (
-              <Text style={{ fontSize: 13, color: darkMode ? '#8b949e' : '#666' }}>
-                {username}
-              </Text>
-            )}
-            <Tooltip title="退出登录">
+            <Dropdown
+              placement="bottomRight"
+              trigger={['click']}
+              menu={{
+                items: [
+                  {
+                    key: 'header',
+                    type: 'group',
+                    label: <span style={{ fontSize: 12, color: '#8b949e' }}>{t('account.loggedAccounts')}（{accounts.length}）</span>,
+                  },
+                  ...accounts.map((a) => ({
+                    key: a.user_uuid,
+                    icon: a.user_type === 'cloud' ? <CloudOutlined /> : <UserOutlined />,
+                    label: (
+                      <Space>
+                        <span>{a.display_name}</span>
+                        {a.user_type === 'cloud' && <Tag color="blue" style={{ fontSize: 11 }}>{t('layout.cloudTag')}</Tag>}
+                        {a.user_uuid === activeUUID && <CheckOutlined style={{ color: '#52c41a' }} />}
+                      </Space>
+                    ),
+                    onClick: () => handleSwitch(a.user_uuid),
+                  })),
+                  { type: 'divider' as const },
+                  {
+                    key: 'add',
+                    icon: <PlusOutlined />,
+                    label: t('account.addAccount'),
+                    onClick: () => navigate('/login', { state: { addMode: true } }),
+                  },
+                  {
+                    key: 'logout',
+                    icon: <LogoutOutlined />,
+                    label: t('account.logoutCurrent'),
+                    onClick: handleLogout,
+                    disabled: !active,
+                  },
+                  {
+                    key: 'logout-all',
+                    icon: <LogoutOutlined />,
+                    label: t('account.logoutAll'),
+                    danger: true,
+                    onClick: handleLogoutAll,
+                    disabled: accounts.length === 0,
+                  },
+                ],
+              }}
+            >
               <Button
                 type="text"
                 size="small"
-                icon={<LogoutOutlined />}
-                onClick={handleLogout}
-                style={{ color: darkMode ? '#8b949e' : '#666' }}
-              />
-            </Tooltip>
+                style={{ color: darkMode ? '#c9d1d9' : '#333', padding: '0 8px' }}
+              >
+                <Space size={6}>
+                  <Avatar
+                    size={24}
+                    style={{
+                      background: active?.user_type === 'cloud'
+                        ? 'linear-gradient(135deg, #1677ff, #13c2c2)'
+                        : 'linear-gradient(135deg, #722ed1, #eb2f96)',
+                    }}
+                    icon={active?.user_type === 'cloud' ? <CloudOutlined /> : <UserOutlined />}
+                  />
+                  <Text style={{ fontSize: 13, color: darkMode ? '#c9d1d9' : '#333' }}>
+                    {active?.display_name || t('layout.notLogin')}
+                  </Text>
+                  {accounts.length > 1 && (
+                    <Tag color="purple" style={{ fontSize: 11, marginLeft: 2 }}>
+                      +{accounts.length - 1}
+                    </Tag>
+                  )}
+                </Space>
+              </Button>
+            </Dropdown>
           </Space>
         </Header>
 

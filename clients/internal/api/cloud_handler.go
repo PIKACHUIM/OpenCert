@@ -47,18 +47,86 @@ func writeSyncStatus(s syncStatus) {
 	cloudSyncMu.Unlock()
 }
 
-// ---- HTTP Handlers ----
+// ---- 自动定时同步 ----
 
-// handleCloudSync POST /api/cloud/sync
-// 触发一次全量云端同步：把每个本地 Cloud 卡片对应的云端卡片列表与证书列表
-// 落库到 cards / certificates 表（公开部分），并广播 slot_changed 事件。
-func (s *Server) handleCloudSync(w http.ResponseWriter, r *http.Request) {
+// StartAutoSync 根据配置启动自动定时云端同步后台任务。
+// 调用方需传入可取消的 context，用于在进程退出时优雅停止。
+// 若 AutoSync 未启用或间隔 <= 0，则不启动。
+func (s *Server) StartAutoSync(ctx context.Context) {
+	fullCfgMu.RLock()
+	cfg := fullCfg
+	fullCfgMu.RUnlock()
+
+	if cfg == nil || !cfg.Client.AutoSync {
+		slog.Info("云端自动同步未启用")
+		return
+	}
+
+	intervalMin := cfg.Client.SyncIntervalMinutes
+	if intervalMin <= 0 {
+		intervalMin = 5 // 默认 5 分钟
+	}
+	interval := time.Duration(intervalMin) * time.Minute
+
+	slog.Info("云端自动同步已启动", "interval", interval)
+
+	go func() {
+		// 启动后立即执行一次同步
+		stat := s.doCloudSync(ctx)
+		slog.Info("自动同步完成（首次）",
+			"synced_cards", stat.SyncedCards,
+			"new_certs", stat.NewCerts,
+			"duration_ms", stat.DurationMS,
+		)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("云端自动同步已停止")
+				return
+			case <-ticker.C:
+				// 每次执行前重新读取配置，支持热更新开关
+				fullCfgMu.RLock()
+				latestCfg := fullCfg
+				fullCfgMu.RUnlock()
+				if latestCfg != nil && !latestCfg.Client.AutoSync {
+					slog.Debug("自动同步已被用户关闭，跳过本轮")
+					continue
+				}
+
+				stat := s.doCloudSync(ctx)
+				if stat.LastError != "" {
+					slog.Warn("自动同步出现错误", "error", stat.LastError)
+				} else {
+					slog.Debug("自动同步完成",
+						"synced_cards", stat.SyncedCards,
+						"new_certs", stat.NewCerts,
+						"duration_ms", stat.DurationMS,
+					)
+				}
+			}
+		}
+	}()
+}
+
+// ---- 同步核心逻辑 ----
+
+// doCloudSync 执行一次全量云端同步（不依赖 HTTP 请求）。
+// 遍历所有 Cloud 类型卡片，拉取云端证书列表并增量落库。
+func (s *Server) doCloudSync(ctx context.Context) syncStatus {
 	start := time.Now()
 
-	cards, err := s.cardRepo.ListAll(r.Context())
+	cards, err := s.cardRepo.ListAll(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "查询卡片失败: "+err.Error())
-		return
+		stat := syncStatus{LastError: "查询卡片失败: " + err.Error()}
+		now := time.Now()
+		stat.LastSync = &now
+		stat.DurationMS = time.Since(start).Milliseconds()
+		writeSyncStatus(stat)
+		return stat
 	}
 
 	stat := syncStatus{}
@@ -76,7 +144,7 @@ func (s *Server) handleCloudSync(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		user, err := s.userRepo.GetByUUID(r.Context(), c.UserUUID)
+		user, err := s.userRepo.GetByUUID(ctx, c.UserUUID)
 		if err != nil || user == nil || len(user.AuthToken) == 0 {
 			stat.LastError = fmt.Sprintf("卡片 %s 对应用户缺少云端 token", c.CardName)
 			continue
@@ -85,7 +153,7 @@ func (s *Server) handleCloudSync(w http.ResponseWriter, r *http.Request) {
 		key := ctxKey{URL: c.CloudURL, UserUUID: c.UserUUID}
 		client, ok := cache[key]
 		if !ok {
-			client, err = cloud.NewClient(c.CloudURL, true) // 允许 http（由 Settings 控制）
+			client, err = cloud.NewClient(c.CloudURL, true)
 			if err != nil {
 				stat.LastError = "创建云端客户端失败: " + err.Error()
 				continue
@@ -94,8 +162,7 @@ func (s *Server) handleCloudSync(w http.ResponseWriter, r *http.Request) {
 			cache[key] = client
 		}
 
-		// 同步该卡片的证书（本地只保存公开部分）
-		synced, added := s.syncOneCloudCard(r.Context(), client, c)
+		synced, added := s.syncOneCloudCard(ctx, client, c)
 		stat.SyncedCerts += synced
 		stat.NewCerts += added
 		if added > 0 {
@@ -113,6 +180,20 @@ func (s *Server) handleCloudSync(w http.ResponseWriter, r *http.Request) {
 		s.notifySlotChanged("sync")
 	}
 
+	return stat
+}
+
+// ---- HTTP Handlers ----
+
+// handleCloudSync POST /api/cloud/sync
+// 触发一次全量云端同步：把每个本地 Cloud 卡片对应的云端卡片列表与证书列表
+// 落库到 cards / certificates 表（公开部分），并广播 slot_changed 事件。
+func (s *Server) handleCloudSync(w http.ResponseWriter, r *http.Request) {
+	stat := s.doCloudSync(r.Context())
+	if stat.LastError != "" {
+		// 有部分错误但不完全失败，仍返回 200 + 错误信息
+		slog.Warn("手动同步出现部分错误", "error", stat.LastError)
+	}
 	writeOK(w, stat)
 }
 

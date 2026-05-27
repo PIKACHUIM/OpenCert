@@ -30,11 +30,11 @@ func (r *CSRRepo) Create(ctx context.Context, c *CSRRecord) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO pki_csrs (uuid, common_name, organization, org_unit, country, state, locality, email,
 			key_type, key_storage, card_uuid, san_dns, san_ip, san_email, san_uri,
-			key_usage, ext_key_usage, csr_pem, has_private_key, private_key_enc, remark, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			key_usage, ext_key_usage, extra_subject, csr_pem, has_private_key, private_key_enc, remark, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.UUID, c.CommonName, c.Organization, c.OrgUnit, c.Country, c.State, c.Locality, c.Email,
 		c.KeyType, string(c.KeyStorage), c.CardUUID, c.SANDN, c.SANIP, c.SANEmail, c.SANURI,
-		c.KeyUsage, c.ExtKeyUsage, c.CSRPEM, boolToInt(c.HasPrivateKey), c.PrivateKeyEnc, c.Remark, c.CreatedAt,
+		c.KeyUsage, c.ExtKeyUsage, c.ExtraSubject, c.CSRPEM, boolToInt(c.HasPrivateKey), c.PrivateKeyEnc, c.Remark, c.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("创建 CSR 失败: %w", err)
@@ -49,11 +49,11 @@ func (r *CSRRepo) GetByUUID(ctx context.Context, id string) (*CSRRecord, error) 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT uuid, common_name, organization, org_unit, country, state, locality, email,
 			key_type, key_storage, card_uuid, san_dns, san_ip, san_email, san_uri,
-			key_usage, ext_key_usage, csr_pem, has_private_key, private_key_enc, remark, created_at
+			key_usage, ext_key_usage, extra_subject, csr_pem, has_private_key, private_key_enc, remark, created_at
 		FROM pki_csrs WHERE uuid=?`, id).
 		Scan(&c.UUID, &c.CommonName, &c.Organization, &c.OrgUnit, &c.Country, &c.State, &c.Locality, &c.Email,
 			&c.KeyType, &c.KeyStorage, &c.CardUUID, &c.SANDN, &c.SANIP, &c.SANEmail, &c.SANURI,
-			&c.KeyUsage, &c.ExtKeyUsage, &c.CSRPEM, &hasKey, &c.PrivateKeyEnc, &c.Remark, &c.CreatedAt)
+			&c.KeyUsage, &c.ExtKeyUsage, &c.ExtraSubject, &c.CSRPEM, &hasKey, &c.PrivateKeyEnc, &c.Remark, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

@@ -87,7 +87,7 @@ export default function ApiPage() {
       <Endpoint method="PUT"    path="/api/users/{uuid}" desc="更新用户" />
       <Endpoint method="DELETE" path="/api/users/{uuid}" desc="删除用户" />
 
-      <h3>💳 卡片管理</h3>
+      <h3>💳 智能卡片管理</h3>
       <Endpoint method="GET"    path="/api/cards"        desc="卡片列表" />
       <Endpoint method="POST"   path="/api/cards"        desc="创建卡片"
         body={`{

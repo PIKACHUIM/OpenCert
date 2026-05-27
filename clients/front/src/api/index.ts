@@ -6,7 +6,7 @@ import type {
   LocalCA, SelfSignRequest, CSRRequest, CSRResponse,
   CreateCSRRequest, CSRRecord, CreateCARequest, ImportCARequest,
   PKICert, IssueCertRequest, ImportCertRequest, ExportCertFormat,
-  LoginRequest, AuthToken,
+  LoginRequest, AuthToken, SecurityLevel,
 } from '../types';
 
 // Manager 连接 client-card :1026
@@ -40,17 +40,24 @@ http.interceptors.response.use(
     return res;
   },
   (err) => {
-    // 401 未授权：清除本地 token 并跳转登录页
+    // 401 未授权：区分 Token 过期与业务验证失败
     if (err.response?.status === 401) {
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('auth_user_uuid');
-      localStorage.removeItem('auth_username');
-      localStorage.removeItem('auth_role');
-      // 避免在登录页重复跳转
-      if (!window.location.pathname.startsWith('/login')) {
-        window.location.href = '/login';
+      const msg = err.response?.data?.message || '';
+      // 仅当 Token/Authorization 相关的 401 才清除登录态并跳转
+      const isTokenExpired = /Token|Authorization|登录已过期|未登录/.test(msg);
+      if (isTokenExpired) {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user_uuid');
+        localStorage.removeItem('auth_username');
+        localStorage.removeItem('auth_role');
+        // 避免在登录页重复跳转
+        if (!window.location.pathname.startsWith('/login')) {
+          window.location.href = '/login';
+        }
+        return Promise.reject(new Error('登录已过期，请重新登录'));
       }
-      return Promise.reject(new Error('登录已过期，请重新登录'));
+      // 业务验证失败（如密码错误、AdminKey 错误等），仅提示错误
+      return Promise.reject(new Error(msg || '身份验证失败'));
     }
     const msg = err.response?.data?.message || err.message || '请求失败';
     return Promise.reject(new Error(msg));
@@ -60,6 +67,28 @@ http.interceptors.response.use(
 // ---- 认证 ----
 export const login = (data: LoginRequest) =>
   http.post<AuthToken>('/api/auth/login', data).then((r) => r.data);
+
+export const register = (data: { username: string; password: string; display_name: string; email?: string }) =>
+  http.post<AuthToken>('/api/auth/register', data).then((r) => r.data);
+
+export const cloudLogin = (data: { cloud_url: string; username: string; password: string }) =>
+  http.post<AuthToken & { user_type: 'cloud'; cloud_url: string; cloud_user: string; expires_at: string }>(
+    '/api/auth/cloud-login',
+    data
+  ).then((r) => r.data);
+
+export const logout = () =>
+  http.delete('/api/auth/logout').then((r) => r.data).catch(() => undefined);
+
+export const logoutAll = () =>
+  http.delete('/api/auth/logout-all').then((r) => r.data).catch(() => undefined);
+
+// ---- Settings ----
+export const getSettings = () =>
+  http.get<import('../types').ClientSettings>('/api/settings').then((r) => r.data);
+
+export const putSettings = (data: Partial<import('../types').ClientSettings>) =>
+  http.put<import('../types').ClientSettings>('/api/settings', data).then((r) => r.data);
 
 // ---- 健康检查 ----
 export const getHealth = () =>
@@ -71,7 +100,11 @@ export const getSlots = () =>
 
 // ---- 用户管理（本地用户） ----
 export const getUsers = (params?: { page?: number; page_size?: number }) =>
-  http.get<User[]>('/api/users', { params }).then((r) => ({ items: r.data ?? [], total: (r.data ?? []).length }));
+  http.get<User[]>('/api/users', { params }).then((r) => {
+    const data = r.data;
+    const items = Array.isArray(data) ? data : [];
+    return { items, total: items.length };
+  });
 
 export const getUser = (uuid: string) =>
   http.get<User>(`/api/users/${uuid}`).then((r) => r.data);
@@ -87,23 +120,30 @@ export const deleteUser = (uuid: string) =>
 
 // ---- 卡片管理 ----
 export const getCards = (params?: { user_uuid?: string; page?: number; page_size?: number }) =>
-  http.get<Card[]>('/api/cards', { params }).then((r) => ({ items: r.data ?? [], total: (r.data ?? []).length }));
+  http.get<Card[]>('/api/cards', { params }).then((r) => {
+    const data = r.data;
+    const items = Array.isArray(data) ? data : [];
+    return { items, total: items.length };
+  });
 
 export const getCard = (uuid: string) =>
   http.get<Card>(`/api/cards/${uuid}`).then((r) => r.data);
 
 export const createCard = (data: CreateCardRequest) =>
-  http.post<Card>('/api/cards', data).then((r) => r.data);
+  http.post<Card>('/api/cards', data, { timeout: 120000 }).then((r) => r.data);
 
 export const updateCard = (uuid: string, data: Partial<Card>) =>
   http.put<Card>(`/api/cards/${uuid}`, data).then((r) => r.data);
 
-export const deleteCard = (uuid: string) =>
-  http.delete(`/api/cards/${uuid}`).then((r) => r.data);
+export const deleteCard = (uuid: string, data: { user_uuid: string; user_password: string }) =>
+  http.delete(`/api/cards/${uuid}`, { data }).then((r) => r.data);
 
 // ---- 证书管理 ----
 export const getCerts = (cardUUID: string) =>
-  http.get<Certificate[]>(`/api/cards/${cardUUID}/certs`).then((r) => r.data ?? []);
+  http.get<Certificate[]>(`/api/cards/${cardUUID}/certs`).then((r) => {
+    const data = r.data;
+    return Array.isArray(data) ? data : [];
+  });
 
 export const getCert = (cardUUID: string, certUUID: string) =>
   http.get<Certificate>(`/api/cards/${cardUUID}/certs/${certUUID}`).then((r) => r.data);
@@ -120,6 +160,20 @@ export const exportCert = (cardUUID: string, certUUID: string, format: string) =
     responseType: 'blob',
   }).then((r) => r.data);
 
+// ---- 通用安全凭据（FIDO/Login/Note/Payment/Text）----
+// 与证书共用 Certificate 表，但通过 cert_type 区分类型；
+// public_meta/secret_data 均为 base64，secret_data 非空时需要 card_password。
+export interface CredentialPayload {
+  cert_type: 'fido' | 'login' | 'note' | 'payment' | 'text';
+  key_type?: string;
+  public_meta?: string;   // base64
+  secret_data?: string;   // base64
+  card_password?: string;
+  remark?: string;
+}
+export const createCredential = (cardUUID: string, data: CredentialPayload) =>
+  http.post<Certificate>(`/api/cards/${cardUUID}/credentials`, data).then((r) => r.data);
+
 // ---- 日志查询 ----
 export const getLogs = (params?: {
   card_uuid?: string;
@@ -127,11 +181,18 @@ export const getLogs = (params?: {
   level?: string;
   page?: number;
   page_size?: number;
-}) => http.get<Log[]>('/api/logs', { params }).then((r) => ({ items: r.data ?? [], total: (r.data ?? []).length }));
+}) => http.get<Log[]>('/api/logs', { params }).then((r) => {
+    const data = r.data;
+    const items = Array.isArray(data) ? data : [];
+    return { items, total: items.length };
+  });
 
 // ---- TOTP 管理（本地卡片内） ----
 export const getTOTPList = (cardUUID: string) =>
-  http.get<TOTPEntry[]>(`/api/cards/${cardUUID}/totp`).then((r) => r.data ?? []);
+  http.get<TOTPEntry[]>(`/api/cards/${cardUUID}/totp`).then((r) => {
+    const data = r.data;
+    return Array.isArray(data) ? data : [];
+  });
 
 export const getTOTPCode = (uuid: string) =>
   http.get<TOTPCodeResponse>(`/api/totp/${uuid}/code`).then((r) => r.data);
@@ -208,13 +269,15 @@ export const getPKICerts = (params?: { page?: number; page_size?: number }) =>
 export const issuePKICert = (data: IssueCertRequest) =>
   http.post<PKICert>('/api/pki/certs/issue', data).then((r) => r.data);
 
-export const selfSignFromCSR = (csrUUID: string, validityDays: number, remark?: string, notBefore?: string, notAfter?: string) =>
+export const selfSignFromCSR = (csrUUID: string, validityDays: number, remark?: string, notBefore?: string, notAfter?: string, cardPassword?: string, extensions?: import('../types').CertExtensions) =>
   http.post<PKICert>('/api/pki/certs/selfsign', {
     csr_uuid: csrUUID,
     validity_days: validityDays,
     not_before: notBefore,
     not_after: notAfter,
     remark,
+    card_password: cardPassword,
+    extensions,
   }).then((r) => r.data);
 
 export const importPKICert = (data: ImportCertRequest) =>
@@ -244,6 +307,65 @@ export const importPKICertToCard = (uuid: string, cardUUID: string) =>
 
 export const revokePKICert = (uuid: string) =>
   http.post(`/api/pki/certs/${uuid}/revoke`).then((r) => r.data);
+
+// ---- 卡片 PIN/PUK/AdminKey 重置 ----
+export const resetCardPIN = (cardUUID: string, data: { puk?: string; admin_key?: string; new_pin: string }) =>
+  http.post(`/api/cards/${cardUUID}/reset-pin`, data).then((r) => r.data);
+
+export const resetCardPUK = (cardUUID: string, data: { admin_key: string; current_pin: string; new_puk: string }) =>
+  http.post(`/api/cards/${cardUUID}/reset-puk`, data).then((r) => r.data);
+
+// ---- 智能卡导出/恢复 ----
+export const exportCard = (cardUUID: string, data: { user_uuid: string; user_password: string; password?: string; admin_key?: string }) =>
+  http.post(`/api/cards/${cardUUID}/export`, data, { responseType: 'blob' }).then((r) => r.data);
+
+export const exportCardDownload = (cardUUID: string, data: { user_uuid: string; user_password: string; password?: string; admin_key?: string }, filename?: string) =>
+  http.post(`/api/cards/${cardUUID}/export`, data, { responseType: 'blob' })
+    .then((r) => {
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename || `card-${cardUUID}.ocs`; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+export const restoreCard = (data: { ocs_data: string; password: string; user_uuid: string; user_password: string }) =>
+  http.post<Card>('/api/cards/restore', data).then((r) => r.data);
+
+// ---- 证书密钥导出 ----
+export const exportCertKey = (cardUUID: string, certUUID: string, data: { password?: string; admin_key?: string; format: string; pfx_password?: string }) =>
+  http.post<{ format: string; private_key?: string; certificate?: string; pfx_data?: string }>(`/api/cards/${cardUUID}/certs/${certUUID}/export`, data).then((r) => r.data);
+
+// ---- 证书+密钥导入（到卡片） ----
+export const importCertWithKey = (cardUUID: string, data: {
+  mode: 'pem' | 'pfx';
+  cert_pem?: string;
+  key_pem?: string;
+  pfx_b64?: string;
+  pfx_password?: string;
+  card_password: string;
+  remark?: string;
+}) => http.post<{ cert_uuid: string }>(`/api/cards/${cardUUID}/certs/import`, data).then((r) => r.data);
+
+// ---- 证书详情解析 ----
+export const getCertDetail = (cardUUID: string, certUUID: string) =>
+  http.get<import('../types').CertDetail>(`/api/cards/${cardUUID}/certs/${certUUID}/detail`).then((r) => r.data);
+
+// ---- 云端同步与下发 ----
+export const cloudSync = () =>
+  http.post('/api/cloud/sync').then((r) => r.data);
+
+export const cloudStatus = () =>
+  http.get('/api/cloud/status').then((r) => r.data);
+
+export const deliverCert = (data: {
+  cert_uuid: string;
+  source_cloud_url?: string;
+  source_card_uuid?: string;
+  target: 'database' | 'card';
+  target_card_uuid?: string;
+  card_password?: string;
+  remark?: string;
+}) => http.post('/api/cloud/deliver', data).then((r) => r.data);
 
 // ---- 旧版兼容 ----
 export const generateCSR = (data: CSRRequest) =>

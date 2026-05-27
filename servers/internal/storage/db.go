@@ -136,9 +136,9 @@ func (db *DB) execIgnoreError(sql string) {
 func (db *DB) alterTables() error {
 	// cards 表：增加 storage_zone_uuid, pin_data, puk_data, admin_key_data, pin_retries, pin_failed_count, pin_locked
 	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN storage_zone_uuid TEXT NOT NULL DEFAULT ''`)
-	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN pin_data BLOB`)
-	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN puk_data BLOB`)
-	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN admin_key_data BLOB`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN pin_data TEXT`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN puk_data TEXT`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN admin_key_data TEXT`)
 	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN pin_retries INTEGER NOT NULL DEFAULT 3`)
 	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN pin_failed_count INTEGER NOT NULL DEFAULT 0`)
 	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN pin_locked INTEGER NOT NULL DEFAULT 0`)
@@ -182,6 +182,20 @@ func (db *DB) alterTables() error {
 	db.execIgnoreError(`ALTER TABLE extension_infos ADD COLUMN tmpl_uuid TEXT NOT NULL DEFAULT ''`)
 	db.execIgnoreError(`ALTER TABLE extension_infos ADD COLUMN verify_code_hash TEXT NOT NULL DEFAULT ''`)
 
+	// T23：certificates 补 san_uris（URI SAN）和 certificate_policies（证书策略 OID）
+	db.execIgnoreError(`ALTER TABLE certificates ADD COLUMN san_uris TEXT NOT NULL DEFAULT '[]'`)
+	db.execIgnoreError(`ALTER TABLE certificates ADD COLUMN certificate_policies TEXT NOT NULL DEFAULT '[]'`)
+
+	// T23：extension_templates 补 URI/RID/Other SAN 上限与开关
+	db.execIgnoreError(`ALTER TABLE extension_templates ADD COLUMN max_rid INTEGER NOT NULL DEFAULT 0`)
+	db.execIgnoreError(`ALTER TABLE extension_templates ADD COLUMN max_other INTEGER NOT NULL DEFAULT 0`)
+	db.execIgnoreError(`ALTER TABLE extension_templates ADD COLUMN allow_uri INTEGER NOT NULL DEFAULT 1`)
+	db.execIgnoreError(`ALTER TABLE extension_templates ADD COLUMN allow_rid INTEGER NOT NULL DEFAULT 0`)
+	db.execIgnoreError(`ALTER TABLE extension_templates ADD COLUMN allow_other INTEGER NOT NULL DEFAULT 0`)
+
+	// T23：custom_oids 补 is_critical
+	db.execIgnoreError(`ALTER TABLE custom_oids ADD COLUMN is_critical INTEGER NOT NULL DEFAULT 0`)
+
 	return nil
 }
 
@@ -196,7 +210,7 @@ CREATE TABLE IF NOT EXISTS users (
     email           TEXT NOT NULL DEFAULT '',
     password_hash   TEXT NOT NULL,
     role            TEXT NOT NULL DEFAULT 'user',
-    public_key      BLOB,
+    public_key      TEXT,
     totp_secret     TEXT NOT NULL DEFAULT '',
     enabled         INTEGER NOT NULL DEFAULT 1,
     failed_attempts INTEGER NOT NULL DEFAULT 0,
@@ -212,9 +226,9 @@ CREATE TABLE IF NOT EXISTS cards (
     card_name           TEXT NOT NULL,
     remark              TEXT NOT NULL DEFAULT '',
     storage_zone_uuid   TEXT NOT NULL DEFAULT '',
-    pin_data            BLOB,
-    puk_data            BLOB,
-    admin_key_data      BLOB,
+    pin_data            TEXT,
+    puk_data            TEXT,
+    admin_key_data      TEXT,
     pin_retries         INTEGER NOT NULL DEFAULT 3,
     pin_failed_count    INTEGER NOT NULL DEFAULT 0,
     pin_locked          INTEGER NOT NULL DEFAULT 0,
@@ -229,8 +243,8 @@ CREATE TABLE IF NOT EXISTS certificates (
     user_uuid          TEXT NOT NULL DEFAULT '',
     cert_type          TEXT NOT NULL DEFAULT 'x509',
     key_type           TEXT NOT NULL DEFAULT 'ec256',
-    cert_content       BLOB,
-    private_data       BLOB,
+    cert_content       TEXT,
+    private_data       TEXT,
     remark             TEXT NOT NULL DEFAULT '',
     order_no           TEXT NOT NULL DEFAULT '',
     ca_uuid            TEXT NOT NULL DEFAULT '',
@@ -245,6 +259,8 @@ CREATE TABLE IF NOT EXISTS certificates (
     san_dns            TEXT NOT NULL DEFAULT '[]',
     san_ip             TEXT NOT NULL DEFAULT '[]',
     san_email          TEXT NOT NULL DEFAULT '[]',
+    san_uris           TEXT NOT NULL DEFAULT '[]',
+    certificate_policies TEXT NOT NULL DEFAULT '[]',
     issuance_tmpl_uuid TEXT NOT NULL DEFAULT '',
     template_uuid      TEXT NOT NULL DEFAULT '',
     storage_policy     TEXT NOT NULL DEFAULT '',
@@ -298,7 +314,7 @@ CREATE TABLE IF NOT EXISTS payment_plugins (
     uuid        TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     plugin_type TEXT NOT NULL,
-    config_enc  BLOB,
+    config_enc  TEXT,
     enabled     INTEGER NOT NULL DEFAULT 1,
     sort_weight INTEGER NOT NULL DEFAULT 0,
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -312,7 +328,7 @@ CREATE TABLE IF NOT EXISTS recharge_orders (
     amount_cents  INTEGER NOT NULL,
     channel       TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'pending',
-    callback_data BLOB,
+    callback_data TEXT,
     created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     paid_at       DATETIME,
     expires_at    DATETIME NOT NULL
@@ -396,7 +412,7 @@ CREATE TABLE IF NOT EXISTS cas (
     uuid         TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
     cert_pem     TEXT NOT NULL,
-    private_enc  BLOB NOT NULL,
+    private_enc  TEXT NOT NULL,
     parent_uuid  TEXT NOT NULL DEFAULT '',
     status       TEXT NOT NULL DEFAULT 'active',
     not_before   DATETIME NOT NULL,
@@ -438,6 +454,11 @@ CREATE TABLE IF NOT EXISTS extension_templates (
     max_email            INTEGER NOT NULL DEFAULT 5,
     max_ip               INTEGER NOT NULL DEFAULT 5,
     max_uri              INTEGER NOT NULL DEFAULT 5,
+    max_rid              INTEGER NOT NULL DEFAULT 0,
+    max_other            INTEGER NOT NULL DEFAULT 0,
+    allow_uri            INTEGER NOT NULL DEFAULT 1,
+    allow_rid            INTEGER NOT NULL DEFAULT 0,
+    allow_other          INTEGER NOT NULL DEFAULT 0,
     require_dns_verify   INTEGER NOT NULL DEFAULT 0,
     require_email_verify INTEGER NOT NULL DEFAULT 0,
     created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -606,7 +627,7 @@ CREATE TABLE IF NOT EXISTS storage_zones (
     name         TEXT NOT NULL,
     storage_type TEXT NOT NULL DEFAULT 'database',
     hsm_driver   TEXT NOT NULL DEFAULT '',
-    hsm_auth_enc BLOB,
+    hsm_auth_enc TEXT,
     status       TEXT NOT NULL DEFAULT 'active',
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -620,6 +641,7 @@ CREATE TABLE IF NOT EXISTS custom_oids (
     description TEXT NOT NULL DEFAULT '',
     usage_type  TEXT NOT NULL,
     asn1_type   TEXT NOT NULL DEFAULT 'UTF8String',
+    is_critical INTEGER NOT NULL DEFAULT 0,
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -632,7 +654,7 @@ CREATE TABLE IF NOT EXISTS user_totps (
     user_uuid  TEXT NOT NULL REFERENCES users(uuid),
     issuer     TEXT NOT NULL DEFAULT '',
     account    TEXT NOT NULL DEFAULT '',
-    secret_enc BLOB NOT NULL,
+    secret_enc TEXT NOT NULL,
     algorithm  TEXT NOT NULL DEFAULT 'SHA1',
     digits     INTEGER NOT NULL DEFAULT 6,
     period     INTEGER NOT NULL DEFAULT 30,
@@ -712,7 +734,7 @@ CREATE TABLE IF NOT EXISTS ct_entries (
     ca_uuid      TEXT NOT NULL DEFAULT '',
     cert_hash    TEXT NOT NULL,
     ct_server    TEXT NOT NULL,
-    sct_data     BLOB,
+    sct_data     TEXT,
     status       TEXT NOT NULL DEFAULT 'pending',
     submitted_by TEXT NOT NULL DEFAULT '',
     submitted_at DATETIME,

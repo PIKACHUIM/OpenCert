@@ -38,8 +38,8 @@ const AuditLogs: React.FC = () => {
         ...(filters.resource_type && { resource_type: filters.resource_type }),
       });
       const data = await apiRequest(`/api/audit-logs?${params}`);
-      setLogs(data.items || []);
-      setTotal(data.total || 0);
+      setLogs(Array.isArray(data?.items) ? data.items : []);
+      setTotal(data?.total ?? 0);
       setIntegrityBroken(data.integrity_broken || false);
     } catch (e) {
       console.error(e);

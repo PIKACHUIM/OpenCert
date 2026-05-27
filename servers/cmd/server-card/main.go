@@ -92,6 +92,15 @@ func main() {
 	paymentRegistry := payment.NewRegistry()
 	paymentSvc := payment.NewService(db, paymentRegistry)
 
+	// 加载已启用的支付渠道（PaymentPlugin DB → Registry）。
+	// 单个插件加载失败不会阻塞启动，仅打印日志。
+	paymentLoader := payment.NewLoader(db, paymentRegistry, cardSvc.DecryptData)
+	if loaded, err := paymentLoader.Reload(context.Background()); err != nil {
+		slog.Warn("加载支付渠道失败", "error", err)
+	} else {
+		slog.Info("支付渠道加载完成", "count", len(loaded), "types", loaded)
+	}
+
 	// 初始化模板服务
 	tmplSvc := template.NewService(db)
 
@@ -133,6 +142,7 @@ func main() {
 		ACMESvc:       acmeSvc,
 	}
 	apiServer := api.NewServer(cfg, db, jwtMgr, svcs, userRepo, logRepo)
+	apiServer.SetMailer(mailer.New(cfg.SMTP))
 	if err := apiServer.Start(); err != nil {
 		slog.Error("启动 API 服务失败", "error", err)
 		os.Exit(1)

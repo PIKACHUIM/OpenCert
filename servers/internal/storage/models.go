@@ -11,7 +11,7 @@ type User struct {
 	Email          string     `json:"email"`
 	PasswordHash   string     `json:"-"`
 	Role           string     `json:"role"`             // admin/user/readonly
-	PublicKey      []byte     `json:"public_key,omitempty"` // 用户云端公钥（用于加密私钥备份）
+	PublicKey      Base64Bytes `json:"public_key,omitempty"` // 用户云端公钥（用于加密私钥备份）
 	TOTPSecret     string     `json:"-"`                // TOTP 密钥（加密存储）
 	Enabled        bool       `json:"enabled"`
 	FailedAttempts int        `json:"-"`                // 连续登录失败次数
@@ -27,9 +27,9 @@ type Card struct {
 	CardName        string    `json:"card_name"`
 	Remark          string    `json:"remark"`
 	StorageZoneUUID string    `json:"storage_zone_uuid"` // 关联存储区域 UUID
-	PINData         []byte    `json:"-"`                 // AES-256-GCM 加密存储的 PIN
-	PUKData         []byte    `json:"-"`                 // AES-256-GCM 加密存储的 PUK
-	AdminKeyData    []byte    `json:"-"`                 // AES-256-GCM 加密存储的 Admin Key
+	PINData         Base64Bytes `json:"-"`                 // AES-256-GCM 加密存储的 PIN
+	PUKData         Base64Bytes `json:"-"`                 // AES-256-GCM 加密存储的 PUK
+	AdminKeyData    Base64Bytes `json:"-"`                 // AES-256-GCM 加密存储的 Admin Key
 	PINRetries      int       `json:"pin_retries"`       // PIN 错误最大次数（默认 3）
 	PINFailedCount  int       `json:"pin_failed_count"`  // 当前连续错误次数
 	PINLocked       bool      `json:"pin_locked"`        // PIN 是否被锁定
@@ -45,8 +45,8 @@ type Certificate struct {
 	UserUUID         string     `json:"user_uuid"`          // 所属用户 UUID
 	CertType         string     `json:"cert_type"`          // x509/gpg/ssh
 	KeyType          string     `json:"key_type"`
-	CertContent      []byte     `json:"cert_content"`       // 公开部分
-	PrivateData      []byte     `json:"-"`                  // 加密的私鑰，不序列化
+	CertContent      Base64Bytes `json:"cert_content"`       // 公开部分
+	PrivateData      Base64Bytes `json:"-"`                  // 加密的私鑰，不序列化
 	Remark           string     `json:"remark"`
 	OrderNo          string     `json:"order_no,omitempty"`
 	CAUUID           string     `json:"ca_uuid,omitempty"`
@@ -60,7 +60,9 @@ type Certificate struct {
 	ExtKeyUsage      string     `json:"ext_key_usage,omitempty"` // 扩展密鑰用法 OID 列表（JSON 数组）
 	SANDNS           string     `json:"san_dns,omitempty"`      // SAN DNS 名称（JSON 数组）
 	SANIP            string     `json:"san_ip,omitempty"`       // SAN IP 地址（JSON 数组）
-	SANEmail         string     `json:"san_email,omitempty"`    // SAN 邮筱（JSON 数组）
+	SANEmail         string     `json:"san_email,omitempty"`    // SAN 邮箋（JSON 数组）
+	SANURI           string     `json:"san_uris,omitempty"`     // SAN URI 列表（JSON 数组）
+	CertificatePolicies string  `json:"certificate_policies,omitempty"` // 证书策略 OID 列表（JSON 数组）
 	IssuanceTmplUUID string     `json:"issuance_tmpl_uuid,omitempty"`
 	TemplateUUID     string     `json:"template_uuid,omitempty"`
 	StoragePolicy    string     `json:"storage_policy,omitempty"`
@@ -116,7 +118,7 @@ type PaymentPlugin struct {
 	UUID       string    `json:"uuid"`
 	Name       string    `json:"name"`        // 插件显示名称
 	PluginType string    `json:"plugin_type"` // alipay/wechat/stripe/paypal
-	ConfigEnc  []byte    `json:"-"`           // 加密存储的配置参数（API Key/Secret 等）
+	ConfigEnc  Base64Bytes `json:"-"`           // 加密存储的配置参数（API Key/Secret 等）
 	Enabled    bool      `json:"enabled"`
 	SortWeight int       `json:"sort_weight"` // 排序权重，越大越靠前
 	CreatedAt  time.Time `json:"created_at"`
@@ -130,7 +132,7 @@ type RechargeOrder struct {
 	AmountCents  int64       `json:"amount_cents"`   // 金额（分），避免浮点精度问题
 	Channel      string      `json:"channel"`        // 支付渠道（对应 PaymentPlugin.PluginType）
 	Status       OrderStatus `json:"status"`
-	CallbackData []byte      `json:"-"`              // 支付平台回调原始数据
+	CallbackData Base64Bytes `json:"-"`              // 支付平台回调原始数据
 	CreatedAt    time.Time   `json:"created_at"`
 	PaidAt       *time.Time  `json:"paid_at,omitempty"`
 	ExpiresAt    time.Time   `json:"expires_at"`     // 订单过期时间（默认30分钟）
@@ -234,7 +236,7 @@ type CA struct {
 	UUID        string    `json:"uuid"`
 	Name        string    `json:"name"`
 	CertPEM     string    `json:"cert_pem"`       // CA 证书 PEM
-	PrivateEnc  []byte    `json:"-"`              // 加密存储的 CA 私钥
+	PrivateEnc  Base64Bytes `json:"-"`              // 加密存储的 CA 私钥
 	ParentUUID  string    `json:"parent_uuid,omitempty"` // 父 CA UUID（根 CA 为空）
 	Status      string    `json:"status"`         // active/revoked/expired
 	NotBefore   time.Time `json:"not_before"`
@@ -311,6 +313,11 @@ type ExtensionTemplate struct {
 	MaxEmail       int       `json:"max_email"`        // 邮箱最大数量
 	MaxIP          int       `json:"max_ip"`           // IP 最大数量
 	MaxURI         int       `json:"max_uri"`          // URI 最大数量
+	MaxRID         int       `json:"max_rid"`          // RID（Registered ID）最大数量
+	MaxOther       int       `json:"max_other"`        // Other SAN 最大数量
+	AllowURI       bool      `json:"allow_uri"`        // 是否允许 URI SAN
+	AllowRID       bool      `json:"allow_rid"`        // 是否允许 RID SAN
+	AllowOther     bool      `json:"allow_other"`      // 是否允许 Other SAN
 	RequireDNSVerify  bool   `json:"require_dns_verify"`  // DNS 是否需要验证
 	RequireEmailVerify bool  `json:"require_email_verify"` // 邮箱是否需要验证
 	VerifyExpiresDays  int   `json:"verify_expires_days"`  // 验证有效期（天，默认 90）
@@ -433,7 +440,7 @@ type StorageZone struct {
 	Name        string    `json:"name"`
 	StorageType string    `json:"storage_type"` // database/hsm
 	HSMDriver   string    `json:"hsm_driver,omitempty"`
-	HSMAuthEnc  []byte    `json:"-"`            // 加密存储的 HSM 授权信息
+	HSMAuthEnc  Base64Bytes `json:"-"`            // 加密存储的 HSM 授权信息
 	Status      string    `json:"status"`       // active/disabled
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -447,6 +454,7 @@ type CustomOID struct {
 	Description string    `json:"description"`
 	UsageType   string    `json:"usage_type"`   // ext_key_usage/subject_field/ev_policy/asn1_extension
 	ASN1Type    string    `json:"asn1_type"`    // ASN.1 数据类型（UTF8String/IA5String/BOOLEAN/INTEGER/OCTET_STRING 等）
+	IsCritical  bool      `json:"is_critical"`  // 写入 X.509 扩展时是否标记为 critical
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -457,7 +465,7 @@ type UserTOTP struct {
 	UserUUID  string    `json:"user_uuid"`
 	Issuer    string    `json:"issuer"`
 	Account   string    `json:"account"`
-	SecretEnc []byte    `json:"-"`          // 加密存储的 TOTP 密钥
+	SecretEnc Base64Bytes `json:"-"`          // 加密存储的 TOTP 密钥
 	Algorithm string    `json:"algorithm"`  // SHA1/SHA256/SHA512
 	Digits    int       `json:"digits"`     // 6/8
 	Period    int       `json:"period"`     // 默认 30 秒

@@ -85,6 +85,11 @@ const Home: React.FC = () => {
                 boxShadow: '0 8px 24px rgba(22,119,255,0.4)' }}>
               进入管理平台
             </Button>
+            <Button size="large" icon={<SafetyCertificateOutlined />} onClick={() => navigate('/apply')}
+              style={{ height: 48, padding: '0 32px', borderRadius: 10, fontWeight: 600, fontSize: 16,
+                color: '#e6edf3', borderColor: '#30363d', background: 'rgba(22,27,34,0.8)' }}>
+              申请证书
+            </Button>
           </Space>
         </div>
       </div>

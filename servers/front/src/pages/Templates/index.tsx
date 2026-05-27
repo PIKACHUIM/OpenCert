@@ -33,7 +33,7 @@ const IssuanceTab: React.FC<{ cas: CA[] }> = ({ cas }) => {
 
   const load = async () => {
     setLoading(true);
-    try { const r = await listIssuanceTemplates(); setData(r.items || []); }
+    try { const r = await listIssuanceTemplates(); setData(Array.isArray(r?.items) ? r.items : []); }
     catch (e: any) { message.error(e.message); } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
@@ -422,7 +422,7 @@ const KeyStorageTab: React.FC = () => {
 // ---- 主页面 ----
 const Templates: React.FC = () => {
   const [cas, setCAs] = useState<CA[]>([]);
-  useEffect(() => { listCAs({ page: 1, page_size: 100 }).then(r => setCAs(r.items || [])).catch(() => {}); }, []);
+  useEffect(() => { listCAs({ page: 1, page_size: 100 }).then(r => setCAs(Array.isArray(r?.items) ? r.items : [])).catch(() => {}); }, []);
 
   return (
     <div>

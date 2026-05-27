@@ -131,7 +131,7 @@ func TestGenerateKeyPairAndSign(t *testing.T) {
 		CertType: storage.CertTypeX509,
 		KeyType:  "ec256",
 		Remark:   "测试 EC 密钥",
-	}, masterKey)
+	}, masterKey, card)
 	if err != nil {
 		t.Fatalf("生成密钥对失败: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestGenerateRSAKeyPair(t *testing.T) {
 		CertType: storage.CertTypeX509,
 		KeyType:  "rsa2048",
 		Remark:   "RSA-2048 测试",
-	}, slot.MasterKey())
+	}, slot.MasterKey(), card)
 	if err != nil {
 		t.Fatalf("生成 RSA 密钥对失败: %v", err)
 	}

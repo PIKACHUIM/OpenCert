@@ -30,6 +30,9 @@ type Service struct {
 	// masterKey 是服务端主密钥，用于加密所有私钥
 	// 生产环境应从 HSM 或密钥管理服务获取
 	masterKey []byte
+	// ekTrust 是 TPM 厂商根证书池，用于高安全等级卡片的 EK 认证。
+	// 可为 nil（不强制 EK 认证）。
+	ekTrust *EKTrustStore
 }
 
 // NewService 创建卡片服务。
@@ -39,7 +42,13 @@ func NewService(cardRepo *storage.CardRepo, certRepo *storage.CertRepo, masterKe
 		cardRepo:  cardRepo,
 		certRepo:  certRepo,
 		masterKey: masterKey,
+		ekTrust:   NewEKTrustStore(),
 	}
+}
+
+// EKTrust 返回服务持有的 EK 信任库（用于在启动时注入厂商根）。
+func (s *Service) EKTrust() *EKTrustStore {
+	return s.ekTrust
 }
 
 // CreateCardRequest 是创建卡片的请求参数。
@@ -52,10 +61,39 @@ type CreateCardRequest struct {
 	PUK             string // 明文 PUK（加密后存储）
 	AdminKey        string // 明文 Admin Key（加密后存储）
 	PINRetries      int    // PIN 错误最大次数，默认 3
+
+	// 以下字段用于高安全等级卡片创建（可选）。
+	// 当 SecurityLevel=high 且 SlotType=tpmv2 时，必须提供 Attestation 与 AttestationNonce。
+	SlotType         SlotType      // 槽类型：software/tpmv2/apple_t2/apple_se
+	SecurityLevel    SecurityLevel // 安全等级：low/medium/high
+	Attestation      *Attestation  // 客户端上送的 EK 认证，可为 nil（除高安全等级外）
+	AttestationNonce string        // 服务端本次下发的 nonce
 }
 
 // CreateCard 创建云端卡片，支持 PIN/PUK/Admin Key 设置。
+//
+// 当 req.SlotType == SlotTPMv2 且 req.SecurityLevel == SecurityHigh 时，
+// 必须提供 req.Attestation 与 req.AttestationNonce，否则拒绝。
+// 校验通过后才会创建卡片记录。
 func (s *Service) CreateCard(ctx context.Context, req *CreateCardRequest) (*storage.Card, error) {
+	// 高安全等级强制 EK 认证
+	if req.SlotType == SlotTPMv2 && req.SecurityLevel == SecurityHigh {
+		if s.ekTrust == nil {
+			return nil, fmt.Errorf("服务未启用 EK 信任库，无法创建高安全等级卡片")
+		}
+		if req.Attestation == nil {
+			return nil, fmt.Errorf("高安全等级卡片必须提供 EK 认证；请改用中/低安全等级或更换支持 TPM 的设备")
+		}
+		if err := s.ekTrust.VerifyEKAttestation(req.Attestation, req.AttestationNonce, req.SecurityLevel); err != nil {
+			return nil, fmt.Errorf("EK 认证失败，建议降级为中安全等级: %w", err)
+		}
+	} else if req.Attestation != nil && req.SecurityLevel != "" {
+		// 中/低等级若也带了 attestation，做最佳努力校验，失败仅作为警告（不阻断）
+		if s.ekTrust != nil {
+			_ = s.ekTrust.VerifyEKAttestation(req.Attestation, req.AttestationNonce, req.SecurityLevel)
+		}
+	}
+
 	card := &storage.Card{
 		UserUUID:        req.UserUUID,
 		CardName:        req.CardName,

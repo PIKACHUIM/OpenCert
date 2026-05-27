@@ -298,6 +298,8 @@ type IssueCertRequest struct {
 	DNSNames         []string `json:"dns_names"`
 	IPAddresses      []string `json:"ip_addresses"`
 	EmailAddrs       []string `json:"email_addresses"`
+	URIs             []string `json:"uris"`                  // SAN URI 列表
+	PolicyOIDs       []string `json:"certificate_policies"`  // 证书策略 OID 列表
 	CardUUID         string   `json:"card_uuid"`          // 签发后存入的卡片 UUID（可选）
 	IssuanceTmplUUID string   `json:"issuance_tmpl_uuid"` // 颁发模板 UUID（可选）
 }
@@ -356,6 +358,8 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 		DNSNames:         req.DNSNames,
 		IPAddresses:      ips,
 		EmailAddrs:       req.EmailAddrs,
+		URIs:             req.URIs,
+		PolicyOIDs:       req.PolicyOIDs,
 		IssuanceTmplUUID: req.IssuanceTmplUUID,
 	}
 
@@ -385,6 +389,11 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 			IssuerDN:         resp.IssuerDN,
 			NotBefore:        &resp.NotBefore,
 			NotAfter:         &resp.NotAfter,
+			SANDNS:           jsonStrArray(req.DNSNames),
+			SANIP:            jsonStrArray(req.IPAddresses),
+			SANEmail:         jsonStrArray(req.EmailAddrs),
+			SANURI:           jsonStrArray(req.URIs),
+			CertificatePolicies: jsonStrArray(req.PolicyOIDs),
 			IssuanceTmplUUID: req.IssuanceTmplUUID,
 			RevocationStatus: "active",
 		}
@@ -657,4 +666,18 @@ func (s *Server) handlePublicCAIssuerByPath(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, certPEM)
+}
+
+// jsonStrArray 将字符串切片编码为 JSON 数组字符串。
+// 用于 Certificate 记录中的 san_dns/san_ip/san_email/san_uris/certificate_policies 列。
+// nil 或空切片返回 "[]" 以兼容数据库 NOT NULL 约束。
+func jsonStrArray(ss []string) string {
+	if len(ss) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(ss)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
