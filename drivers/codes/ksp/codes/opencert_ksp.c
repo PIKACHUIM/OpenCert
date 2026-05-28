@@ -416,7 +416,7 @@ static HANDLE ksp_ensure_pipe(OPENCERT_KSP_PROVIDER *prov)
  * 返回 0 表示成功（PIN 写入 pin_buf），非 0 表示用户取消或失败。
  */
 static int ksp_prompt_pin(const WCHAR *card_name, const WCHAR *card_uuid,
-                          char *pin_buf, DWORD pin_buf_size)
+                          char *pin_buf, DWORD pin_buf_size, HWND hWndParent)
 {
     /* 构建弹窗消息文本：显示卡片名称和 UUID */
     WCHAR message[512];
@@ -427,7 +427,7 @@ static int ksp_prompt_pin(const WCHAR *card_name, const WCHAR *card_uuid,
 
     CREDUI_INFOW cui = {0};
     cui.cbSize = sizeof(cui);
-    cui.hwndParent = NULL;
+    cui.hwndParent = hWndParent;
     cui.pszMessageText = message;
     cui.pszCaptionText = L"OpenCert 智能卡认证";
 
@@ -546,7 +546,8 @@ static int ksp_extract_card_uuid(const char *container_utf8, char *card_uuid, DW
  * card_uuid_hint: 卡片 UUID（从 IPC 响应中解析，可为 NULL，会回退到从容器名提取）
  */
 static int ksp_handle_login_required(OPENCERT_KSP_PROVIDER *prov, const WCHAR *container_name,
-                                     const char *card_name_utf8, const char *card_uuid_hint)
+                                     const char *card_name_utf8, const char *card_uuid_hint,
+                                     HWND hWndParent)
 {
     /* 提取 card_uuid（优先使用 hint，否则从容器名提取） */
     char container_utf8[512];
@@ -575,7 +576,7 @@ static int ksp_handle_login_required(OPENCERT_KSP_PROVIDER *prov, const WCHAR *c
 
     /* 弹出 PIN 输入框（显示卡片名称和 UUID） */
     char pin[256] = {0};
-    if (ksp_prompt_pin(card_name_w, card_uuid_w, pin, sizeof(pin)) != 0) {
+    if (ksp_prompt_pin(card_name_w, card_uuid_w, pin, sizeof(pin), hWndParent) != 0) {
         ksp_log("ksp_handle_login_required: user cancelled PIN input");
         return -1;  /* 用户取消 */
     }
@@ -662,7 +663,7 @@ static SECURITY_STATUS WINAPI KspOpenKey(
             ksp_log("KspOpenKey: Slot not logged in, prompting for PIN (card=%s, uuid=%s)",
                     card_name_utf8, card_uuid_utf8);
 
-            if (ksp_handle_login_required(prov, pszKeyName, card_name_utf8, card_uuid_utf8) == 0) {
+            if (ksp_handle_login_required(prov, pszKeyName, card_name_utf8, card_uuid_utf8, NULL) == 0) {
                 /* Login 成功，重新连接并重试 */
                 hPipe = ksp_ensure_pipe(prov);
                 if (hPipe != INVALID_HANDLE_VALUE) {
@@ -963,7 +964,7 @@ static SECURITY_STATUS WINAPI KspSignHash(
         if (resp) { free(resp); resp = NULL; }
         ksp_log("KspSignHash: Slot not logged in, prompting for PIN");
 
-        if (ksp_handle_login_required(prov, key->szContainer, NULL, NULL) == 0) {
+        if (ksp_handle_login_required(prov, key->szContainer, NULL, NULL, key->hWndParent) == 0) {
             /* Login 成功，重新连接并重试签名 */
             hPipe = ksp_ensure_pipe(prov);
             if (hPipe != INVALID_HANDLE_VALUE) {
@@ -1093,8 +1094,14 @@ static SECURITY_STATUS WINAPI KspSetKeyProperty(
     LPCWSTR pszProperty, PBYTE pbInput, DWORD cbInput, DWORD dwFlags)
 {
     ksp_log("KspSetKeyProperty: property=%ls, flags=0x%X", pszProperty ? pszProperty : L"(null)", dwFlags);
-    if (pszProperty && wcscmp(pszProperty, NCRYPT_WINDOW_HANDLE_PROPERTY) == 0)
+    if (pszProperty && wcscmp(pszProperty, NCRYPT_WINDOW_HANDLE_PROPERTY) == 0) {
+        OPENCERT_KSP_KEY *key = (OPENCERT_KSP_KEY *)hKey;
+        if (key && key->dwMagic == KSP_KEY_MAGIC && pbInput && cbInput >= sizeof(HWND)) {
+            key->hWndParent = *(HWND *)pbInput;
+            ksp_log("KspSetKeyProperty: stored hWndParent=%p", key->hWndParent);
+        }
         return ERROR_SUCCESS;
+    }
     return NTE_NOT_SUPPORTED;
 }
 

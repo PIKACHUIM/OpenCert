@@ -96,6 +96,8 @@ typedef struct _OPENCERT_KSP_KEY {
     /* SubjectPublicKeyInfo DER（从后端 IPC 响应中获取，用于公钥导出） */
     BYTE        *pbPublicKeyInfo;
     DWORD       cbPublicKeyInfo;
+    /* 父窗口句柄（由调用方通过 NCRYPT_WINDOW_HANDLE_PROPERTY 传入，用于 PIN 弹窗） */
+    HWND        hWndParent;
 } OPENCERT_KSP_KEY;
 
 #define KSP_KEY_MAGIC       0x4B455931  /* "KEY1" */
