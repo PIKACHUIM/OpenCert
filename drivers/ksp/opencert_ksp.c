@@ -15,6 +15,45 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+#include <wincred.h>
+
+/* ---- Debug Logging ---- */
+static const char *ksp_get_log_path(void)
+{
+    static char path[MAX_PATH] = {0};
+    if (path[0] == '\0') {
+        /* 优先使用 TEMP 环境变量（用户可写），回退到 C:\Windows\Temp */
+        DWORD len = GetEnvironmentVariableA("TEMP", path, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH) {
+            len = GetEnvironmentVariableA("TMP", path, MAX_PATH);
+        }
+        if (len == 0 || len >= MAX_PATH) {
+            strcpy(path, "C:\\Windows\\Temp");
+        }
+        strcat(path, "\\ksp_debug.log");
+    }
+    return path;
+}
+
+static void ksp_log(const char *fmt, ...)
+{
+    FILE *f = fopen(ksp_get_log_path(), "a");
+    if (f) {
+        /* 写入时间戳 */
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d.%03d] ",
+                st.wYear, st.wMonth, st.wDay,
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(f, fmt, args);
+        va_end(args);
+        fprintf(f, "\n");
+        fclose(f);
+    }
+}
 
 /* ---- Base64 Encode/Decode (minimal implementation) ---- */
 
@@ -119,6 +158,8 @@ HANDLE ksp_ipc_connect(void)
     HANDLE h;
     int retries = 3;
 
+    ksp_log("ksp_ipc_connect: attempting to connect to %s", IPC_PIPE_NAME);
+
     while (retries-- > 0) {
         h = CreateFileA(
             IPC_PIPE_NAME,
@@ -128,10 +169,14 @@ HANDLE ksp_ipc_connect(void)
         if (h != INVALID_HANDLE_VALUE) {
             DWORD mode = PIPE_READMODE_BYTE;
             SetNamedPipeHandleState(h, &mode, NULL, NULL);
+            ksp_log("ksp_ipc_connect: SUCCESS, handle=%p", h);
             return h;
         }
+        DWORD err = GetLastError();
+        ksp_log("ksp_ipc_connect: CreateFile failed, error=%u (retries left=%d)", err, retries);
         Sleep(500);
     }
+    ksp_log("ksp_ipc_connect: FAILED after all retries");
     return INVALID_HANDLE_VALUE;
 }
 
@@ -147,6 +192,8 @@ int ksp_ipc_call(HANDLE hPipe, DWORD cmd,
 {
     DWORD req_len = req_json ? (DWORD)strlen(req_json) : 0;
 
+    ksp_log("ksp_ipc_call: cmd=0x%04X, req_len=%u, pipe=%p", cmd, req_len, hPipe);
+
     /* Send frame: Magic + Cmd + Len + Payload */
     BYTE header[IPC_HEADER_SIZE];
     DWORD magic_be = u32_to_be(IPC_MAGIC);
@@ -156,23 +203,36 @@ int ksp_ipc_call(HANDLE hPipe, DWORD cmd,
     memcpy(header + 4, &cmd_be, 4);
     memcpy(header + 8, &len_be, 4);
 
-    if (raw_write(hPipe, header, IPC_HEADER_SIZE) != 0)
+    if (raw_write(hPipe, header, IPC_HEADER_SIZE) != 0) {
+        ksp_log("ksp_ipc_call: raw_write header FAILED, error=%u", GetLastError());
         return -1;
-    if (req_len > 0 && raw_write(hPipe, req_json, req_len) != 0)
+    }
+    if (req_len > 0 && raw_write(hPipe, req_json, req_len) != 0) {
+        ksp_log("ksp_ipc_call: raw_write payload FAILED, error=%u", GetLastError());
         return -1;
+    }
+
+    ksp_log("ksp_ipc_call: request sent, waiting for response...");
 
     /* Receive response */
     BYTE resp_header[IPC_HEADER_SIZE];
-    if (raw_read(hPipe, resp_header, IPC_HEADER_SIZE) != 0)
+    if (raw_read(hPipe, resp_header, IPC_HEADER_SIZE) != 0) {
+        ksp_log("ksp_ipc_call: raw_read resp_header FAILED, error=%u", GetLastError());
         return -1;
+    }
 
     DWORD resp_magic, resp_cmd, resp_len;
     memcpy(&resp_magic, resp_header + 0, 4); resp_magic = be_to_u32(resp_magic);
     memcpy(&resp_cmd, resp_header + 4, 4);   resp_cmd = be_to_u32(resp_cmd);
     memcpy(&resp_len, resp_header + 8, 4);   resp_len = be_to_u32(resp_len);
 
-    if (resp_magic != IPC_MAGIC || resp_len > IPC_MAX_PAYLOAD)
+    ksp_log("ksp_ipc_call: resp_magic=0x%08X, resp_cmd=0x%04X, resp_len=%u",
+            resp_magic, resp_cmd, resp_len);
+
+    if (resp_magic != IPC_MAGIC || resp_len > IPC_MAX_PAYLOAD) {
+        ksp_log("ksp_ipc_call: invalid response (magic mismatch or len too large)");
         return -1;
+    }
 
     *out_rv = 0x00000005; /* CKR_GENERAL_ERROR default */
     if (resp_json) *resp_json = NULL;
@@ -181,10 +241,13 @@ int ksp_ipc_call(HANDLE hPipe, DWORD cmd,
         char *buf = (char *)malloc(resp_len + 1);
         if (!buf) return -1;
         if (raw_read(hPipe, buf, resp_len) != 0) {
+            ksp_log("ksp_ipc_call: raw_read payload FAILED, error=%u", GetLastError());
             free(buf);
             return -1;
         }
         buf[resp_len] = '\0';
+
+        ksp_log("ksp_ipc_call: response payload: %.200s", buf);
 
         /* Parse "rv" field */
         const char *rv_pos = strstr(buf, "\"rv\":");
@@ -196,6 +259,8 @@ int ksp_ipc_call(HANDLE hPipe, DWORD cmd,
             free(buf);
         }
     }
+
+    ksp_log("ksp_ipc_call: done, rv=%u", *out_rv);
     return 0;
 }
 
@@ -230,6 +295,8 @@ static SECURITY_STATUS WINAPI KspOpenProvider(
     LPCWSTR pszProviderName,
     DWORD dwFlags)
 {
+    ksp_log("KspOpenProvider: name=%ls, flags=0x%X", pszProviderName, dwFlags);
+
     OPENCERT_KSP_PROVIDER *prov = (OPENCERT_KSP_PROVIDER *)HeapAlloc(
         GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(OPENCERT_KSP_PROVIDER));
     if (!prov) return NTE_NO_MEMORY;
@@ -240,6 +307,7 @@ static SECURITY_STATUS WINAPI KspOpenProvider(
     prov->hPipe = INVALID_HANDLE_VALUE;
 
     *phProvider = (NCRYPT_PROV_HANDLE)prov;
+    ksp_log("KspOpenProvider: SUCCESS, handle=%p", prov);
     return ERROR_SUCCESS;
 }
 
@@ -265,6 +333,194 @@ static HANDLE ksp_ensure_pipe(OPENCERT_KSP_PROVIDER *prov)
     return prov->hPipe;
 }
 
+/* ---- PIN Prompt and Login ---- */
+
+/*
+ * ksp_prompt_pin - 弹出 Windows PIN 输入对话框。
+ * 使用 CredUIPromptForCredentialsW 显示标准的 Windows 凭据输入框。
+ * card_name: 智能卡名称（显示在弹窗中）
+ * card_uuid: 智能卡 UUID（显示在弹窗中）
+ * 返回 0 表示成功（PIN 写入 pin_buf），非 0 表示用户取消或失败。
+ */
+static int ksp_prompt_pin(const WCHAR *card_name, const WCHAR *card_uuid,
+                          char *pin_buf, DWORD pin_buf_size)
+{
+    /* 构建弹窗消息文本：显示卡片名称和 UUID */
+    WCHAR message[512];
+    _snwprintf(message, 512,
+        L"请认证智能卡 %ls 以继续操作",
+        card_name ? card_name : L"OpenCert SmartCard"
+        );
+
+    CREDUI_INFOW cui = {0};
+    cui.cbSize = sizeof(cui);
+    cui.hwndParent = NULL;
+    cui.pszMessageText = message;
+    cui.pszCaptionText = L"OpenCert 智能卡认证";
+
+    WCHAR username[256] = {0};
+    if (card_uuid) {
+        wcscpy_s(username, 256, card_uuid);
+    } else {
+        wcscpy_s(username, 256, L"Unknown SmartCard");
+    }
+    WCHAR password[256] = {0};
+    BOOL save = FALSE;
+
+    ksp_log("ksp_prompt_pin: showing PIN dialog for card=%ls, uuid=%ls",
+            card_name ? card_name : L"(null)",
+            card_uuid ? card_uuid : L"(null)");
+
+    DWORD result = CredUIPromptForCredentialsW(
+        &cui,
+        L"OpenCert",       /* target name */
+        NULL,              /* reserved */
+        0,                 /* auth error (0 = first attempt) */
+        username, 256,
+        password, 256,
+        &save,
+        CREDUI_FLAGS_GENERIC_CREDENTIALS |
+        CREDUI_FLAGS_DO_NOT_PERSIST |
+        CREDUI_FLAGS_EXCLUDE_CERTIFICATES |
+        CREDUI_FLAGS_KEEP_USERNAME |
+        CREDUI_FLAGS_ALWAYS_SHOW_UI
+    );
+
+    if (result != ERROR_SUCCESS) {
+        ksp_log("ksp_prompt_pin: user cancelled or error, result=%u", result);
+        SecureZeroMemory(password, sizeof(password));
+        return -1;
+    }
+
+    /* 将 WCHAR PIN 转换为 UTF-8 */
+    int len = WideCharToMultiByte(CP_UTF8, 0, password, -1,
+                                  pin_buf, pin_buf_size, NULL, NULL);
+    SecureZeroMemory(password, sizeof(password));
+
+    if (len <= 0) {
+        ksp_log("ksp_prompt_pin: WideCharToMultiByte failed");
+        return -1;
+    }
+
+    ksp_log("ksp_prompt_pin: PIN obtained (len=%d)", len - 1);
+    return 0;
+}
+
+/*
+ * ksp_login - 发送 CmdKSPLogin 命令给后端，执行 PIN 登录。
+ * card_uuid_utf8: 卡片 UUID（从容器名中提取）
+ * pin_utf8: 用户输入的 PIN（UTF-8）
+ * 返回 0 表示登录成功，非 0 表示失败。
+ */
+static int ksp_login(HANDLE hPipe, const char *card_uuid_utf8, const char *pin_utf8)
+{
+    char req[1024];
+    _snprintf(req, sizeof(req), "{\"card_uuid\":\"%s\",\"pin\":\"%s\"}",
+              card_uuid_utf8, pin_utf8);
+
+    char *resp = NULL;
+    DWORD rv = 0;
+    int ret = ksp_ipc_call(hPipe, CMD_KSP_LOGIN, req, &resp, &rv);
+
+    /* 安全清除请求中的 PIN */
+    SecureZeroMemory(req, sizeof(req));
+
+    if (resp) free(resp);
+
+    if (ret != 0) {
+        ksp_log("ksp_login: IPC call failed");
+        return -1;
+    }
+
+    if (rv == CKR_OK) {
+        ksp_log("ksp_login: SUCCESS");
+        return 0;
+    }
+
+    ksp_log("ksp_login: FAILED, rv=%u", rv);
+    return (int)rv;
+}
+
+/*
+ * ksp_extract_card_uuid - 从容器名中提取 card_uuid。
+ * 容器名格式：OpenCert_<card_uuid>_<cert_uuid>
+ * 由于 card_uuid 本身包含连字符，使用最后一个 '_' 分隔。
+ */
+static int ksp_extract_card_uuid(const char *container_utf8, char *card_uuid, DWORD buf_size)
+{
+    const char *prefix = "OpenCert_";
+    if (strncmp(container_utf8, prefix, strlen(prefix)) != 0)
+        return -1;
+
+    const char *after_prefix = container_utf8 + strlen(prefix);
+    const char *last_underscore = strrchr(after_prefix, '_');
+    if (!last_underscore || last_underscore == after_prefix)
+        return -1;
+
+    DWORD uuid_len = (DWORD)(last_underscore - after_prefix);
+    if (uuid_len >= buf_size)
+        return -1;
+
+    memcpy(card_uuid, after_prefix, uuid_len);
+    card_uuid[uuid_len] = '\0';
+    return 0;
+}
+
+/*
+ * ksp_handle_login_required - 处理 CKR_USER_NOT_LOGGED_IN 错误。
+ * 弹出 PIN 输入框，发送 Login 命令，成功后返回 0（调用者应重试原始操作）。
+ * card_name_utf8: 卡片名称（从 IPC 响应中解析，可为 NULL）
+ * card_uuid_hint: 卡片 UUID（从 IPC 响应中解析，可为 NULL，会回退到从容器名提取）
+ */
+static int ksp_handle_login_required(OPENCERT_KSP_PROVIDER *prov, const WCHAR *container_name,
+                                     const char *card_name_utf8, const char *card_uuid_hint)
+{
+    /* 提取 card_uuid（优先使用 hint，否则从容器名提取） */
+    char container_utf8[512];
+    WideCharToMultiByte(CP_UTF8, 0, container_name, -1,
+                       container_utf8, sizeof(container_utf8), NULL, NULL);
+
+    char card_uuid[256];
+    if (card_uuid_hint && card_uuid_hint[0] != '\0') {
+        strncpy(card_uuid, card_uuid_hint, sizeof(card_uuid) - 1);
+        card_uuid[sizeof(card_uuid) - 1] = '\0';
+    } else if (ksp_extract_card_uuid(container_utf8, card_uuid, sizeof(card_uuid)) != 0) {
+        ksp_log("ksp_handle_login_required: failed to extract card_uuid");
+        return -1;
+    }
+
+    /* 将卡片名称和 UUID 转换为 WCHAR 用于弹窗显示 */
+    WCHAR card_name_w[256] = {0};
+    WCHAR card_uuid_w[256] = {0};
+
+    if (card_name_utf8 && card_name_utf8[0] != '\0') {
+        MultiByteToWideChar(CP_UTF8, 0, card_name_utf8, -1, card_name_w, 256);
+    } else {
+        wcscpy_s(card_name_w, 256, L"OpenCert SmartCard");
+    }
+    MultiByteToWideChar(CP_UTF8, 0, card_uuid, -1, card_uuid_w, 256);
+
+    /* 弹出 PIN 输入框（显示卡片名称和 UUID） */
+    char pin[256] = {0};
+    if (ksp_prompt_pin(card_name_w, card_uuid_w, pin, sizeof(pin)) != 0) {
+        ksp_log("ksp_handle_login_required: user cancelled PIN input");
+        return -1;  /* 用户取消 */
+    }
+
+    /* 确保 pipe 连接 */
+    HANDLE hPipe = ksp_ensure_pipe(prov);
+    if (hPipe == INVALID_HANDLE_VALUE) {
+        SecureZeroMemory(pin, sizeof(pin));
+        return -1;
+    }
+
+    /* 发送 Login 命令 */
+    int ret = ksp_login(hPipe, card_uuid, pin);
+    SecureZeroMemory(pin, sizeof(pin));
+
+    return ret;
+}
+
 static SECURITY_STATUS WINAPI KspOpenKey(
     NCRYPT_PROV_HANDLE hProvider,
     NCRYPT_KEY_HANDLE *phKey,
@@ -277,6 +533,9 @@ static SECURITY_STATUS WINAPI KspOpenKey(
         return NTE_INVALID_HANDLE;
     if (!pszKeyName || !phKey)
         return NTE_INVALID_PARAMETER;
+
+    ksp_log("KspOpenKey: container=%ls, legacyKeySpec=%u, flags=0x%X",
+            pszKeyName, dwLegacyKeySpec, dwFlags);
 
     OPENCERT_KSP_KEY *key = (OPENCERT_KSP_KEY *)HeapAlloc(
         GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(OPENCERT_KSP_KEY));
@@ -301,7 +560,49 @@ static SECURITY_STATUS WINAPI KspOpenKey(
 
         char *resp = NULL;
         DWORD rv = 0;
-        if (ksp_ipc_call(hPipe, CMD_KSP_GET_KEY_INFO, req, &resp, &rv) == 0 && rv == 0) {
+        int ipc_ret = ksp_ipc_call(hPipe, CMD_KSP_GET_KEY_INFO, req, &resp, &rv);
+
+        /* 如果后端返回 CKR_USER_NOT_LOGGED_IN，弹出 PIN 输入框 */
+        if (ipc_ret == 0 && rv == CKR_USER_NOT_LOGGED_IN) {
+            /* 从响应中解析卡片名称和 UUID */
+            char card_name_utf8[256] = {0};
+            char card_uuid_utf8[256] = {0};
+            if (resp) {
+                const char *name_pos = strstr(resp, "\"card_name\":\"");
+                if (name_pos) {
+                    name_pos += 13;
+                    const char *name_end = strchr(name_pos, '"');
+                    if (name_end && (name_end - name_pos) < 256) {
+                        memcpy(card_name_utf8, name_pos, name_end - name_pos);
+                    }
+                }
+                const char *uuid_pos = strstr(resp, "\"card_uuid\":\"");
+                if (uuid_pos) {
+                    uuid_pos += 13;
+                    const char *uuid_end = strchr(uuid_pos, '"');
+                    if (uuid_end && (uuid_end - uuid_pos) < 256) {
+                        memcpy(card_uuid_utf8, uuid_pos, uuid_end - uuid_pos);
+                    }
+                }
+                free(resp); resp = NULL;
+            }
+            ksp_log("KspOpenKey: Slot not logged in, prompting for PIN (card=%s, uuid=%s)",
+                    card_name_utf8, card_uuid_utf8);
+
+            if (ksp_handle_login_required(prov, pszKeyName, card_name_utf8, card_uuid_utf8) == 0) {
+                /* Login 成功，重新连接并重试 */
+                hPipe = ksp_ensure_pipe(prov);
+                if (hPipe != INVALID_HANDLE_VALUE) {
+                    ipc_ret = ksp_ipc_call(hPipe, CMD_KSP_GET_KEY_INFO, req, &resp, &rv);
+                }
+            } else {
+                ksp_log("KspOpenKey: PIN login failed or cancelled");
+                /* 使用默认值继续（允许 key open，签名时再处理） */
+                rv = 1;
+            }
+        }
+
+        if (ipc_ret == 0 && rv == 0) {
             /* Parse algorithm and bits from response */
             if (resp) {
                 const char *alg_pos = strstr(resp, "\"algorithm\":\"");
@@ -320,9 +621,11 @@ static SECURITY_STATUS WINAPI KspOpenKey(
                 free(resp);
             }
         } else {
-            /* Backend not available, still allow key open (lazy connect) */
+            /* Backend not available or login failed, use defaults */
+            ksp_log("KspOpenKey: backend not available, using defaults (RSA/2048)");
             wcscpy_s(key->szAlgorithm, 64, BCRYPT_RSA_ALGORITHM);
             key->dwKeyBits = 2048;
+            if (resp) free(resp);
         }
     }
 
@@ -406,6 +709,55 @@ static SECURITY_STATUS WINAPI KspGetKeyProperty(
         return ERROR_SUCCESS;
     }
 
+    /* NCRYPT_EXPORT_POLICY_PROPERTY - 密钥导出策略 */
+    if (wcscmp(pszProperty, NCRYPT_EXPORT_POLICY_PROPERTY) == 0) {
+        *pcbResult = sizeof(DWORD);
+        if (!pbOutput) return ERROR_SUCCESS;
+        if (cbOutput < sizeof(DWORD)) return NTE_BUFFER_TOO_SMALL;
+        /* 不允许导出私钥（密钥在后端管理） */
+        *(DWORD *)pbOutput = 0;
+        return ERROR_SUCCESS;
+    }
+
+    /* NCRYPT_KEY_USAGE_PROPERTY - 密钥用途 */
+    if (wcscmp(pszProperty, NCRYPT_KEY_USAGE_PROPERTY) == 0) {
+        *pcbResult = sizeof(DWORD);
+        if (!pbOutput) return ERROR_SUCCESS;
+        if (cbOutput < sizeof(DWORD)) return NTE_BUFFER_TOO_SMALL;
+        /* 允许签名和解密 */
+        *(DWORD *)pbOutput = NCRYPT_ALLOW_SIGNING_FLAG | NCRYPT_ALLOW_DECRYPT_FLAG;
+        return ERROR_SUCCESS;
+    }
+
+    /* NCRYPT_SECURITY_DESCR_SUPPORT_PROPERTY */
+    if (wcscmp(pszProperty, NCRYPT_SECURITY_DESCR_SUPPORT_PROPERTY) == 0) {
+        *pcbResult = sizeof(DWORD);
+        if (!pbOutput) return ERROR_SUCCESS;
+        if (cbOutput < sizeof(DWORD)) return NTE_BUFFER_TOO_SMALL;
+        *(DWORD *)pbOutput = 0;  /* 不支持安全描述符 */
+        return ERROR_SUCCESS;
+    }
+
+    /* NCRYPT_PROVIDER_HANDLE_PROPERTY - 返回 Provider 句柄 */
+    if (wcscmp(pszProperty, NCRYPT_PROVIDER_HANDLE_PROPERTY) == 0) {
+        *pcbResult = sizeof(NCRYPT_PROV_HANDLE);
+        if (!pbOutput) return ERROR_SUCCESS;
+        if (cbOutput < sizeof(NCRYPT_PROV_HANDLE)) return NTE_BUFFER_TOO_SMALL;
+        *(NCRYPT_PROV_HANDLE *)pbOutput = (NCRYPT_PROV_HANDLE)key->pProvider;
+        return ERROR_SUCCESS;
+    }
+
+    /* NCRYPT_WINDOW_HANDLE_PROPERTY - 窗口句柄（用于 PIN 弹窗） */
+    if (wcscmp(pszProperty, NCRYPT_WINDOW_HANDLE_PROPERTY) == 0) {
+        /* 接受设置但不存储（我们使用自己的弹窗） */
+        *pcbResult = sizeof(HWND);
+        if (!pbOutput) return ERROR_SUCCESS;
+        if (cbOutput < sizeof(HWND)) return NTE_BUFFER_TOO_SMALL;
+        *(HWND *)pbOutput = NULL;
+        return ERROR_SUCCESS;
+    }
+
+    ksp_log("KspGetKeyProperty: unsupported property=%ls", pszProperty);
     return NTE_NOT_SUPPORTED;
 }
 
@@ -426,10 +778,15 @@ static SECURITY_STATUS WINAPI KspSignHash(
     if (!pbHashValue || cbHashValue == 0 || !pcbResult)
         return NTE_INVALID_PARAMETER;
 
+    ksp_log("KspSignHash: container=%ls, hashLen=%u, sigBufLen=%u, flags=0x%X",
+            key->szContainer, cbHashValue, cbSignature, dwFlags);
+
     OPENCERT_KSP_PROVIDER *prov = key->pProvider;
     HANDLE hPipe = ksp_ensure_pipe(prov);
-    if (hPipe == INVALID_HANDLE_VALUE)
+    if (hPipe == INVALID_HANDLE_VALUE) {
+        ksp_log("KspSignHash: FAILED - IPC pipe not available (client-card not running?)");
         return NTE_DEVICE_NOT_FOUND;
+    }
 
     /* Convert container to UTF-8 */
     char container_utf8[512];
@@ -481,6 +838,27 @@ static SECURITY_STATUS WINAPI KspSignHash(
     char *resp = NULL;
     DWORD rv = 0;
     int ret = ksp_ipc_call(hPipe, CMD_KSP_SIGN, req, &resp, &rv);
+
+    /* 如果后端返回 CKR_USER_NOT_LOGGED_IN，弹出 PIN 输入框并重试 */
+    if (ret == 0 && rv == CKR_USER_NOT_LOGGED_IN) {
+        if (resp) { free(resp); resp = NULL; }
+        ksp_log("KspSignHash: Slot not logged in, prompting for PIN");
+
+        if (ksp_handle_login_required(prov, key->szContainer, NULL, NULL) == 0) {
+            /* Login 成功，重新连接并重试签名 */
+            hPipe = ksp_ensure_pipe(prov);
+            if (hPipe != INVALID_HANDLE_VALUE) {
+                ret = ksp_ipc_call(hPipe, CMD_KSP_SIGN, req, &resp, &rv);
+            } else {
+                free(req);
+                return NTE_DEVICE_NOT_FOUND;
+            }
+        } else {
+            free(req);
+            return NTE_INTERNAL_ERROR;
+        }
+    }
+
     free(req);
 
     if (ret != 0 || rv != 0) {
@@ -665,12 +1043,188 @@ static SECURITY_STATUS WINAPI KspEnumAlgorithms(
     return NTE_NOT_SUPPORTED;
 }
 
+/* ---- EnumKeys state management ---- */
+
+typedef struct _KSP_ENUM_STATE {
+    DWORD dwMagic;          /* 'ENUM' = 0x454E554D */
+    DWORD dwCount;          /* Total number of keys */
+    DWORD dwIndex;          /* Current index (next to return) */
+    /* Followed by dwCount entries of KSP_ENUM_ENTRY */
+} KSP_ENUM_STATE;
+
+typedef struct _KSP_ENUM_ENTRY {
+    WCHAR szContainer[256];
+    WCHAR szAlgorithm[64];
+    DWORD dwKeyBits;
+} KSP_ENUM_ENTRY;
+
+#define KSP_ENUM_MAGIC  0x454E554Du  /* "ENUM" */
+
+/* Parse JSON array of keys from IPC response */
+static KSP_ENUM_STATE *ksp_parse_enum_response(const char *json)
+{
+    /* Count keys by counting "container" occurrences */
+    DWORD count = 0;
+    const char *p = json;
+    while ((p = strstr(p, "\"container\":\"")) != NULL) {
+        count++;
+        p++;
+    }
+
+    if (count == 0) return NULL;
+
+    /* Allocate state + entries */
+    DWORD alloc_size = sizeof(KSP_ENUM_STATE) + count * sizeof(KSP_ENUM_ENTRY);
+    KSP_ENUM_STATE *state = (KSP_ENUM_STATE *)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, alloc_size);
+    if (!state) return NULL;
+
+    state->dwMagic = KSP_ENUM_MAGIC;
+    state->dwCount = count;
+    state->dwIndex = 0;
+
+    KSP_ENUM_ENTRY *entries = (KSP_ENUM_ENTRY *)((BYTE *)state + sizeof(KSP_ENUM_STATE));
+
+    /* Parse each key entry */
+    p = json;
+    DWORD idx = 0;
+    while (idx < count && (p = strstr(p, "\"container\":\"")) != NULL) {
+        p += 13; /* skip "container":" */
+        const char *end = strchr(p, '"');
+        if (!end) break;
+
+        /* Extract container name (UTF-8 -> UTF-16) */
+        DWORD name_len = (DWORD)(end - p);
+        char name_utf8[512];
+        if (name_len >= sizeof(name_utf8)) name_len = sizeof(name_utf8) - 1;
+        memcpy(name_utf8, p, name_len);
+        name_utf8[name_len] = '\0';
+        MultiByteToWideChar(CP_UTF8, 0, name_utf8, -1,
+                           entries[idx].szContainer, 256);
+
+        /* Extract algorithm */
+        const char *alg_pos = strstr(end, "\"algorithm\":\"");
+        if (alg_pos && alg_pos < strstr(end, "\"container\":\"")) {
+            alg_pos += 13;
+            if (strncmp(alg_pos, "RSA", 3) == 0) {
+                wcscpy_s(entries[idx].szAlgorithm, 64, BCRYPT_RSA_ALGORITHM);
+            } else if (strncmp(alg_pos, "ECDSA", 5) == 0) {
+                wcscpy_s(entries[idx].szAlgorithm, 64, BCRYPT_ECDSA_ALGORITHM);
+            } else {
+                wcscpy_s(entries[idx].szAlgorithm, 64, BCRYPT_RSA_ALGORITHM);
+            }
+        } else if (alg_pos) {
+            alg_pos += 13;
+            if (strncmp(alg_pos, "RSA", 3) == 0) {
+                wcscpy_s(entries[idx].szAlgorithm, 64, BCRYPT_RSA_ALGORITHM);
+            } else if (strncmp(alg_pos, "ECDSA", 5) == 0) {
+                wcscpy_s(entries[idx].szAlgorithm, 64, BCRYPT_ECDSA_ALGORITHM);
+            } else {
+                wcscpy_s(entries[idx].szAlgorithm, 64, BCRYPT_RSA_ALGORITHM);
+            }
+        }
+
+        /* Extract bits */
+        const char *bits_pos = strstr(end, "\"bits\":");
+        if (bits_pos) {
+            entries[idx].dwKeyBits = (DWORD)strtoul(bits_pos + 7, NULL, 10);
+        }
+
+        p = end + 1;
+        idx++;
+    }
+
+    state->dwCount = idx; /* Actual parsed count */
+    return state;
+}
+
 static SECURITY_STATUS WINAPI KspEnumKeys(
     NCRYPT_PROV_HANDLE hProvider, LPCWSTR pszScope,
     NCryptKeyName **ppKeyName, PVOID *ppEnumState, DWORD dwFlags)
 {
-    /* TODO: Implement key enumeration via IPC CmdKSPEnumKeys */
-    return NTE_NOT_SUPPORTED;
+    OPENCERT_KSP_PROVIDER *prov = (OPENCERT_KSP_PROVIDER *)hProvider;
+    if (!prov || prov->dwMagic != KSP_PROVIDER_MAGIC)
+        return NTE_INVALID_HANDLE;
+    if (!ppKeyName || !ppEnumState)
+        return NTE_INVALID_PARAMETER;
+
+    KSP_ENUM_STATE *state = (KSP_ENUM_STATE *)*ppEnumState;
+
+    /* First call: fetch all keys from backend */
+    if (!state) {
+        HANDLE hPipe = ksp_ensure_pipe(prov);
+        if (hPipe == INVALID_HANDLE_VALUE) {
+            ksp_log("KspEnumKeys: IPC not available");
+            return NTE_DEVICE_NOT_FOUND;
+        }
+
+        char *resp = NULL;
+        DWORD rv = 0;
+        int ret = ksp_ipc_call(hPipe, CMD_KSP_ENUM_KEYS, "{}", &resp, &rv);
+        if (ret != 0 || rv != 0) {
+            if (resp) free(resp);
+            prov->hPipe = INVALID_HANDLE_VALUE;
+            ksp_log("KspEnumKeys: IPC call failed (ret=%d, rv=%u)", ret, rv);
+            return NTE_INTERNAL_ERROR;
+        }
+
+        if (!resp) {
+            ksp_log("KspEnumKeys: empty response");
+            return NTE_NOT_FOUND;
+        }
+
+        state = ksp_parse_enum_response(resp);
+        free(resp);
+
+        if (!state || state->dwCount == 0) {
+            if (state) HeapFree(GetProcessHeap(), 0, state);
+            ksp_log("KspEnumKeys: no keys found");
+            return NTE_NOT_FOUND;
+        }
+
+        *ppEnumState = state;
+        ksp_log("KspEnumKeys: fetched %u keys from backend", state->dwCount);
+    }
+
+    /* Check if we've exhausted all entries */
+    if (state->dwMagic != KSP_ENUM_MAGIC || state->dwIndex >= state->dwCount) {
+        /* Enumeration complete - free state */
+        HeapFree(GetProcessHeap(), 0, state);
+        *ppEnumState = NULL;
+        return NTE_NO_MORE_ITEMS;
+    }
+
+    /* Return current entry */
+    KSP_ENUM_ENTRY *entries = (KSP_ENUM_ENTRY *)((BYTE *)state + sizeof(KSP_ENUM_STATE));
+    KSP_ENUM_ENTRY *entry = &entries[state->dwIndex];
+
+    /* Allocate NCryptKeyName structure (caller frees via NCryptFreeBuffer) */
+    DWORD name_len = (DWORD)((wcslen(entry->szContainer) + 1) * sizeof(WCHAR));
+    DWORD alg_len = (DWORD)((wcslen(entry->szAlgorithm) + 1) * sizeof(WCHAR));
+    DWORD total = sizeof(NCryptKeyName) + name_len + alg_len;
+
+    NCryptKeyName *keyName = (NCryptKeyName *)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, total);
+    if (!keyName) return NTE_NO_MEMORY;
+
+    /* Layout: [NCryptKeyName][name_wstr][alg_wstr] */
+    BYTE *ptr = (BYTE *)keyName + sizeof(NCryptKeyName);
+    keyName->pszName = (LPWSTR)ptr;
+    memcpy(ptr, entry->szContainer, name_len);
+    ptr += name_len;
+
+    keyName->pszAlgid = (LPWSTR)ptr;
+    memcpy(ptr, entry->szAlgorithm, alg_len);
+
+    keyName->dwLegacyKeySpec = AT_KEYEXCHANGE;
+    keyName->dwFlags = 0;
+
+    *ppKeyName = keyName;
+    state->dwIndex++;
+
+    ksp_log("KspEnumKeys: returning key[%u] = %ls (%ls)",
+            state->dwIndex - 1, entry->szContainer, entry->szAlgorithm);
+    return ERROR_SUCCESS;
 }
 
 static SECURITY_STATUS WINAPI KspImportKey(
@@ -799,10 +1353,20 @@ NTSTATUS WINAPI GetKeyStorageInterface(
     OPENCERT_KSP_FUNCTION_TABLE **ppFunctionTable,
     DWORD dwFlags)
 {
-    if (!ppFunctionTable)
+    ksp_log("GetKeyStorageInterface called: name=%ls, ppTable=%p, flags=0x%X",
+            pszProviderName ? pszProviderName : L"(null)",
+            (void*)ppFunctionTable, dwFlags);
+
+    if (!ppFunctionTable) {
+        ksp_log("  -> STATUS_INVALID_PARAMETER (ppFunctionTable is NULL)");
         return STATUS_INVALID_PARAMETER;
+    }
 
     *ppFunctionTable = &g_KspFunctionTable;
+    ksp_log("  -> STATUS_SUCCESS, table=%p, version=%d.%d",
+            (void*)&g_KspFunctionTable,
+            g_KspFunctionTable.Version.MajorVersion,
+            g_KspFunctionTable.Version.MinorVersion);
     return STATUS_SUCCESS;
 }
 
@@ -816,8 +1380,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
     switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hinstDLL);
+        ksp_log("DllMain: DLL_PROCESS_ATTACH (pid=%u)", GetCurrentProcessId());
         break;
     case DLL_PROCESS_DETACH:
+        ksp_log("DllMain: DLL_PROCESS_DETACH (pid=%u)", GetCurrentProcessId());
         break;
     }
     return TRUE;

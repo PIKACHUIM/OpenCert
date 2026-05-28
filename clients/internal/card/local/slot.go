@@ -416,8 +416,8 @@ func parsePublicKey(cert *storage.Certificate) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("证书内容为空")
 	}
 
-	// 尝试解析 X.509 证书
-	if x509Cert, err := x509.ParseCertificate(der); err == nil {
+	// 尝试解析 X.509 证书（宽松模式，兼容不合规扩展）
+	if x509Cert, err := parseCertLenient(der); err == nil {
 		return x509Cert.PublicKey, nil
 	}
 
@@ -663,6 +663,12 @@ func buildAttributes(cert *storage.Certificate, attrTypes []pkcs11types.Attribut
 			} else {
 				attr.Value = []byte{0}
 			}
+		case pkcs11types.CKA_KEY_TYPE:
+			// 从 cert.KeyType 字符串推断 PKCS#11 密钥类型
+			attr.Value = keyTypeToBytes(cert.KeyType)
+		case pkcs11types.CKA_MODULUS_BITS:
+			// 从 cert.KeyType 字符串推断密钥位数
+			attr.Value = uint32ToBytes(keyTypeToBits(cert.KeyType))
 		default:
 			attr.Value = nil
 		}
@@ -675,6 +681,54 @@ func uint32ToBytes(v uint32) []byte {
 	b := make([]byte, 4)
 	binary.BigEndian.PutUint32(b, v)
 	return b
+}
+
+// keyTypeToBytes 将 cert.KeyType 字符串转换为 PKCS#11 CKK_* 值的字节表示。
+func keyTypeToBytes(keyType string) []byte {
+	switch {
+	case strings.HasPrefix(keyType, "rsa"):
+		return uint32ToBytes(0x00000000) // CKK_RSA
+	case strings.HasPrefix(keyType, "ec") || strings.HasPrefix(keyType, "p256") || strings.HasPrefix(keyType, "p384") || strings.HasPrefix(keyType, "p521"):
+		return uint32ToBytes(0x00000003) // CKK_EC
+	case strings.HasPrefix(keyType, "ed25519") || strings.HasPrefix(keyType, "ed"):
+		return uint32ToBytes(0x00000040) // CKK_EC_EDWARDS
+	default:
+		return uint32ToBytes(0x00000000) // 默认 RSA
+	}
+}
+
+// keyTypeToBits 从 cert.KeyType 字符串中提取密钥位数。
+func keyTypeToBits(keyType string) uint32 {
+	switch keyType {
+	case "rsa2048":
+		return 2048
+	case "rsa3072":
+		return 3072
+	case "rsa4096":
+		return 4096
+	case "ec256", "p256":
+		return 256
+	case "ec384", "p384":
+		return 384
+	case "ec521", "p521":
+		return 521
+	case "ed25519":
+		return 256
+	default:
+		// 尝试从字符串中提取数字
+		for i := 0; i < len(keyType); i++ {
+			if keyType[i] >= '0' && keyType[i] <= '9' {
+				var n uint32
+				for j := i; j < len(keyType) && keyType[j] >= '0' && keyType[j] <= '9'; j++ {
+					n = n*10 + uint32(keyType[j]-'0')
+				}
+				if n > 0 {
+					return n
+				}
+			}
+		}
+		return 2048 // 默认
+	}
 }
 
 // computeCKAID 按证书类型派生 PKCS#11 CKA_ID。
@@ -715,7 +769,7 @@ func computePublicKeyInfo(cert *storage.Certificate) []byte {
 	der := certContentDER(cert)
 	switch cert.CertType {
 	case storage.CertTypeX509:
-		if x509Cert, err := x509.ParseCertificate(der); err == nil {
+		if x509Cert, err := parseCertLenient(der); err == nil {
 			return x509Cert.RawSubjectPublicKeyInfo
 		}
 		// 也可能 cert_content 直接就是 SPKI
@@ -782,13 +836,8 @@ func gpgFingerprintFromBody(body []byte) ([]byte, error) {
 
 // x509CKAID 计算 X.509 的 SubjectKeyIdentifier 或回落到 SPKI 的 SHA-1。
 func x509CKAID(content []byte) ([]byte, error) {
-	cert, err := x509.ParseCertificate(content)
+	cert, err := parseCertLenient(content)
 	if err != nil {
-		// 对 certificate policies 错误做宽松处理：直接用 SHA-256 哈希 DER 内容
-		if strings.Contains(err.Error(), "certificate policies") {
-			h := sha256.Sum256(content)
-			return h[:20], nil
-		}
 		return nil, err
 	}
 	if len(cert.SubjectKeyId) > 0 {

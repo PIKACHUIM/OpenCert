@@ -588,14 +588,14 @@ const CertsPage: React.FC = () => {
 
                       {/* 序列号和指纹 */}
                       <Descriptions.Item label="序列号" span={2}>
-                        <Text copyable style={{ fontFamily: 'monospace', fontSize: 11 }}>{detail.serial_number}</Text>
+                        <Text copyable>{detail.serial_number}</Text>
                       </Descriptions.Item>
                       <Descriptions.Item label="SHA-1 指纹" span={2}>
-                        <Text copyable style={{ fontFamily: 'monospace', fontSize: 11 }}>{detail.sha1_fingerprint}</Text>
+                        <Text copyable>{detail.sha1_fingerprint}</Text>
                       </Descriptions.Item>
                       {detail.sha256_fingerprint && (
                         <Descriptions.Item label="SHA-256 指纹" span={2}>
-                          <Text copyable style={{ fontFamily: 'monospace', fontSize: 10, wordBreak: 'break-all' }}>{detail.sha256_fingerprint}</Text>
+                          <Text copyable style={{wordBreak: 'break-all' }}>{detail.sha256_fingerprint}</Text>
                         </Descriptions.Item>
                       )}
 
@@ -736,10 +736,10 @@ const CertsPage: React.FC = () => {
                 </Descriptions.Item>
 
                 {/* ===== 序列号和指纹 ===== */}
-                <Descriptions.Item label="序列号"><Text copyable style={{ fontFamily: 'monospace', fontSize: 11 }}>{certDetail.serial_number}</Text></Descriptions.Item>
-                <Descriptions.Item label="SHA-1 指纹"><Text copyable style={{ fontFamily: 'monospace', fontSize: 11 }}>{certDetail.sha1_fingerprint}</Text></Descriptions.Item>
+                <Descriptions.Item label="序列号"><Text copyable style={{  fontSize: 11 }}>{certDetail.serial_number}</Text></Descriptions.Item>
+                <Descriptions.Item label="SHA-1 指纹"><Text copyable style={{ fontSize: 11 }}>{certDetail.sha1_fingerprint}</Text></Descriptions.Item>
                 {certDetail.sha256_fingerprint && (
-                  <Descriptions.Item label="SHA-256 指纹"><Text copyable style={{ fontFamily: 'monospace', fontSize: 10, wordBreak: 'break-all' }}>{certDetail.sha256_fingerprint}</Text></Descriptions.Item>
+                  <Descriptions.Item label="SHA-256 指纹"><Text copyable style={{ fontSize: 11, wordBreak: 'break-all' }}>{certDetail.sha256_fingerprint}</Text></Descriptions.Item>
                 )}
 
                 {/* ===== 基本约束 ===== */}
@@ -827,13 +827,13 @@ const CertsPage: React.FC = () => {
                 )}
               </>
             )}
-            {selectedCert.cert_content && (
-              <Descriptions.Item label="证书内容 (PEM)">
-                <Paragraph copyable ellipsis={{ rows: 4, expandable: true }} style={{ fontFamily: 'monospace', fontSize: 11, marginBottom: 0, wordBreak: 'break-all' }}>
-                  {atob(selectedCert.cert_content)}
-                </Paragraph>
-              </Descriptions.Item>
-            )}
+            {/*{selectedCert.cert_content && (*/}
+            {/*  <Descriptions.Item label="证书内容 (PEM)">*/}
+            {/*    <Paragraph copyable ellipsis={{ rows: 4, expandable: true }} style={{ fontFamily: 'monospace', fontSize: 11, marginBottom: 0, wordBreak: 'break-all' }}>*/}
+            {/*      {atob(selectedCert.cert_content)}*/}
+            {/*    </Paragraph>*/}
+            {/*  </Descriptions.Item>*/}
+            {/*)}*/}
           </Descriptions>
         )}
       </Drawer>

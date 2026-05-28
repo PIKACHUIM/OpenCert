@@ -176,7 +176,7 @@ const CAPage: React.FC = () => {
       <Modal title={`导入证书链 — ${selectedCA?.name}`} open={chainOpen} onCancel={() => setChainOpen(false)} footer={null} width={560}>
         <Form form={chainForm} layout="vertical" onFinish={handleImportChain} style={{ marginTop: 16 }}>
           <Form.Item label="证书链（PEM 格式）" name="chain_pem" rules={[{ required: true }]}>
-            <Input.TextArea rows={10} placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style={{ fontFamily: 'monospace', fontSize: 12 }} />
+            <Input.TextArea rows={10} placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style={{ fontSize: 12 }} />
           </Form.Item>
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
             <Space><Button onClick={() => setChainOpen(false)}>取消</Button><Button type="primary" htmlType="submit" loading={chainLoading}>导入</Button></Space>
@@ -223,7 +223,7 @@ const CAPage: React.FC = () => {
       <Modal title="吊销证书" open={revokeOpen} onCancel={() => setRevokeOpen(false)} footer={null}>
         <Form form={revokeForm} layout="vertical" onFinish={handleRevoke} style={{ marginTop: 16 }}>
           <Form.Item label="证书序列号（十六进制）" name="serial" rules={[{ required: true }]}>
-            <Input placeholder="e.g. 0a1b2c3d" style={{ fontFamily: 'monospace' }} />
+            <Input placeholder="e.g. 0a1b2c3d"  />
           </Form.Item>
           <Form.Item label="吊销原因" name="reason" rules={[{ required: true }]} initialValue={0}>
             <Select>{reasonOptions.map(o => <Option key={o.value} value={o.value}>{o.label}</Option>)}</Select>

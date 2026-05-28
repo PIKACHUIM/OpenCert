@@ -676,7 +676,7 @@ const CertsPage: React.FC = () => {
             <Divider style={{ margin: '8px 0' }} />
             <Text type="secondary" style={{ fontSize: 12 }}>证书内容（PEM）</Text>
             <TextArea value={viewRecord.cert_pem} rows={12} readOnly
-              style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 8 }} />
+              style={{ fontSize: 11, marginTop: 8 }} />
           </>
         )}
       </Drawer>

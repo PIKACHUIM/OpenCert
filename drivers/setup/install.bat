@@ -121,15 +121,38 @@ if exist "%SCRIPT_DIR%%KSP_DLL%" (
 )
 
 :: Register KSP in CNG provider registry
+:: Structure must match Windows built-in KSPs (e.g. Microsoft Software Key Storage Provider):
+::   Providers\<Name>\UM\Image = <DLL filename>
+::   Providers\<Name>\UM\00010001\(default) = CRYPT_KEY_STORAGE_INTERFACE
+::   Providers\<Name>\UM\00010001\Flags = 0x10000 (DWORD)
+::   Providers\<Name>\UM\00010001\Functions = KEY_STORAGE (REG_MULTI_SZ)
+:: 00010001 = NCRYPT_KEY_STORAGE_INTERFACE interface ID
 set "REG_KSP=HKLM\SYSTEM\CurrentControlSet\Control\Cryptography\Providers\%KSP_NAME%"
 
-reg add "%REG_KSP%" /f >nul 2>&1
-reg add "%REG_KSP%" /v "Image Path" /t REG_SZ /d "%SystemRoot%\System32\%KSP_DLL%" /f >nul 2>&1
-reg add "%REG_KSP%" /v "Type" /t REG_DWORD /d 1 /f >nul 2>&1
-reg add "%REG_KSP%\UM" /f >nul 2>&1
-reg add "%REG_KSP%\UM" /v "00000001" /t REG_SZ /d "%SystemRoot%\System32\%KSP_DLL%" /f >nul 2>&1
+:: Use BCryptRegisterProvider API for proper CNG registration
+:: (Manual registry writing does NOT work for CNG providers)
+echo       Registering via BCryptRegisterProvider API...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%register_ksp.ps1" -KspName "%KSP_NAME%" -KspDll "%KSP_DLL%"
+
+if %errorlevel% neq 0 (
+    echo       [FAIL] BCryptRegisterProvider failed!
+    echo       Falling back to manual registry...
+    reg delete "%REG_KSP%" /f >nul 2>&1
+    reg add "%REG_KSP%" /f >nul 2>&1
+    reg add "%REG_KSP%\UM" /f >nul 2>&1
+    reg add "%REG_KSP%\UM" /v "Image" /t REG_SZ /d "%KSP_DLL%" /f >nul 2>&1
+    reg add "%REG_KSP%\UM\00010001" /f >nul 2>&1
+    reg add "%REG_KSP%\UM\00010001" /v "Flags" /t REG_DWORD /d 1 /f >nul 2>&1
+    reg add "%REG_KSP%\UM\00010001" /v "Functions" /t REG_MULTI_SZ /d "KEY_STORAGE\0" /f >nul 2>&1
+) else (
+    echo       [OK] KSP registered via BCryptRegisterProvider
+)
 
 echo       [OK] KSP registered: %KSP_NAME%
+
+:: Verify KSP is loadable
+echo       Verifying KSP...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class V { [DllImport(\"ncrypt.dll\", CharSet=CharSet.Unicode)] public static extern int NCryptOpenStorageProvider(out IntPtr p, string n, int f); [DllImport(\"ncrypt.dll\")] public static extern int NCryptFreeObject(IntPtr h); }'; $h=[IntPtr]::Zero; $r=[V]::NCryptOpenStorageProvider([ref]$h,'%KSP_NAME%',0); if($r -eq 0){[V]::NCryptFreeObject($h)|Out-Null; Write-Host '      [OK] KSP verified: NCryptOpenStorageProvider succeeded'; exit 0}else{Write-Host \"      [WARN] KSP verify failed: 0x$($r.ToString('X8'))\"; exit 1}"
 
 :skip_ksp
 

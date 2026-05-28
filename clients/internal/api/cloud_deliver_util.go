@@ -15,8 +15,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
+
+	"github.com/globaltrusts/client-card/internal/card/local"
 )
 
 // parseCertBasics 从 PEM 证书中提取基本信息：CN、序列号、有效期。
@@ -25,12 +26,8 @@ func parseCertBasics(certPEM string) (cn, serial string, notBefore, notAfter tim
 	if block == nil {
 		return "", "", time.Time{}, time.Time{}, fmt.Errorf("证书 PEM 格式错误")
 	}
-	crt, parseErr := x509.ParseCertificate(block.Bytes)
+	crt, parseErr := local.ParseCertLenient(block.Bytes)
 	if parseErr != nil {
-		// 对 certificate policies 错误做宽松处理：返回空值但不报错
-		if strings.Contains(parseErr.Error(), "certificate policies") {
-			return "", "", time.Time{}, time.Time{}, nil
-		}
 		return "", "", time.Time{}, time.Time{}, fmt.Errorf("解析证书失败: %w", parseErr)
 	}
 	return crt.Subject.CommonName, crt.SerialNumber.String(), crt.NotBefore, crt.NotAfter, nil
@@ -51,12 +48,12 @@ func parseCertPublicKeyPEM(certPEM string) ([]byte, error) {
 	if block == nil {
 		return nil, fmt.Errorf("证书 PEM 格式错误")
 	}
-	crt, err := x509.ParseCertificate(block.Bytes)
+	crt, err := local.ParseCertLenient(block.Bytes)
 	if err != nil {
-		if strings.Contains(err.Error(), "certificate policies") {
-			return nil, fmt.Errorf("证书包含不兼容的策略扩展，无法提取公钥")
-		}
 		return nil, err
+	}
+	if crt.PublicKey == nil {
+		return nil, fmt.Errorf("证书公钥解析失败")
 	}
 	return x509.MarshalPKIXPublicKey(crt.PublicKey)
 }
@@ -187,14 +184,13 @@ func matchPubKeyAgainstCardCert(pubPKIXDER, cardCertContent []byte) bool {
 	if len(pubPKIXDER) == 0 || len(cardCertContent) == 0 {
 		return false
 	}
-	// 1. 作为 X.509 证书解析（宽松模式）
-	crt, err := x509.ParseCertificate(cardCertContent)
-	if err != nil && strings.Contains(err.Error(), "certificate policies") {
-		// certificate policies 错误，跳过证书解析
-	} else if err == nil {
-		if der, err := x509.MarshalPKIXPublicKey(crt.PublicKey); err == nil {
-			if string(der) == string(pubPKIXDER) {
-				return true
+	// 1. 作为 X.509 证书解析（宽松模式，兼容不合规扩展）
+	if crt, err := local.ParseCertLenient(cardCertContent); err == nil {
+		if crt.PublicKey != nil {
+			if der, err := x509.MarshalPKIXPublicKey(crt.PublicKey); err == nil {
+				if string(der) == string(pubPKIXDER) {
+					return true
+				}
 			}
 		}
 	}

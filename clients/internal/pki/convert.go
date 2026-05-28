@@ -7,36 +7,96 @@ import (
 	"strings"
 
 	"software.sslmate.com/src/go-pkcs12"
+	zcryptox509 "github.com/zmap/zcrypto/x509"
 )
 
 // parseCertLenient 宽松解析 X.509 证书 DER 数据。
-// Go 1.22+ 对 Certificate Policies 扩展解析更严格，某些证书会报
-// "x509: invalid certificate policies" 错误。对此类错误直接返回 nil cert 但不报错，
-// 仅在需要完整解析时使用；对于仅需存储 DER 的场景，使用 ValidateCertDER。
+// 使用 zcrypto/x509 库进行解析，该库对 Certificate Policies 等扩展
+// 采用了更宽松的处理方式，可以解析标准库 crypto/x509 无法处理的证书。
 func parseCertLenient(derData []byte) (*x509.Certificate, error) {
+	// 优先使用标准库解析
 	cert, err := x509.ParseCertificate(derData)
 	if err == nil {
 		return cert, nil
 	}
-	// 对 certificate policies 相关错误做宽松处理：
-	// 证书本身是合法的，只是 Go 1.22 对策略扩展解析过于严格
-	if strings.Contains(err.Error(), "certificate policies") {
-		return nil, nil // 返回 nil cert 表示无法完整解析但证书有效
+
+	// 标准库解析失败，使用 zcrypto 宽松解析
+	zcert, zerr := zcryptox509.ParseCertificate(derData)
+	if zerr != nil {
+		return nil, fmt.Errorf("标准库解析失败: %w; zcrypto 解析也失败: %v", err, zerr)
 	}
-	return nil, err
+
+	// 将 zcrypto 证书转换为标准库证书
+	return zcertToStdCert(zcert), nil
+}
+
+// zcertToStdCert 将 zcrypto/x509.Certificate 转换为 crypto/x509.Certificate。
+func zcertToStdCert(z *zcryptox509.Certificate) *x509.Certificate {
+	c := &x509.Certificate{
+		Raw:                         z.Raw,
+		RawTBSCertificate:           z.RawTBSCertificate,
+		RawSubjectPublicKeyInfo:     z.RawSubjectPublicKeyInfo,
+		RawSubject:                  z.RawSubject,
+		RawIssuer:                   z.RawIssuer,
+		Signature:                   z.Signature,
+		SignatureAlgorithm:          x509.SignatureAlgorithm(z.SignatureAlgorithm),
+		PublicKeyAlgorithm:          x509.PublicKeyAlgorithm(z.PublicKeyAlgorithm),
+		SerialNumber:                z.SerialNumber,
+		Issuer:                      z.Issuer,
+		Subject:                     z.Subject,
+		NotBefore:                   z.NotBefore,
+		NotAfter:                    z.NotAfter,
+		KeyUsage:                    x509.KeyUsage(z.KeyUsage),
+		Extensions:                  z.Extensions,
+		ExtraExtensions:             z.ExtraExtensions,
+		UnhandledCriticalExtensions: z.UnhandledCriticalExtensions,
+		ExtKeyUsage:                 convertExtKeyUsages(z.ExtKeyUsage),
+		UnknownExtKeyUsage:          z.UnknownExtKeyUsage,
+		BasicConstraintsValid:       z.BasicConstraintsValid,
+		IsCA:                        z.IsCA,
+		MaxPathLen:                  z.MaxPathLen,
+		MaxPathLenZero:              z.MaxPathLenZero,
+		SubjectKeyId:                z.SubjectKeyId,
+		AuthorityKeyId:              z.AuthorityKeyId,
+		OCSPServer:                  z.OCSPServer,
+		IssuingCertificateURL:       z.IssuingCertificateURL,
+		DNSNames:                    z.DNSNames,
+		EmailAddresses:              z.EmailAddresses,
+		IPAddresses:                 z.IPAddresses,
+		URIs:                        z.URIs,
+		CRLDistributionPoints:       z.CRLDistributionPoints,
+		PolicyIdentifiers:           z.PolicyIdentifiers,
+	}
+
+	if z.PublicKey != nil {
+		c.PublicKey = z.PublicKey
+	}
+
+	return c
+}
+
+// convertExtKeyUsages 将 zcrypto 的 ExtKeyUsage 切片转换为标准库的 ExtKeyUsage 切片。
+func convertExtKeyUsages(ekus []zcryptox509.ExtKeyUsage) []x509.ExtKeyUsage {
+	result := make([]x509.ExtKeyUsage, len(ekus))
+	for i, eku := range ekus {
+		result[i] = x509.ExtKeyUsage(eku)
+	}
+	return result
 }
 
 // ValidateCertDER 验证 DER 数据是否为合法的 X.509 证书。
-// 对于 certificate policies 解析错误的证书仍视为有效。
+// 使用 zcrypto 宽松解析，对 Certificate Policies 等扩展不严格检查。
 func ValidateCertDER(derData []byte) error {
 	_, err := x509.ParseCertificate(derData)
 	if err == nil {
 		return nil
 	}
-	if strings.Contains(err.Error(), "certificate policies") {
-		return nil // 证书有效，只是策略扩展不兼容
+	// 标准库失败，尝试 zcrypto 宽松解析
+	_, zerr := zcryptox509.ParseCertificate(derData)
+	if zerr == nil {
+		return nil // zcrypto 能解析，视为有效
 	}
-	return err
+	return fmt.Errorf("证书验证失败: %w", err)
 }
 
 // ConvertPEMToDER 将 PEM 编码的证书转换为 DER 格式。
@@ -57,43 +117,29 @@ func ConvertDERToPEM(derData []byte, blockType string) []byte {
 }
 
 // ParseCertificateFromPEM 从 PEM 数据解析 X.509 证书。
-// 对包含非标准 Certificate Policies 的证书使用宽松解析。
+// 使用 zcrypto 宽松解析，兼容非标准 Certificate Policies 扩展。
 func ParseCertificateFromPEM(pemData []byte) (*x509.Certificate, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
 		return nil, fmt.Errorf("无法解码 PEM 数据")
 	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil && strings.Contains(err.Error(), "certificate policies") {
-		// 证书有效但策略扩展不兼容，返回 nil cert 和 nil error 表示无法完整解析
-		return nil, nil
-	}
-	return cert, err
+	return parseCertLenient(block.Bytes)
 }
 
 // ParseCertificateAuto 自动识别 PEM 或 DER 格式并解析证书。
-// 对包含非标准 Certificate Policies 的证书使用宽松解析。
+// 使用 zcrypto 宽松解析，兼容非标准 Certificate Policies 扩展。
 func ParseCertificateAuto(data []byte) (*x509.Certificate, error) {
 	// 先尝试 PEM
 	block, _ := pem.Decode(data)
 	if block != nil {
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil && strings.Contains(err.Error(), "certificate policies") {
-			return nil, nil
-		}
-		return cert, err
+		return parseCertLenient(block.Bytes)
 	}
 	// 尝试 DER
-	cert, err := x509.ParseCertificate(data)
-	if err != nil && strings.Contains(err.Error(), "certificate policies") {
-		return nil, nil
-	}
-	return cert, err
+	return parseCertLenient(data)
 }
 
 // ExportPKCS12 将证书和私钥导出为 PKCS#12 格式。
-// 对于包含 Go 1.22+ 不兼容的 Certificate Policies 扩展的证书，
-// 使用原始 DER 数据构造最小 Certificate 对象来绕过严格解析。
+// 使用 zcrypto 宽松解析，兼容非标准 Certificate Policies 扩展。
 func ExportPKCS12(certPEM, keyPEM []byte, password string) ([]byte, error) {
 	if len(password) < 8 {
 		return nil, fmt.Errorf("PKCS#12 导出密码长度必须 >= 8 字符")
@@ -104,16 +150,9 @@ func ExportPKCS12(certPEM, keyPEM []byte, password string) ([]byte, error) {
 	if certBlock == nil {
 		return nil, fmt.Errorf("无法解码证书 PEM")
 	}
-	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	cert, err := parseCertLenient(certBlock.Bytes)
 	if err != nil {
-		// 对 certificate policies 错误做宽松处理：
-		// Go 1.22+ 对策略扩展解析过于严格，但证书本身是合法的。
-		// pkcs12.Encode 内部只使用 cert.Raw，所以构造一个最小对象即可。
-		if strings.Contains(err.Error(), "certificate policies") {
-			cert = &x509.Certificate{Raw: certBlock.Bytes}
-		} else {
-			return nil, fmt.Errorf("解析证书失败: %w", err)
-		}
+		return nil, fmt.Errorf("解析证书失败: %w", err)
 	}
 
 	// 解析私钥
@@ -163,7 +202,7 @@ func ImportPKCS12(pfxData []byte, password string) (certPEM, keyPEM []byte, err 
 }
 
 // ParseCertChainFromPEM 从 PEM 数据解析证书链（多个证书）。
-// 对包含非标准 Certificate Policies 的证书使用宽松解析。
+// 使用 zcrypto 宽松解析，兼容非标准 Certificate Policies 扩展。
 func ParseCertChainFromPEM(pemData []byte) ([]*x509.Certificate, error) {
 	var certs []*x509.Certificate
 	rest := pemData
@@ -176,11 +215,8 @@ func ParseCertChainFromPEM(pemData []byte) ([]*x509.Certificate, error) {
 		if block.Type != "CERTIFICATE" {
 			continue
 		}
-		cert, err := x509.ParseCertificate(block.Bytes)
+		cert, err := parseCertLenient(block.Bytes)
 		if err != nil {
-			if strings.Contains(err.Error(), "certificate policies") {
-				continue // 跳过策略扩展不兼容的证书
-			}
 			return nil, fmt.Errorf("解析证书链中的证书失败: %w", err)
 		}
 		certs = append(certs, cert)

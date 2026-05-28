@@ -42,7 +42,7 @@ const TOTPCodeCell = memo<{ item: TOTPRowData; darkMode: boolean }>(({ item, dar
     <Space>
       <Text
         style={{
-          fontFamily: 'monospace', fontSize: 18, fontWeight: 700, letterSpacing: 2,
+          fontSize: 18, fontWeight: 700, letterSpacing: 2,
           color: isExpiring ? '#ff4d4f' : (darkMode ? '#c9d1d9' : '#333'),
           cursor: 'pointer',
         }}
@@ -80,7 +80,7 @@ const TOTPGridCard = memo<{ item: TOTPRowData; darkMode: boolean }>(({ item, dar
       <Text style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#999' }}>{item.issuer}</Text>
       <div style={{ margin: '6px 0' }}>
         <Text style={{
-          fontFamily: 'monospace', fontSize: 22, fontWeight: 700, letterSpacing: 3,
+          fontSize: 22, fontWeight: 700, letterSpacing: 3,
           color: isExpiring ? '#ff4d4f' : (darkMode ? '#c9d1d9' : '#333'),
         }}>
           {item.code || '------'}

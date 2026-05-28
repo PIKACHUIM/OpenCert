@@ -164,7 +164,7 @@ const Settings: React.FC = () => {
               <Switch checkedChildren={t('settings.enabled')} unCheckedChildren={t('settings.disabled')} />
             </Form.Item>
             <Form.Item label={t('settings.ipcPath')}>
-              <Input disabled value={`\\\\.\\pipe\\clients`} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+              <Input disabled value={`\\\\.\\pipe\\clients`} style={{ fontSize: 12 }} />
             </Form.Item>
           </Card>
 

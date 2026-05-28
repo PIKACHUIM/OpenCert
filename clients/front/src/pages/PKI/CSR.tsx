@@ -470,7 +470,7 @@ const CSRPage: React.FC = () => {
 
             <Divider plain style={{ fontSize: 13, margin: '8px 0 12px' }}>CSR 内容（PEM）</Divider>
             <TextArea value={viewRecord.csr_pem} rows={14} readOnly
-              style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 8 }} />
+              style={{ fontSize: 11, marginTop: 8 }} />
           </>
         )}
       </Drawer>

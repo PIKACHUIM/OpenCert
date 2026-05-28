@@ -384,7 +384,7 @@ const Cards: React.FC = () => {
             )}
             {record.cloud_card_uuid && (
               <div style={{ marginTop: 2 }}>
-                <Text copyable={{ text: record.cloud_card_uuid }} style={{ fontSize: 11, fontFamily: 'monospace', color: darkMode ? '#8b949e' : '#999' }}>
+                <Text copyable={{ text: record.cloud_card_uuid }} style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#999' }}>
                   {record.cloud_card_uuid.slice(0, 8)}...
                 </Text>
               </div>
@@ -726,35 +726,35 @@ const Cards: React.FC = () => {
         {credsModal?.pin && (
           <Descriptions column={1} bordered size="small" style={{ marginBottom: 8 }}>
             <Descriptions.Item label="PIN">
-              <Typography.Text copyable strong style={{ fontFamily: 'monospace', fontSize: 16 }}>{credsModal.pin}</Typography.Text>
+              <Typography.Text copyable strong style={{ fontSize: 16 }}>{credsModal.pin}</Typography.Text>
             </Descriptions.Item>
           </Descriptions>
         )}
         {credsModal?.puk && (
           <Descriptions column={1} bordered size="small" style={{ marginBottom: 8 }}>
             <Descriptions.Item label="PUK（可重置 PIN）">
-              <Typography.Text copyable strong style={{ fontFamily: 'monospace', fontSize: 16 }}>{credsModal.puk}</Typography.Text>
+              <Typography.Text copyable strong style={{ fontSize: 16 }}>{credsModal.puk}</Typography.Text>
             </Descriptions.Item>
           </Descriptions>
         )}
         {credsModal?.admin_key && (
           <Descriptions column={1} bordered size="small" style={{ marginBottom: 8 }}>
             <Descriptions.Item label="Admin Key（最高权限）">
-              <Typography.Text copyable strong style={{ fontFamily: 'monospace', fontSize: 16 }}>{credsModal.admin_key}</Typography.Text>
+              <Typography.Text copyable strong style={{ fontSize: 16 }}>{credsModal.admin_key}</Typography.Text>
             </Descriptions.Item>
           </Descriptions>
         )}
         {credsModal?.reader_name && (
           <Descriptions column={1} bordered size="small" style={{ marginBottom: 8 }}>
             <Descriptions.Item label="虚拟读卡器名称">
-              <Typography.Text copyable style={{ fontFamily: 'monospace', fontSize: 14 }}>{credsModal.reader_name}</Typography.Text>
+              <Typography.Text copyable style={{ fontSize: 14 }}>{credsModal.reader_name}</Typography.Text>
             </Descriptions.Item>
           </Descriptions>
         )}
         {credsModal?.instance_id && (
           <Descriptions column={1} bordered size="small">
             <Descriptions.Item label="设备实例 ID">
-              <Typography.Text copyable style={{ fontFamily: 'monospace', fontSize: 14 }}>{credsModal.instance_id}</Typography.Text>
+              <Typography.Text copyable style={{ fontSize: 14 }}>{credsModal.instance_id}</Typography.Text>
             </Descriptions.Item>
           </Descriptions>
         )}

@@ -105,7 +105,7 @@ const CloudTOTPPage: React.FC = () => {
         if (!v) return <Button size="small" icon={<EyeOutlined />} onClick={() => handleShowCode(r)}>获取</Button>;
         return (
           <Space>
-            <Text strong copyable style={{ fontSize: 18, fontFamily: 'monospace' }}>{v.code}</Text>
+            <Text strong copyable style={{ fontSize: 18 }}>{v.code}</Text>
             <Progress
               type="circle" size={28} strokeWidth={12}
               percent={Math.round((v.remaining / v.period) * 100)}

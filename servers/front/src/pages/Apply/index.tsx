@@ -61,7 +61,7 @@ const ApplyPage: React.FC = () => {
             subTitle={
               <Space direction="vertical" size={8}>
                 <Text style={{ color: '#8b949e' }}>{result.message}</Text>
-                <Text copyable style={{ color: '#58a6ff', fontFamily: 'monospace' }}>
+                <Text copyable style={{ color: '#58a6ff' }}>
                   申请 UUID: {result.uuid}
                 </Text>
               </Space>

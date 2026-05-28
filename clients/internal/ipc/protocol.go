@@ -98,6 +98,11 @@ const (
 	// 请求: {"container":"OpenCert_xxx_yyy","algorithm":"RSA","data":"base64...","flags":0}
 	// 响应: {"plaintext":"base64..."}
 	CmdKSPDecrypt CmdCode = 0x0203
+
+	// CmdKSPLogin 为指定卡片执行 PIN 登录（KSP 场景下由 DLL 弹窗获取 PIN）。
+	// 请求: {"card_uuid":"xxx","pin":"1234"}
+	// 响应: {} (成功时 rv=0，失败时 rv=CKR_PIN_INCORRECT 等)
+	CmdKSPLogin CmdCode = 0x0204
 )
 
 // 协议版本号。

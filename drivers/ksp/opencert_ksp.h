@@ -33,6 +33,23 @@
 #ifndef NTE_INTERNAL_ERROR
 #define NTE_INTERNAL_ERROR      ((SECURITY_STATUS)0x80090020L)
 #endif
+#ifndef NTE_NO_MORE_ITEMS
+#define NTE_NO_MORE_ITEMS       ((SECURITY_STATUS)0x8009002AL)
+#endif
+#ifndef NTE_NOT_FOUND
+#define NTE_NOT_FOUND           ((SECURITY_STATUS)0x80090011L)
+#endif
+#ifndef NTE_NO_MEMORY
+#define NTE_NO_MEMORY           ((SECURITY_STATUS)0x8009000EL)
+#endif
+
+/* NCrypt key usage flags (should be in ncrypt.h but just in case) */
+#ifndef NCRYPT_ALLOW_SIGNING_FLAG
+#define NCRYPT_ALLOW_SIGNING_FLAG   0x00000002
+#endif
+#ifndef NCRYPT_ALLOW_DECRYPT_FLAG
+#define NCRYPT_ALLOW_DECRYPT_FLAG   0x00000001
+#endif
 
 /* ---- KSP Identity ---- */
 #define OPENCERT_KSP_NAME       L"OpenCert Key Storage Provider"
@@ -43,6 +60,13 @@
 #define CMD_KSP_GET_KEY_INFO    0x0201u
 #define CMD_KSP_SIGN            0x0202u
 #define CMD_KSP_DECRYPT         0x0203u
+#define CMD_KSP_LOGIN           0x0204u
+
+/* ---- PKCS#11 Return Values (used in IPC responses) ---- */
+#define CKR_OK                      0x00000000u
+#define CKR_USER_NOT_LOGGED_IN      0x00000101u
+#define CKR_PIN_INCORRECT           0x000000A0u
+#define CKR_PIN_LOCKED              0x000000A4u
 
 /* ---- IPC Protocol Constants ---- */
 #define IPC_MAGIC               0x504B3131u  /* "PK11" */

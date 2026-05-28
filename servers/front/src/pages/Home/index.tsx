@@ -140,7 +140,7 @@ const Home: React.FC = () => {
                 <Text key={i} style={{ color: '#8b949e', fontSize: 20 }}>←→</Text>
               ) : (
                 <div key={i} style={{ padding: '12px 20px', borderRadius: 10, border: `1px solid ${item.color}40`, background: `${item.color}10`, textAlign: 'center' }}>
-                  <Text strong style={{ color: item.color, display: 'block', fontFamily: 'monospace' }}>{item.name}</Text>
+                  <Text strong style={{ color: item.color, display: 'block' }}>{item.name}</Text>
                   <Text style={{ color: '#8b949e', fontSize: 12 }}>{item.desc}</Text>
                 </div>
               )

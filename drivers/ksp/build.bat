@@ -89,13 +89,12 @@ cl.exe /nologo /O2 /W3 /LD ^
     /Fe"build\OpenCertKSP.dll" ^
     /Fo"build\opencert_ksp.obj" ^
     /link /DEF:OpenCertKSP.def ^
-    ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib ^
+    ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib credui.lib ^
     /NOLOGO /DLL /MACHINE:X64
 
 if %errorlevel% neq 0 (
     echo.
     echo [FAILED] Build failed!
-    pause
     exit /b 1
 )
 
@@ -115,5 +114,4 @@ echo ============================================================
 echo   Done! Next: run drivers\setup\install.bat as Administrator
 echo ============================================================
 echo.
-pause
 exit /b 0

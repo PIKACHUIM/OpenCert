@@ -10,10 +10,14 @@ setlocal enabledelayedexpansion
 set "CARD_NAME=Pikachu Secure SmartCard"
 set "DLL_NAME=pkcs11-mock-x64.dll"
 set "MINIDRIVER_DLL=PikachuMD.dll"
+set "KSP_DLL=OpenCertKSP.dll"
 set "CSP_NAME=Pikachu SmartCard Crypto Provider"
+set "KSP_NAME=OpenCert Key Storage Provider"
 
+set "SCRIPT_DIR=%~dp0"
 set "REG_CALAIS=HKLM\SOFTWARE\Microsoft\Cryptography\Calais\SmartCards\%CARD_NAME%"
 set "REG_CSP=HKLM\SOFTWARE\Microsoft\Cryptography\Defaults\Provider\%CSP_NAME%"
+set "REG_KSP=HKLM\SYSTEM\CurrentControlSet\Control\Cryptography\Providers\%KSP_NAME%"
 set "REG_PKCS11=HKLM\SOFTWARE\OpenCert\PKCS11"
 
 :: ---- Check admin privileges ----
@@ -34,8 +38,10 @@ echo.
 echo   Will remove:
 echo     - %SystemRoot%\System32\%MINIDRIVER_DLL%
 echo     - %SystemRoot%\System32\%DLL_NAME%
+echo     - %SystemRoot%\System32\%KSP_DLL%
 echo     - Registry: %REG_CALAIS%
 echo     - Registry: %REG_CSP%
+echo     - KSP: %KSP_NAME% (via BCryptUnregisterProvider)
 echo     - Registry: %REG_PKCS11%
 echo.
 
@@ -74,6 +80,16 @@ if %errorlevel% equ 0 (
     echo       [SKIP] PKCS#11 entry not found
 )
 
+:: Unregister KSP via BCryptUnregisterProvider API
+echo       Unregistering KSP...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%unregister_ksp.ps1" -KspName "%KSP_NAME%"
+if %errorlevel% equ 0 (
+    echo       [OK] KSP unregistered via BCryptUnregisterProvider
+) else (
+    echo       [WARN] KSP BCrypt unregister failed, cleaning registry...
+    reg delete "%REG_KSP%" /f >nul 2>&1
+)
+
 :: ============================================================
 :: Step 2: Delete DLLs from System32
 :: ============================================================
@@ -100,6 +116,17 @@ if exist "%SystemRoot%\System32\%DLL_NAME%" (
     )
 ) else (
     echo       [SKIP] %DLL_NAME% not found
+)
+
+if exist "%SystemRoot%\System32\%KSP_DLL%" (
+    del /f "%SystemRoot%\System32\%KSP_DLL%" >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo       [OK] %KSP_DLL% deleted
+    ) else (
+        echo       [WARN] Cannot delete %KSP_DLL% (may be in use)
+    )
+) else (
+    echo       [SKIP] %KSP_DLL% not found
 )
 
 :: ============================================================

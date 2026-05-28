@@ -124,7 +124,7 @@ const Profile: React.FC = () => {
                 <Form.Item label="公钥（PEM 格式）" name="pubkey_pem" rules={[{ required: true }]}>
                   <Input.TextArea rows={8}
                     placeholder="-----BEGIN PUBLIC KEY-----&#10;...&#10;-----END PUBLIC KEY-----"
-                    style={{ fontFamily: 'monospace', fontSize: 12 }} />
+                    style={{ fontSize: 12 }} />
                 </Form.Item>
                 <Form.Item>
                   <Space>

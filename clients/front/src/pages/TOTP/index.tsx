@@ -163,7 +163,6 @@ const TOTPPage: React.FC = () => {
                 type="text"
                 size="large"
                 style={{
-                  fontFamily: 'monospace',
                   fontSize: 22,
                   fontWeight: 700,
                   letterSpacing: 4,
@@ -263,7 +262,7 @@ const TOTPPage: React.FC = () => {
             <Input placeholder="例如：user@example.com" />
           </Form.Item>
           <Form.Item name="secret" label="密钥 (Base32)" rules={[{ required: true, message: '请输入 Base32 编码的密钥' }]}>
-            <Input.TextArea placeholder="JBSWY3DPEHPK3PXP..." rows={2} style={{ fontFamily: 'monospace' }} />
+            <Input.TextArea placeholder="JBSWY3DPEHPK3PXP..." rows={2}  />
           </Form.Item>
           <Form.Item name="uri" label="或粘贴 otpauth:// URI（可选）">
             <Input placeholder="otpauth://totp/..." prefix={<QrcodeOutlined />} />

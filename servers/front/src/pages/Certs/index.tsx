@@ -188,7 +188,7 @@ const Certs: React.FC = () => {
             {selectedCert.cert_content && (
               <Descriptions.Item label="证书内容">
                 <Paragraph copyable ellipsis={{ rows: 4, expandable: true }}
-                  style={{ fontFamily: 'monospace', fontSize: 12, marginBottom: 0 }}>
+                  style={{ fontSize: 12, marginBottom: 0 }}>
                   {atob(selectedCert.cert_content)}
                 </Paragraph>
               </Descriptions.Item>
