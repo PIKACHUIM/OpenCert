@@ -410,7 +410,76 @@ static HANDLE ksp_ensure_pipe(OPENCERT_KSP_PROVIDER *prov)
 }
 
 
+
+
 /* ---- PIN Prompt and Login ---- */
+
+/*
+ * ksp_prompt_pin_direct - 直接在当前线程弹出 PIN 对话框（原始实现）。
+ * 注意：若调用线程无消息循环（如后台签名线程），CredUI 可能无法显示。
+ * 保留此函数供有消息循环的场景直接调用。
+ */
+static int ksp_prompt_pin_direct(const WCHAR *card_name, const WCHAR *card_uuid,
+                                 char *pin_buf, DWORD pin_buf_size, HWND hWndParent)
+{
+    WCHAR message[512];
+    _snwprintf(message, 512,
+        L"请认证智能卡 %ls 以继续操作",
+        card_name ? card_name : L"OpenCert SmartCard"
+        );
+
+    CREDUI_INFOW cui = {0};
+    cui.cbSize = sizeof(cui);
+    cui.hwndParent = hWndParent;
+    cui.pszMessageText = message;
+    cui.pszCaptionText = L"OpenCert 智能卡认证";
+
+    WCHAR username[256] = {0};
+    if (card_uuid) {
+        wcscpy_s(username, 256, card_uuid);
+    } else {
+        wcscpy_s(username, 256, L"Unknown SmartCard");
+    }
+    WCHAR password[256] = {0};
+    BOOL save = FALSE;
+
+    ksp_log("ksp_prompt_pin_direct: showing PIN dialog for card=%ls, uuid=%ls",
+            card_name ? card_name : L"(null)",
+            card_uuid ? card_uuid : L"(null)");
+
+    DWORD result = CredUIPromptForCredentialsW(
+        &cui,
+        L"OpenCert",
+        NULL,
+        0,
+        username, 256,
+        password, 256,
+        &save,
+        CREDUI_FLAGS_GENERIC_CREDENTIALS |
+        CREDUI_FLAGS_DO_NOT_PERSIST |
+        CREDUI_FLAGS_EXCLUDE_CERTIFICATES |
+        CREDUI_FLAGS_KEEP_USERNAME |
+        CREDUI_FLAGS_ALWAYS_SHOW_UI
+    );
+
+    if (result != ERROR_SUCCESS) {
+        ksp_log("ksp_prompt_pin_direct: user cancelled or error, result=%u", result);
+        SecureZeroMemory(password, sizeof(password));
+        return -1;
+    }
+
+    int len = WideCharToMultiByte(CP_UTF8, 0, password, -1,
+                                  pin_buf, pin_buf_size, NULL, NULL);
+    SecureZeroMemory(password, sizeof(password));
+
+    if (len <= 0) {
+        ksp_log("ksp_prompt_pin_direct: WideCharToMultiByte failed");
+        return -1;
+    }
+
+    ksp_log("ksp_prompt_pin_direct: PIN obtained (len=%d)", len - 1);
+    return 0;
+}
 
 /* PIN 弹窗线程上下文 */
 typedef struct {
@@ -488,13 +557,11 @@ static DWORD WINAPI pin_credui_thread(LPVOID lpParam)
 }
 
 /*
- * ksp_prompt_pin - 弹出 Windows PIN 输入对话框。
- * 在独立线程上调用 CredUIPromptForCredentialsW（保留标准 Windows 凭据 UI 外观）。
- * 新线程没有锁/消息循环冲突，CredUI 内部自带模态消息循环，确保对话框正常显示。
- * 返回 0 表示成功（PIN 写入 pin_buf），非 0 表示用户取消或失败。
+ * ksp_prompt_pin_threaded - 在独立线程上调用 CredUI（备用方案）。
+ * 当调用方线程无消息循环时使用此版本避免阻塞。
  */
-static int ksp_prompt_pin(const WCHAR *card_name, const WCHAR *card_uuid,
-                          char *pin_buf, DWORD pin_buf_size, HWND hWndParent)
+static int ksp_prompt_pin_threaded(const WCHAR *card_name, const WCHAR *card_uuid,
+                                   char *pin_buf, DWORD pin_buf_size, HWND hWndParent)
 {
     (void)hWndParent;
 
@@ -503,16 +570,14 @@ static int ksp_prompt_pin(const WCHAR *card_name, const WCHAR *card_uuid,
     ctx.card_uuid = card_uuid;
     ctx.result = -1;
 
-    ksp_log("ksp_prompt_pin: spawning CredUI thread for card=%ls",
+    ksp_log("ksp_prompt_pin_threaded: spawning CredUI thread for card=%ls",
             card_name ? card_name : L"(null)");
 
     HANDLE hThread = CreateThread(NULL, 0, pin_credui_thread, &ctx, 0, NULL);
     if (!hThread) {
-        ksp_log("ksp_prompt_pin: CreateThread failed (err=%u), calling directly", GetLastError());
+        ksp_log("ksp_prompt_pin_threaded: CreateThread failed (err=%u), calling directly", GetLastError());
         pin_credui_thread(&ctx);
     } else {
-        /* 安全等待：CredUI 在新线程内运行自己的消息循环，
-         * 调用线程只是阻塞等待线程结束，不会死锁。 */
         WaitForSingleObject(hThread, INFINITE);
         CloseHandle(hThread);
     }
@@ -523,8 +588,18 @@ static int ksp_prompt_pin(const WCHAR *card_name, const WCHAR *card_uuid,
     }
     SecureZeroMemory(ctx.pin_buf, sizeof(ctx.pin_buf));
 
-    ksp_log("ksp_prompt_pin: result=%d", ctx.result);
+    ksp_log("ksp_prompt_pin_threaded: result=%d", ctx.result);
     return ctx.result;
+}
+
+/*
+ * ksp_prompt_pin - 弹出 Windows PIN 输入对话框（默认入口）。
+ * 使用独立线程调用 CredUI，避免调用方线程无消息循环导致弹窗不显示。
+ */
+static int ksp_prompt_pin(const WCHAR *card_name, const WCHAR *card_uuid,
+                          char *pin_buf, DWORD pin_buf_size, HWND hWndParent)
+{
+    return ksp_prompt_pin_threaded(card_name, card_uuid, pin_buf, pin_buf_size, hWndParent);
 }
 
 /*
