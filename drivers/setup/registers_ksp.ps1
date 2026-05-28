@@ -79,9 +79,9 @@ $status = [CngReg]::BCryptAddContextFunctionProvider(
 )
 
 if ($status -eq 0) {
-    Write-Host "    [OK] Successfully registered!" -ForegroundColor Green
+    Write-Host "    [DONE] Successfully registered!" -ForegroundColor Green
 } elseif ($status -eq [int]0xC0000035) {
-    Write-Host "    [OK] Already registered (STATUS_OBJECT_NAME_COLLISION)" -ForegroundColor Green
+    Write-Host "    [DONE] Already registered (STATUS_OBJECT_NAME_COLLISION)" -ForegroundColor Green
 } elseif ($status -eq [int]0xC0000022) {
     Write-Host "    [FAIL] Access denied! Please run as Administrator!" -ForegroundColor Red
     exit 1
@@ -129,7 +129,7 @@ Write-Host "[3] Testing NCryptOpenStorageProvider..." -ForegroundColor Yellow
 $hProv = [IntPtr]::Zero
 $result = [CngReg]::NCryptOpenStorageProvider([ref]$hProv, $KSP_NAME, 0)
 if ($result -eq 0) {
-    Write-Host "    [OK] NCryptOpenStorageProvider SUCCESS!" -ForegroundColor Green
+    Write-Host "    [DONE] NCryptOpenStorageProvider SUCCESS!" -ForegroundColor Green
     [CngReg]::NCryptFreeObject($hProv) | Out-Null
 } else {
     Write-Host "    [FAIL] NCryptOpenStorageProvider: 0x$($result.ToString('X8'))" -ForegroundColor Red

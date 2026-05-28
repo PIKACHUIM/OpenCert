@@ -26,36 +26,36 @@ echo.
 :: Step 1: 部署 KSP DLL
 echo [1/3] Deploying KSP DLLs...
 
-if exist "%BUILD_DIR%\OpenCertKSP_x64.dll" (
-    copy /Y "%BUILD_DIR%\OpenCertKSP_x64.dll" "%SystemRoot%\System32\%KSP_DLL%" >nul 2>&1
-    echo       [OK] %SystemRoot%\System32\%KSP_DLL% (x64)
-) else (
+if not exist "%BUILD_DIR%\OpenCertKSP_x64.dll" (
     echo       [SKIP] build\OpenCertKSP_x64.dll not found
+) else (
+    copy /Y "%BUILD_DIR%\OpenCertKSP_x64.dll" "%SystemRoot%\System32\%KSP_DLL%" >nul 2>&1
+    echo       [DONE] %SystemRoot%\System32\%KSP_DLL% ^(x64^)
 )
 
-if exist "%BUILD_DIR%\OpenCertKSP_x86.dll" (
-    copy /Y "%BUILD_DIR%\OpenCertKSP_x86.dll" "%SystemRoot%\SysWOW64\%KSP_DLL%" >nul 2>&1
-    echo       [OK] %SystemRoot%\SysWOW64\%KSP_DLL% (x86)
+if not exist "%BUILD_DIR%\OpenCertKSP_x86.dll" (
+    echo       [WARN] build\OpenCertKSP_x86.dll not found
 ) else (
-    echo       [WARN] build\OpenCertKSP_x86.dll not found (32-bit apps won't work)
+    copy /Y "%BUILD_DIR%\OpenCertKSP_x86.dll" "%SystemRoot%\SysWOW64\%KSP_DLL%" >nul 2>&1
+    echo       [DONE] %SystemRoot%\SysWOW64\%KSP_DLL% ^(x86^)
 )
 
 :: Step 2: 部署 CSP DLL
 echo.
 echo [2/3] Deploying CSP DLLs...
 
-if exist "%BUILD_DIR%\OpenCertCSP_x64.dll" (
-    copy /Y "%BUILD_DIR%\OpenCertCSP_x64.dll" "%SystemRoot%\System32\OpenCertCSP.dll" >nul 2>&1
-    echo       [OK] %SystemRoot%\System32\OpenCertCSP.dll (x64)
+if not exist "%BUILD_DIR%\OpenCertCSP_x64.dll" (
+    echo       [WARN] build\OpenCertCSP_x64.dll not found
 ) else (
-    echo       [SKIP] build\OpenCertCSP_x64.dll not found
+    copy /Y "%BUILD_DIR%\OpenCertCSP_x64.dll" "%SystemRoot%\System32\OpenCertCSP.dll" >nul 2>&1
+    echo       [DONE] %SystemRoot%\System32\OpenCertCSP.dll ^(x64^)
 )
 
-if exist "%BUILD_DIR%\OpenCertCSP_x86.dll" (
-    copy /Y "%BUILD_DIR%\OpenCertCSP_x86.dll" "%SystemRoot%\SysWOW64\OpenCertCSP.dll" >nul 2>&1
-    echo       [OK] %SystemRoot%\SysWOW64\OpenCertCSP.dll (x86)
-) else (
+if not exist "%BUILD_DIR%\OpenCertCSP_x86.dll" (
     echo       [WARN] build\OpenCertCSP_x86.dll not found
+) else (
+    copy /Y "%BUILD_DIR%\OpenCertCSP_x86.dll" "%SystemRoot%\SysWOW64\OpenCertCSP.dll" >nul 2>&1
+    echo       [DONE] %SystemRoot%\SysWOW64\OpenCertCSP.dll ^(x86^)
 )
 
 :: Step 3: 注册 KSP
@@ -75,12 +75,12 @@ if exist "%SCRIPT_DIR%registers_ksp.ps1" (
     reg add "!REG_KSP!\UM" /f >nul 2>&1
     reg add "!REG_KSP!\UM" /v "Image" /t REG_SZ /d "%KSP_DLL%" /f >nul 2>&1
 )
-echo       [OK] KSP registered: %KSP_NAME%
+echo       [DONE] KSP registered: %KSP_NAME%
 
 :: 验证
 echo.
 echo   Verifying KSP...
-powershell.exe -NoProfile -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class V { [DllImport(\"ncrypt.dll\", CharSet=CharSet.Unicode)] public static extern int NCryptOpenStorageProvider(out IntPtr p, string n, int f); [DllImport(\"ncrypt.dll\")] public static extern int NCryptFreeObject(IntPtr h); }'; $h=[IntPtr]::Zero; $r=[V]::NCryptOpenStorageProvider([ref]$h,'%KSP_NAME%',0); if($r -eq 0){[V]::NCryptFreeObject($h)|Out-Null; Write-Host '      [OK] KSP verified successfully'; exit 0}else{Write-Host \"      [WARN] KSP verify failed: 0x$($r.ToString('X8'))\"; exit 1}"
+powershell.exe -NoProfile -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class V { [DllImport(\"ncrypt.dll\", CharSet=CharSet.Unicode)] public static extern int NCryptOpenStorageProvider(out IntPtr p, string n, int f); [DllImport(\"ncrypt.dll\")] public static extern int NCryptFreeObject(IntPtr h); }'; $h=[IntPtr]::Zero; $r=[V]::NCryptOpenStorageProvider([ref]$h,'%KSP_NAME%',0); if($r -eq 0){[V]::NCryptFreeObject($h)|Out-Null; Write-Host '      [DONE] KSP verified successfully'; exit 0}else{Write-Host \"      [WARN] KSP verify failed: 0x$($r.ToString('X8'))\"; exit 1}"
 
 echo.
 echo ============================================================

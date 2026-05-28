@@ -26,13 +26,13 @@ del /F "%SystemRoot%\System32\%KSP_DLL%" >nul 2>&1
 del /F "%SystemRoot%\SysWOW64\%KSP_DLL%" >nul 2>&1
 del /F "%SystemRoot%\System32\OpenCertCSP.dll" >nul 2>&1
 del /F "%SystemRoot%\SysWOW64\OpenCertCSP.dll" >nul 2>&1
-echo       [OK] DLLs removed
+echo       [DONE] DLLs removed
 
 :: 删除注册表
 echo [2/2] Removing registry entries...
 set "REG_KSP=HKLM\SYSTEM\CurrentControlSet\Control\Cryptography\Providers\%KSP_NAME%"
 reg delete "%REG_KSP%" /f >nul 2>&1
-echo       [OK] KSP unregistered
+echo       [DONE] KSP unregistered
 
 echo.
 echo ============================================================
