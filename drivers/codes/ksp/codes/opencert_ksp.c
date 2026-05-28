@@ -401,9 +401,20 @@ static SECURITY_STATUS WINAPI KspFreeProvider(NCRYPT_PROV_HANDLE hProvider)
     return ERROR_SUCCESS;
 }
 
-/* Ensure IPC connection is established */
+/* Ensure IPC connection is established and alive */
 static HANDLE ksp_ensure_pipe(OPENCERT_KSP_PROVIDER *prov)
 {
+    if (prov->hPipe != INVALID_HANDLE_VALUE) {
+        /* 检测 pipe 是否仍然存活（对端可能已关闭） */
+        DWORD avail = 0;
+        if (!PeekNamedPipe(prov->hPipe, NULL, 0, NULL, &avail, NULL)) {
+            /* pipe 已断开，关闭并重连 */
+            ksp_log("ksp_ensure_pipe: pipe broken (PeekNamedPipe failed, err=%u), reconnecting",
+                    GetLastError());
+            CloseHandle(prov->hPipe);
+            prov->hPipe = INVALID_HANDLE_VALUE;
+        }
+    }
     if (prov->hPipe == INVALID_HANDLE_VALUE)
         prov->hPipe = ksp_ipc_connect();
     return prov->hPipe;
@@ -490,8 +501,81 @@ typedef struct {
 } PIN_PROMPT_CTX;
 
 /*
- * pin_credui_thread - 在独立线程上调用 CredUIPromptForCredentialsW。
- * CredUI 内部有自己的模态消息循环，因此新线程无需额外消息泵。
+ * pin_credui_thread_legacy - [备用] 使用旧版 CredUIPromptForCredentialsW API。
+ * 已知问题：用户取消后会缓存取消状态，同进程内重复调用直接返回 ERROR_CANCELLED 不弹窗。
+ * 保留供有消息循环且不需要重试的简单场景使用。
+ */
+static DWORD WINAPI pin_credui_thread_legacy(LPVOID lpParam)
+{
+    PIN_PROMPT_CTX *ctx = (PIN_PROMPT_CTX *)lpParam;
+
+    WCHAR message[512];
+    _snwprintf(message, 512, L"请认证智能卡 %ls 以继续操作",
+               ctx->card_name ? ctx->card_name : L"OpenCert SmartCard");
+
+    CREDUI_INFOW cui = {0};
+    cui.cbSize = sizeof(cui);
+    cui.hwndParent = NULL;
+    cui.pszMessageText = message;
+    cui.pszCaptionText = L"OpenCert 智能卡认证";
+
+    /* 使用唯一的 targetName 试图绕过 CredUI 缓存 */
+    WCHAR target_name[64];
+    _snwprintf(target_name, 64, L"OpenCert_%u_%u",
+               GetCurrentProcessId(), GetTickCount());
+
+    WCHAR username[256] = {0};
+    if (ctx->card_uuid) {
+        wcscpy_s(username, 256, ctx->card_uuid);
+    } else {
+        wcscpy_s(username, 256, L"Unknown SmartCard");
+    }
+    WCHAR password[256] = {0};
+    BOOL save = FALSE;
+
+    ksp_log("pin_credui_thread_legacy: BEFORE CredUI (target=%ls, thread=%u)",
+            target_name, GetCurrentThreadId());
+
+    DWORD result = CredUIPromptForCredentialsW(
+        &cui,
+        target_name,
+        NULL,
+        0,
+        username, 256,
+        password, 256,
+        &save,
+        CREDUI_FLAGS_GENERIC_CREDENTIALS |
+        CREDUI_FLAGS_DO_NOT_PERSIST |
+        CREDUI_FLAGS_EXCLUDE_CERTIFICATES |
+        CREDUI_FLAGS_KEEP_USERNAME |
+        CREDUI_FLAGS_ALWAYS_SHOW_UI |
+        CREDUI_FLAGS_INCORRECT_PASSWORD
+    );
+
+    ksp_log("pin_credui_thread_legacy: AFTER CredUI, result=%u", result);
+
+    if (result != ERROR_SUCCESS) {
+        SecureZeroMemory(password, sizeof(password));
+        ctx->result = -1;
+        return 1;
+    }
+
+    int len = WideCharToMultiByte(CP_UTF8, 0, password, -1,
+                                  ctx->pin_buf, sizeof(ctx->pin_buf), NULL, NULL);
+    SecureZeroMemory(password, sizeof(password));
+
+    if (len <= 0) {
+        ctx->result = -1;
+        return 1;
+    }
+
+    ctx->result = 0;
+    return 0;
+}
+
+/*
+ * pin_credui_thread - 在独立线程上调用 CredUIPromptForWindowsCredentialsW。
+ * 使用 Vista+ 现代 API，没有老 API 的取消状态缓存问题。
  */
 static DWORD WINAPI pin_credui_thread(LPVOID lpParam)
 {
@@ -503,47 +587,103 @@ static DWORD WINAPI pin_credui_thread(LPVOID lpParam)
 
     CREDUI_INFOW cui = {0};
     cui.cbSize = sizeof(cui);
-    cui.hwndParent = NULL;  /* 无父窗口，CredUI 会自己创建顶层窗口 */
+    cui.hwndParent = NULL;
     cui.pszMessageText = message;
     cui.pszCaptionText = L"OpenCert 智能卡认证";
 
+    /* 预填用户名（卡片 UUID）打包为 CredPackAuthenticationBuffer 的输入 */
     WCHAR username[256] = {0};
     if (ctx->card_uuid) {
         wcscpy_s(username, 256, ctx->card_uuid);
     } else {
-        wcscpy_s(username, 256, L"Unknown SmartCard");
+        wcscpy_s(username, 256, L"OpenCert SmartCard");
     }
-    WCHAR password[256] = {0};
+
+    /* 把预填用户名打包为 inAuthBuffer */
+    void *inAuthBuf = NULL;
+    ULONG inAuthSize = 0;
+    CredPackAuthenticationBufferW(
+        CRED_PACK_GENERIC_CREDENTIALS,
+        username, L"",
+        NULL, &inAuthSize);
+    if (inAuthSize > 0) {
+        inAuthBuf = malloc(inAuthSize);
+        if (inAuthBuf) {
+            if (!CredPackAuthenticationBufferW(
+                    CRED_PACK_GENERIC_CREDENTIALS,
+                    username, L"",
+                    (PBYTE)inAuthBuf, &inAuthSize)) {
+                free(inAuthBuf);
+                inAuthBuf = NULL;
+                inAuthSize = 0;
+            }
+        }
+    }
+
+    void *outAuthBuf = NULL;
+    ULONG outAuthSize = 0;
+    ULONG authPackage = 0;
     BOOL save = FALSE;
 
-    ksp_log("pin_credui_thread: calling CredUI (thread=%u)", GetCurrentThreadId());
+    ksp_log("pin_credui_thread: BEFORE CredUI (thread=%u)", GetCurrentThreadId());
 
-    DWORD result = CredUIPromptForCredentialsW(
+    DWORD result = CredUIPromptForWindowsCredentialsW(
         &cui,
-        L"OpenCert",
-        NULL,
-        0,
-        username, 256,
-        password, 256,
+        0,                  /* dwAuthError */
+        &authPackage,
+        inAuthBuf, inAuthSize,
+        &outAuthBuf, &outAuthSize,
         &save,
-        CREDUI_FLAGS_GENERIC_CREDENTIALS |
-        CREDUI_FLAGS_DO_NOT_PERSIST |
-        CREDUI_FLAGS_EXCLUDE_CERTIFICATES |
-        CREDUI_FLAGS_KEEP_USERNAME |
-        CREDUI_FLAGS_ALWAYS_SHOW_UI
+        CREDUIWIN_GENERIC | CREDUIWIN_ENUMERATE_CURRENT_USER
     );
+
+    ksp_log("pin_credui_thread: AFTER CredUI, result=%u", result);
+
+    if (inAuthBuf) {
+        SecureZeroMemory(inAuthBuf, inAuthSize);
+        free(inAuthBuf);
+    }
 
     if (result != ERROR_SUCCESS) {
         ksp_log("pin_credui_thread: user cancelled or error, result=%u", result);
-        SecureZeroMemory(password, sizeof(password));
+        if (outAuthBuf) {
+            SecureZeroMemory(outAuthBuf, outAuthSize);
+            CoTaskMemFree(outAuthBuf);
+        }
         ctx->result = -1;
         return 1;
     }
 
-    /* 将 WCHAR PIN 转换为 UTF-8 */
-    int len = WideCharToMultiByte(CP_UTF8, 0, password, -1,
+    /* 从 outAuthBuf 解包出用户名和密码 */
+    WCHAR user_out[256] = {0};
+    DWORD user_out_size = 256;
+    WCHAR pass_out[256] = {0};
+    DWORD pass_out_size = 256;
+    WCHAR domain_out[256] = {0};
+    DWORD domain_out_size = 256;
+
+    BOOL unpackOk = CredUnPackAuthenticationBufferW(
+        CRED_PACK_PROTECTED_CREDENTIALS,
+        outAuthBuf, outAuthSize,
+        user_out, &user_out_size,
+        domain_out, &domain_out_size,
+        pass_out, &pass_out_size);
+
+    SecureZeroMemory(outAuthBuf, outAuthSize);
+    CoTaskMemFree(outAuthBuf);
+
+    if (!unpackOk) {
+        ksp_log("pin_credui_thread: CredUnPackAuthenticationBuffer failed, err=%u", GetLastError());
+        SecureZeroMemory(pass_out, sizeof(pass_out));
+        ctx->result = -1;
+        return 1;
+    }
+
+    /* 将 PIN 转换为 UTF-8 */
+    int len = WideCharToMultiByte(CP_UTF8, 0, pass_out, -1,
                                   ctx->pin_buf, sizeof(ctx->pin_buf), NULL, NULL);
-    SecureZeroMemory(password, sizeof(password));
+    SecureZeroMemory(pass_out, sizeof(pass_out));
+    SecureZeroMemory(user_out, sizeof(user_out));
 
     if (len <= 0) {
         ksp_log("pin_credui_thread: WideCharToMultiByte failed");
@@ -557,8 +697,32 @@ static DWORD WINAPI pin_credui_thread(LPVOID lpParam)
 }
 
 /*
+ * ksp_wait_with_pump - 等待线程句柄完成，同时 pump 消息避免 GUI 线程死锁。
+ */
+static void ksp_wait_with_pump(HANDLE hThread)
+{
+    for (;;) {
+        DWORD ret = MsgWaitForMultipleObjectsEx(
+            1, &hThread, INFINITE, QS_ALLINPUT, MWMO_ALERTABLE);
+        if (ret == WAIT_OBJECT_0) {
+            break;  /* 线程完成 */
+        } else if (ret == WAIT_OBJECT_0 + 1) {
+            /* 有消息需要处理 */
+            MSG msg;
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        } else {
+            /* WAIT_IO_COMPLETION 或其他：继续循环 */
+        }
+    }
+}
+
+/*
  * ksp_prompt_pin_threaded - 在独立线程上调用 CredUI（备用方案）。
  * 当调用方线程无消息循环时使用此版本避免阻塞。
+ * 使用消息泵等待，确保 GUI 线程（STA）不死锁。
  */
 static int ksp_prompt_pin_threaded(const WCHAR *card_name, const WCHAR *card_uuid,
                                    char *pin_buf, DWORD pin_buf_size, HWND hWndParent)
@@ -578,7 +742,7 @@ static int ksp_prompt_pin_threaded(const WCHAR *card_name, const WCHAR *card_uui
         ksp_log("ksp_prompt_pin_threaded: CreateThread failed (err=%u), calling directly", GetLastError());
         pin_credui_thread(&ctx);
     } else {
-        WaitForSingleObject(hThread, INFINITE);
+        ksp_wait_with_pump(hThread);
         CloseHandle(hThread);
     }
 
@@ -697,25 +861,37 @@ static int ksp_handle_login_required(OPENCERT_KSP_PROVIDER *prov, const WCHAR *c
     }
     MultiByteToWideChar(CP_UTF8, 0, card_uuid, -1, card_uuid_w, 256);
 
-    /* 弹出 PIN 输入框（显示卡片名称和 UUID） */
-    char pin[256] = {0};
-    if (ksp_prompt_pin(card_name_w, card_uuid_w, pin, sizeof(pin), hWndParent) != 0) {
-        ksp_log("ksp_handle_login_required: user cancelled PIN input");
-        return -1;  /* 用户取消 */
-    }
+    /* 循环弹出 PIN 输入框，PIN 错误时重试，用户取消时退出 */
+    int max_attempts = 3;
+    for (int attempt = 0; attempt < max_attempts; attempt++) {
+        char pin[256] = {0};
+        if (ksp_prompt_pin(card_name_w, card_uuid_w, pin, sizeof(pin), hWndParent) != 0) {
+            ksp_log("ksp_handle_login_required: user cancelled PIN input (attempt %d)", attempt + 1);
+            return -1;  /* 用户取消 */
+        }
 
-    /* 确保 pipe 连接 */
-    HANDLE hPipe = ksp_ensure_pipe(prov);
-    if (hPipe == INVALID_HANDLE_VALUE) {
+        /* 确保 pipe 连接 */
+        HANDLE hPipe = ksp_ensure_pipe(prov);
+        if (hPipe == INVALID_HANDLE_VALUE) {
+            SecureZeroMemory(pin, sizeof(pin));
+            return -1;
+        }
+
+        /* 发送 Login 命令 */
+        int ret = ksp_login(hPipe, card_uuid, pin);
         SecureZeroMemory(pin, sizeof(pin));
-        return -1;
+
+        if (ret == 0) {
+            ksp_log("ksp_handle_login_required: login success on attempt %d", attempt + 1);
+            return 0;  /* 登录成功 */
+        }
+
+        ksp_log("ksp_handle_login_required: PIN incorrect (attempt %d/%d)", attempt + 1, max_attempts);
+        /* PIN 错误，继续循环重试弹窗 */
     }
 
-    /* 发送 Login 命令 */
-    int ret = ksp_login(hPipe, card_uuid, pin);
-    SecureZeroMemory(pin, sizeof(pin));
-
-    return ret;
+    ksp_log("ksp_handle_login_required: max attempts reached");
+    return -1;
 }
 
 static SECURITY_STATUS WINAPI KspOpenKey(
@@ -1081,6 +1257,17 @@ static SECURITY_STATUS WINAPI KspSignHash(
     char *resp = NULL;
     DWORD rv = 0;
     int ret = ksp_ipc_call(hPipe, CMD_KSP_SIGN, req, &resp, &rv);
+
+    /* 如果 IPC 通信失败，尝试重连一次 */
+    if (ret != 0) {
+        ksp_log("KspSignHash: IPC call failed, reconnecting...");
+        if (resp) { free(resp); resp = NULL; }
+        prov->hPipe = INVALID_HANDLE_VALUE;
+        hPipe = ksp_ensure_pipe(prov);
+        if (hPipe != INVALID_HANDLE_VALUE) {
+            ret = ksp_ipc_call(hPipe, CMD_KSP_SIGN, req, &resp, &rv);
+        }
+    }
 
     /* 如果后端返回 CKR_USER_NOT_LOGGED_IN，弹出 PIN 输入框并重试 */
     if (ret == 0 && rv == CKR_USER_NOT_LOGGED_IN) {

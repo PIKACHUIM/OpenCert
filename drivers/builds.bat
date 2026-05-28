@@ -34,7 +34,7 @@ call "!VSBASE!\vcvars64.bat" >nul 2>&1
 echo [x64] Building KSP...
 cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
     codes\ksp\codes\opencert_ksp.c /Fe"build\OpenCertKSP_x64.dll" /Fo"build\ksp_x64.obj" ^
-    /link /DEF:codes\ksp\codes\OpenCertKSP.def ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib credui.lib /NOLOGO /DLL /MACHINE:X64
+    /link /DEF:codes\ksp\codes\OpenCertKSP.def ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib credui.lib user32.lib ole32.lib /NOLOGO /DLL /MACHINE:X64
 if %errorlevel% neq 0 (echo [FAILED] KSP x64 & exit /b 1)
 echo [OK] build\OpenCertKSP_x64.dll
 
@@ -54,7 +54,7 @@ call "!VSBASE!\vcvars32.bat" >nul 2>&1
 echo [x86] Building KSP...
 cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
     codes\ksp\codes\opencert_ksp.c /Fe"build\OpenCertKSP_x86.dll" /Fo"build\ksp_x86.obj" ^
-    /link /DEF:codes\ksp\codes\OpenCertKSP.def ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib credui.lib /NOLOGO /DLL /MACHINE:X86
+    /link /DEF:codes\ksp\codes\OpenCertKSP.def ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib credui.lib user32.lib ole32.lib /NOLOGO /DLL /MACHINE:X86
 if %errorlevel% neq 0 (echo [FAILED] KSP x86 & exit /b 1)
 echo [OK] build\OpenCertKSP_x86.dll
 
