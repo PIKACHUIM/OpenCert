@@ -13,5 +13,5 @@ clients/data/
 .idea/editor.xml
 .idea/CopilotChatTabs.xml
 .idea/CopilotChatHistory.xml
-.codebuddy
 .idea
+.codebuddy/plan

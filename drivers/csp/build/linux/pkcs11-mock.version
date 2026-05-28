@@ -1,7 +1,0 @@
-PKCS11MOCK {
-  global:
-	C_*;
-  local:
-	*;
-};
-

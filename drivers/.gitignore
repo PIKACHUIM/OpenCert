@@ -1,0 +1,9 @@
+# 构建中间文件
+build/
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.idb
+*.tlog
