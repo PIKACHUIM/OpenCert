@@ -18,6 +18,9 @@
 #include <stdarg.h>
 #include <wincred.h>
 
+/* DLL 模块句柄 */
+static HINSTANCE g_hDllInstance = NULL;
+
 /* ---- Debug Logging ---- */
 static const char *ksp_get_log_path(void)
 {
@@ -406,49 +409,51 @@ static HANDLE ksp_ensure_pipe(OPENCERT_KSP_PROVIDER *prov)
     return prov->hPipe;
 }
 
+
 /* ---- PIN Prompt and Login ---- */
 
+/* PIN 弹窗线程上下文 */
+typedef struct {
+    const WCHAR *card_name;
+    const WCHAR *card_uuid;
+    char pin_buf[256];
+    int result;  /* 0=成功, -1=失败/取消 */
+} PIN_PROMPT_CTX;
+
 /*
- * ksp_prompt_pin - 弹出 Windows PIN 输入对话框。
- * 使用 CredUIPromptForCredentialsW 显示标准的 Windows 凭据输入框。
- * card_name: 智能卡名称（显示在弹窗中）
- * card_uuid: 智能卡 UUID（显示在弹窗中）
- * 返回 0 表示成功（PIN 写入 pin_buf），非 0 表示用户取消或失败。
+ * pin_credui_thread - 在独立线程上调用 CredUIPromptForCredentialsW。
+ * CredUI 内部有自己的模态消息循环，因此新线程无需额外消息泵。
  */
-static int ksp_prompt_pin(const WCHAR *card_name, const WCHAR *card_uuid,
-                          char *pin_buf, DWORD pin_buf_size, HWND hWndParent)
+static DWORD WINAPI pin_credui_thread(LPVOID lpParam)
 {
-    /* 构建弹窗消息文本：显示卡片名称和 UUID */
+    PIN_PROMPT_CTX *ctx = (PIN_PROMPT_CTX *)lpParam;
+
     WCHAR message[512];
-    _snwprintf(message, 512,
-        L"请认证智能卡 %ls 以继续操作",
-        card_name ? card_name : L"OpenCert SmartCard"
-        );
+    _snwprintf(message, 512, L"请认证智能卡 %ls 以继续操作",
+               ctx->card_name ? ctx->card_name : L"OpenCert SmartCard");
 
     CREDUI_INFOW cui = {0};
     cui.cbSize = sizeof(cui);
-    cui.hwndParent = hWndParent;
+    cui.hwndParent = NULL;  /* 无父窗口，CredUI 会自己创建顶层窗口 */
     cui.pszMessageText = message;
     cui.pszCaptionText = L"OpenCert 智能卡认证";
 
     WCHAR username[256] = {0};
-    if (card_uuid) {
-        wcscpy_s(username, 256, card_uuid);
+    if (ctx->card_uuid) {
+        wcscpy_s(username, 256, ctx->card_uuid);
     } else {
         wcscpy_s(username, 256, L"Unknown SmartCard");
     }
     WCHAR password[256] = {0};
     BOOL save = FALSE;
 
-    ksp_log("ksp_prompt_pin: showing PIN dialog for card=%ls, uuid=%ls",
-            card_name ? card_name : L"(null)",
-            card_uuid ? card_uuid : L"(null)");
+    ksp_log("pin_credui_thread: calling CredUI (thread=%u)", GetCurrentThreadId());
 
     DWORD result = CredUIPromptForCredentialsW(
         &cui,
-        L"OpenCert",       /* target name */
-        NULL,              /* reserved */
-        0,                 /* auth error (0 = first attempt) */
+        L"OpenCert",
+        NULL,
+        0,
         username, 256,
         password, 256,
         &save,
@@ -460,23 +465,66 @@ static int ksp_prompt_pin(const WCHAR *card_name, const WCHAR *card_uuid,
     );
 
     if (result != ERROR_SUCCESS) {
-        ksp_log("ksp_prompt_pin: user cancelled or error, result=%u", result);
+        ksp_log("pin_credui_thread: user cancelled or error, result=%u", result);
         SecureZeroMemory(password, sizeof(password));
-        return -1;
+        ctx->result = -1;
+        return 1;
     }
 
     /* 将 WCHAR PIN 转换为 UTF-8 */
     int len = WideCharToMultiByte(CP_UTF8, 0, password, -1,
-                                  pin_buf, pin_buf_size, NULL, NULL);
+                                  ctx->pin_buf, sizeof(ctx->pin_buf), NULL, NULL);
     SecureZeroMemory(password, sizeof(password));
 
     if (len <= 0) {
-        ksp_log("ksp_prompt_pin: WideCharToMultiByte failed");
-        return -1;
+        ksp_log("pin_credui_thread: WideCharToMultiByte failed");
+        ctx->result = -1;
+        return 1;
     }
 
-    ksp_log("ksp_prompt_pin: PIN obtained (len=%d)", len - 1);
+    ksp_log("pin_credui_thread: PIN obtained (len=%d)", len - 1);
+    ctx->result = 0;
     return 0;
+}
+
+/*
+ * ksp_prompt_pin - 弹出 Windows PIN 输入对话框。
+ * 在独立线程上调用 CredUIPromptForCredentialsW（保留标准 Windows 凭据 UI 外观）。
+ * 新线程没有锁/消息循环冲突，CredUI 内部自带模态消息循环，确保对话框正常显示。
+ * 返回 0 表示成功（PIN 写入 pin_buf），非 0 表示用户取消或失败。
+ */
+static int ksp_prompt_pin(const WCHAR *card_name, const WCHAR *card_uuid,
+                          char *pin_buf, DWORD pin_buf_size, HWND hWndParent)
+{
+    (void)hWndParent;
+
+    PIN_PROMPT_CTX ctx = {0};
+    ctx.card_name = card_name;
+    ctx.card_uuid = card_uuid;
+    ctx.result = -1;
+
+    ksp_log("ksp_prompt_pin: spawning CredUI thread for card=%ls",
+            card_name ? card_name : L"(null)");
+
+    HANDLE hThread = CreateThread(NULL, 0, pin_credui_thread, &ctx, 0, NULL);
+    if (!hThread) {
+        ksp_log("ksp_prompt_pin: CreateThread failed (err=%u), calling directly", GetLastError());
+        pin_credui_thread(&ctx);
+    } else {
+        /* 安全等待：CredUI 在新线程内运行自己的消息循环，
+         * 调用线程只是阻塞等待线程结束，不会死锁。 */
+        WaitForSingleObject(hThread, INFINITE);
+        CloseHandle(hThread);
+    }
+
+    if (ctx.result == 0 && pin_buf_size > 0) {
+        strncpy(pin_buf, ctx.pin_buf, pin_buf_size - 1);
+        pin_buf[pin_buf_size - 1] = '\0';
+    }
+    SecureZeroMemory(ctx.pin_buf, sizeof(ctx.pin_buf));
+
+    ksp_log("ksp_prompt_pin: result=%d", ctx.result);
+    return ctx.result;
 }
 
 /*
@@ -996,6 +1044,22 @@ static SECURITY_STATUS WINAPI KspSignHash(
     if (!sig_data || sig_len == 0) {
         if (sig_data) free(sig_data);
         return NTE_INTERNAL_ERROR;
+    }
+
+    /* RSA 签名长度必须恰好等于 keyBits/8。
+     * 若后端返回的签名少于预期字节（前导零被截断），左侧补 0x00。
+     * 这是 Windows CNG 0x8009002D 内部一致性检查失败的主要原因。 */
+    DWORD expected_len = key->dwKeyBits / 8;
+    if (wcscmp(key->szAlgorithm, BCRYPT_RSA_ALGORITHM) == 0 &&
+        expected_len > 0 && sig_len < expected_len) {
+        BYTE *padded = (BYTE *)malloc(expected_len);
+        if (!padded) { free(sig_data); return NTE_NO_MEMORY; }
+        memset(padded, 0, expected_len);
+        memcpy(padded + (expected_len - sig_len), sig_data, sig_len);
+        ksp_log("KspSignHash: padded RSA sig from %u to %u bytes", sig_len, expected_len);
+        free(sig_data);
+        sig_data = padded;
+        sig_len = expected_len;
     }
 
     *pcbResult = sig_len;
@@ -1521,11 +1585,11 @@ NTSTATUS WINAPI GetKeyStorageInterface(
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 {
-    (void)hinstDLL;
     (void)lpvReserved;
 
     switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
+        g_hDllInstance = hinstDLL;
         DisableThreadLibraryCalls(hinstDLL);
         ksp_log("DllMain: DLL_PROCESS_ATTACH (pid=%u)", GetCurrentProcessId());
         break;
