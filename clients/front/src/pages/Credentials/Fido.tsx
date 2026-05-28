@@ -7,12 +7,13 @@ import {
   KeyOutlined, LockOutlined, DeleteOutlined, PlusOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import PageHeader from '../../components/PageHeader';
 import {
   getCards, getCerts, deleteCert, createCredential, type CredentialPayload,
 } from '../../api';
 import type { Card, Certificate } from '../../types';
 
-const { Title, Paragraph, Text } = Typography;
+const { Text } = Typography;
 
 const toB64 = (s: string): string => btoa(unescape(encodeURIComponent(s)));
 
@@ -90,15 +91,16 @@ const FidoPage: React.FC = () => {
 
   return (
     <div>
-      <Title level={3}>
-        <KeyOutlined /> {t('credentials.fido.pageTitle')}
-      </Title>
-      <Paragraph>
-        <Text type="secondary">
-          <Tag color="green">FIDO2/WebAuthn</Tag>
-          {t('credentials.fido.tip')}
-        </Text>
-      </Paragraph>
+      <PageHeader
+        icon={<KeyOutlined />}
+        title={t('credentials.fido.pageTitle')}
+        tags={<Tag color="green">FIDO2/WebAuthn</Tag>}
+        extra={
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)} size="small">
+            {t('credentials.common.create')}
+          </Button>
+        }
+      />
 
       {/* 卡片选择 + 密码 */}
       <Space wrap style={{ marginBottom: 16 }}>
@@ -119,13 +121,6 @@ const FidoPage: React.FC = () => {
           autoComplete="new-password"
         />
       </Space>
-
-      {/* 操作栏 */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)}>
-          {t('credentials.common.create')}
-        </Button>
-      </div>
 
       {/* 列表 */}
       <ACard size="small" loading={loading}>

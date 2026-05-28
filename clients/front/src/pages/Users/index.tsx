@@ -6,12 +6,13 @@ import {
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, ReloadOutlined,
 } from '@ant-design/icons';
+import PageHeader from '../../components/PageHeader';
 import { getUsers, createUser, updateUser, deleteUser } from '../../api';
 import type { User, CreateUserRequest } from '../../types';
 import { useAppStore } from '../../store/appStore';
 import dayjs from 'dayjs';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 const Users: React.FC = () => {
   const { darkMode } = useAppStore();
@@ -161,21 +162,22 @@ const Users: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Title level={4} style={{ margin: 0, color: darkMode ? '#c9d1d9' : undefined }}>
-          用户管理
-        </Title>
-        <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => load()}>刷新</Button>
-          <Button
-            type="primary" icon={<PlusOutlined />}
-            onClick={() => { setEditUser(null); form.resetFields(); setModalOpen(true); }}
-          >
-            新建用户
-          </Button>
-        </Space>
-      </div>
+    <div>
+      <PageHeader
+        icon={<UserOutlined />}
+        title="平台账号管理"
+        extra={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => load()} size="small">刷新</Button>
+            <Button
+              type="primary" icon={<PlusOutlined />} size="small"
+              onClick={() => { setEditUser(null); form.resetFields(); setModalOpen(true); }}
+            >
+              新建用户
+            </Button>
+          </>
+        }
+      />
 
       <Card style={cardStyle} bodyStyle={{ padding: 0 }}>
         <Table

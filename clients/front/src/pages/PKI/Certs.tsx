@@ -10,6 +10,7 @@ import {
   ImportOutlined, DownloadOutlined, StopOutlined, EyeOutlined,
   KeyOutlined, ExportOutlined,
 } from '@ant-design/icons';
+import PageHeader from '../../components/PageHeader';
 import {
   getPKICerts, issuePKICert, selfSignFromCSR, importPKICert, deletePKICert, deletePKICertKey,
   exportPKICert, importPKICertToCard, revokePKICert,
@@ -391,17 +392,18 @@ const CertsPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Text strong style={{ fontSize: 16, color: darkMode ? '#c9d1d9' : undefined }}>
-          <SafetyCertificateOutlined style={{ marginRight: 8 }} />证书签发管理
-        </Text>
-        <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => load()}>刷新</Button>
-          <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>导入证书</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setIssueOpen(true)}>签发证书</Button>
-        </Space>
-      </div>
+    <div>
+      <PageHeader
+        icon={<SafetyCertificateOutlined />}
+        title="证书签发管理"
+        extra={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => load()} size="small">刷新</Button>
+            <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)} size="small">导入证书</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setIssueOpen(true)} size="small">签发证书</Button>
+          </>
+        }
+      />
 
       <Card style={cardStyle} bodyStyle={{ padding: 0 }}>
         <Table dataSource={list} columns={columns} rowKey="uuid" loading={loading}

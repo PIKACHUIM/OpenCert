@@ -36,3 +36,12 @@ body {
 .ant-table-thead > tr > th {
   background: transparent !important;
 }
+
+/* 表格内容不换行 */
+.nowrap-table .ant-table-cell {
+  white-space: nowrap !important;
+}
+.nowrap-table .ant-descriptions-item-content,
+.nowrap-table .ant-descriptions-item-label {
+  white-space: nowrap !important;
+}

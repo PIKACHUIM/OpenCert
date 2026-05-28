@@ -29,6 +29,7 @@ export interface Card {
   security_level: SecurityLevel;
   cloud_url?: string;
   cloud_card_uuid?: string;
+  enabled?: boolean;
   created_at: string;
   expires_at?: string;
   cert_stats?: CertStats;
@@ -423,10 +424,18 @@ export interface CertDetail {
   country?: string;
   state?: string;
   locality?: string;
+  street?: string;           // 管辖地/街道地址
+  subject_serial?: string;   // 主体序列号（公司序列号）
+  description?: string;      // 描述
   issuer_cn: string;
   issuer_org?: string;
   issuer_ou?: string;
   issuer_country?: string;
+  issuer_state?: string;          // 颁发者省/州
+  issuer_locality?: string;       // 颁发者城市
+  issuer_street?: string;       // 颁发者管辖地
+  issuer_serial?: string;       // 颁发者序列号
+  issuer_description?: string;  // 颁发者描述
   not_before: string;
   not_after: string;
   serial_number: string;

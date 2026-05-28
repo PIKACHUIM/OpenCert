@@ -7,6 +7,7 @@ import {
   PlusOutlined, DeleteOutlined, ReloadOutlined, DownloadOutlined,
   CopyOutlined, EyeOutlined, KeyOutlined,
 } from '@ant-design/icons';
+import PageHeader from '../../components/PageHeader';
 import { getCSRList, createCSR, deleteCSR, downloadCSRFile, getCards } from '../../api';
 import type { CSRRecord, CreateCSRRequest, Card as CardType } from '../../types';
 import { useAppStore } from '../../store/appStore';
@@ -260,16 +261,17 @@ const CSRPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Text strong style={{ fontSize: 16, color: darkMode ? '#c9d1d9' : undefined }}>
-          <KeyOutlined style={{ marginRight: 8 }} />本地证书申请
-        </Text>
-        <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => load()}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>生成 CSR</Button>
-        </Space>
-      </div>
+    <div>
+      <PageHeader
+        icon={<KeyOutlined />}
+        title="本地证书申请"
+        extra={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => load()} size="small">刷新</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)} size="small">生成 CSR</Button>
+          </>
+        }
+      />
 
       <Card style={cardStyle} bodyStyle={{ padding: 0 }}>
         <Table dataSource={list} columns={columns} rowKey="uuid" loading={loading}

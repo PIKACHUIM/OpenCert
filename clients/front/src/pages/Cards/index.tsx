@@ -2,13 +2,16 @@ import React, { useEffect, useState } from 'react';
 import {
   Table, Button, Space, Tag, Typography, Modal, Form, Input,
   Select, Popconfirm, message, Tooltip, Card, Drawer, Descriptions,
-  Empty, Radio, Alert,
+  Empty, Radio, Alert, DatePicker, Switch, Checkbox,
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, ReloadOutlined,
   KeyOutlined, SafetyCertificateOutlined, EyeOutlined, LockOutlined,
+  ExportOutlined, ImportOutlined, CheckCircleOutlined, CloseCircleOutlined,
+  UndoOutlined, CreditCardOutlined, EditOutlined, PoweroffOutlined,
 } from '@ant-design/icons';
-import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, exportCardDownload, restoreCard } from '../../api';
+import PageHeader from '../../components/PageHeader';
+import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, exportCardDownload, restoreCard, updateCard } from '../../api';
 import type { Card as CardType, Certificate, User, CreateCardRequest } from '../../types';
 import { useAppStore } from '../../store/appStore';
 import { useAuthStore } from '../../store/auth';
@@ -101,6 +104,12 @@ const Cards: React.FC = () => {
   const [deleteForm] = Form.useForm();
   const [deleting, setDeleting] = useState(false);
 
+  // 修改卡片弹窗
+  const [editOpen, setEditOpen] = useState(false);
+  const [editCard, setEditCard] = useState<CardType | null>(null);
+  const [editForm] = Form.useForm();
+  const [editing, setEditing] = useState(false);
+
   const load = async (p = page) => {
     setLoading(true);
     try {
@@ -168,18 +177,21 @@ const Cards: React.FC = () => {
     }
   };
 
-  // PIN 重置
+  // PIN 修改/重置
   const handlePinReset = async () => {
     if (!pinResetCard) return;
     try {
       const values = await pinResetForm.validateFields();
       setPinResetting(true);
-      if (values.method === 'puk') {
+      if (values.method === 'pin') {
+        // 使用当前 PIN 修改 PIN（传 old_pin + new_pin）
+        await resetCardPIN(pinResetCard.uuid, { old_pin: values.secret, new_pin: values.new_pin });
+      } else if (values.method === 'puk') {
         await resetCardPIN(pinResetCard.uuid, { puk: values.secret, new_pin: values.new_pin });
       } else {
         await resetCardPIN(pinResetCard.uuid, { admin_key: values.secret, new_pin: values.new_pin });
       }
-      message.success('PIN 已重置');
+      message.success('PIN 已更新');
       setPinResetOpen(false);
       pinResetForm.resetFields();
     } catch (e: any) {
@@ -189,19 +201,19 @@ const Cards: React.FC = () => {
     }
   };
 
-  // 导出卡片
+  // 备份卡片
   const handleExport = async () => {
-    if (!exportCard) return;
+    if (!exportCard || !activeAccount) return;
     try {
       const values = await exportForm.validateFields();
       setExporting(true);
       await exportCardDownload(exportCard.uuid, {
-        user_uuid: values.user_uuid,
+        user_uuid: activeAccount.user_uuid,
         user_password: values.user_password,
         password: values.password,
         admin_key: values.admin_key,
       });
-      message.success('卡片导出成功');
+      message.success('卡片备份成功');
       setExportOpen(false);
       exportForm.resetFields();
     } catch (e: any) {
@@ -213,6 +225,7 @@ const Cards: React.FC = () => {
 
   // 恢复卡片
   const handleRestore = async () => {
+    if (!activeAccount) return;
     try {
       const values = await restoreForm.validateFields();
       setRestoring(true);
@@ -226,7 +239,7 @@ const Cards: React.FC = () => {
           await restoreCard({
             ocs_data: b64,
             password: values.password,
-            user_uuid: values.user_uuid,
+            user_uuid: activeAccount.user_uuid,
             user_password: values.user_password,
           });
           message.success('卡片恢复成功');
@@ -247,12 +260,12 @@ const Cards: React.FC = () => {
   };
 
   const handleDelete = async (uuid: string) => {
-    if (!deleteCard2) return;
+    if (!deleteCard2 || !activeAccount) return;
     try {
       const values = await deleteForm.validateFields();
       setDeleting(true);
       await deleteCard(uuid, {
-        user_uuid: values.user_uuid,
+        user_uuid: activeAccount.user_uuid,
         user_password: values.user_password,
       });
       message.success('卡片已删除');
@@ -310,15 +323,22 @@ const Cards: React.FC = () => {
     {
       title: '卡片信息',
       dataIndex: 'card_name',
-      width: 290,
+      width: 220,
       render: (_: string, record: CardType) => {
-        const user = users.find((u) => u.uuid === record.user_uuid);
+        const isExpired = record.expires_at && dayjs(record.expires_at).isBefore(dayjs());
+        const isDisabled = record.enabled === false;
         return (
           <div>
             <Space size={4}>
               <SafetyCertificateOutlined style={{ color: slotColor(record.slot_type) === 'purple' ? '#722ed1' : slotColor(record.slot_type) === 'cyan' ? '#13c2c2' : '#52c41a' }} />
               <Text strong style={{ color: darkMode ? '#c9d1d9' : undefined }}>{record.card_name}</Text>
-              {user && (<Text style={{ fontSize: 12, color: darkMode ? '#8b949e' : '#999' }}>👤 {user.display_name}</Text>)}
+              {isDisabled ? (
+                <Tag color="red" style={{ fontSize: 10 }}>已禁用</Tag>
+              ) : isExpired ? (
+                <Tag color="orange" style={{ fontSize: 10 }}>已过期</Tag>
+              ) : (
+                <Tag color="green" style={{ fontSize: 10 }}>已启用</Tag>
+              )}
             </Space>
             <div style={{ marginTop: 2 }}>
               <Text copyable={{ text: record.uuid }} style={{ fontSize: 11, fontFamily: 'monospace', color: darkMode ? '#8b949e' : '#999' }}>
@@ -331,12 +351,12 @@ const Cards: React.FC = () => {
     },
     {
       title: '安全等级',
-      width: 140,
+      width: 60,
       render: (_: any, record: CardType) => {
         const cfg = securityLevelConfig[record.security_level] || securityLevelConfig.low;
         return (
           <Space direction="vertical" size={2}>
-<Tag color={slotColor(record.slot_type)}>{slotLabel(record.slot_type)}</Tag>
+            <Tag color={slotColor(record.slot_type)}>{slotLabel(record.slot_type)}</Tag>
             <Tooltip title={cfg.desc}>
               <Tag color={cfg.color}>安全性: {cfg.label}</Tag>
             </Tooltip>
@@ -345,8 +365,36 @@ const Cards: React.FC = () => {
       },
     },
     {
+      title: '凭据状态',
+      width:140,
+      render: (_: any, record: CardType) => {
+        const canExport = record.security_level !== 'high';
+        const canRestore = record.slot_type === 'local';
+        const user = users.find((u) => u.uuid === record.user_uuid);
+        return (
+          <Space size={[4, 4]} wrap>
+            <Tooltip title="PIN 密钥"><Tag icon={<CheckCircleOutlined />} color="green" style={{ fontSize: 10 }}>PIN</Tag></Tooltip>
+            <Tooltip title="PUK 密钥"><Tag icon={<CheckCircleOutlined />} color="green" style={{ fontSize: 10 }}>PUK</Tag></Tooltip>
+            <Tooltip title={record.security_level === 'low' ? '有AdminKey' : '有AdminKey'}>
+              <Tag icon={record.security_level === 'low' ? <CloseCircleOutlined /> : <CheckCircleOutlined />} color={record.security_level === 'low' ? 'default' : 'purple'} style={{ fontSize: 10 }}>ADK</Tag>
+            </Tooltip>
+            <Tooltip title={record.security_level === 'low' ? '无TPM保护' : 'TPM保护中'}>
+              <Tag icon={record.security_level === 'low' ? <CloseCircleOutlined /> : <CheckCircleOutlined />} color={record.security_level === 'low' ? 'default' : 'purple'} style={{ fontSize: 10 }}>TPM</Tag>
+            </Tooltip>
+            <Tag color={canExport ? 'green' : 'default'} style={{ fontSize: 10 }}>
+              {canExport ? '可导出' : '不可导出'}
+            </Tag>
+            <Tag color={canRestore ? 'blue' : 'default'} style={{ fontSize: 10 }}>
+              {canRestore ? '可恢复' : '不可恢复'}
+            </Tag>
+
+          </Space>
+        );
+      },
+    },
+    {
       title: '有效期',
-      width: 180,
+      width: 140,
       render: (_: any, record: CardType) => {
         const isExpired = record.expires_at && dayjs(record.expires_at).isBefore(dayjs());
         return (
@@ -366,42 +414,10 @@ const Cards: React.FC = () => {
         );
       },
     },
-    {
-      title: '云端信息',
-      width: 260,
-      render: (_: any, record: CardType) => {
-        if (!record.cloud_url && !record.cloud_card_uuid) {
-          return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
-        }
-        return (
-          <div>
-            {record.cloud_url && (
-              <div>
-                <Text copyable={{ text: record.cloud_url }} style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#666' }}>
-                  {record.cloud_url.length > 22 ? record.cloud_url.slice(0, 22) + '...' : record.cloud_url}
-                </Text>
-              </div>
-            )}
-            {record.cloud_card_uuid && (
-              <div style={{ marginTop: 2 }}>
-                <Text copyable={{ text: record.cloud_card_uuid }} style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#999' }}>
-                  {record.cloud_card_uuid.slice(0, 8)}...
-                </Text>
-              </div>
-            )}
-          </div>
-        );
-      },
-    },
-    {
-      title: '备注信息',
-      dataIndex: 'remark',
-      ellipsis: true,
-      render: (v: string) => <Text style={{ color: darkMode ? '#8b949e' : '#999', fontSize: 12 }}>{v || '-'}</Text>,
-    },
+
     {
       title: '凭据统计',
-      width: 180,
+      width: 40,
       render: (_: any, record: CardType) => {
         const stats = record.cert_stats;
         if (!stats || (stats.x509 === 0 && stats.fido === 0 && stats.totp === 0 && stats.creds === 0)) {
@@ -418,37 +434,119 @@ const Cards: React.FC = () => {
       },
     },
     {
+      title: '凭据详情',
+      width: 40,
+      render: (_: any, record: CardType) => {
+        const recordUser = users.find((u) => u.uuid === record.user_uuid);
+        const hasCloud = record.cloud_url || record.cloud_card_uuid;
+        const isCloudUser = recordUser?.user_type === 'cloud';
+        return (
+          <div>
+            {recordUser && (
+              <div>
+                <Tag color={isCloudUser ? 'purple' : 'cyan'} style={{ fontSize: 10 }}>
+                  {isCloudUser ? '☁️ 云端' : '🖥️ 本地'} {recordUser.display_name}
+                </Tag>
+              </div>
+            )}
+            {hasCloud && (
+              <div style={{ marginTop: recordUser ? 4 : 0 }}>
+                {record.cloud_url && (
+                  <div>
+                    <Text copyable={{ text: record.cloud_url }} style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#666' }}>
+                      {record.cloud_url.length > 22 ? record.cloud_url.slice(0, 22) + '...' : record.cloud_url}
+                    </Text>
+                  </div>
+              )}
+              {record.cloud_card_uuid && (
+                  <div style={{ marginTop: 2 }}>
+                    <Text copyable={{ text: record.cloud_card_uuid }} style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#999' }}>
+                      {record.cloud_card_uuid.slice(0, 8)}...
+                    </Text>
+                  </div>
+              )}
+              </div>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      title: '备注信息',
+      dataIndex: 'remark',
+      width: 120,
+      render: (v: string) => (
+        <div style={{ color: darkMode ? '#8b949e' : '#999', fontSize: 12, wordBreak: 'break-all', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          {v || '-'}
+        </div>
+      ),
+    },
+    {
       title: '卡片操作',
-      width: 150,
+      width: 240,
       render: (_: any, record: CardType) => (
-        <Space size={0}>
-          <Tooltip title="查看证书">
-            <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => openCerts(record)} />
-          </Tooltip>
-          <Tooltip title="生成密钥">
-            <Button
-              type="text" size="small" icon={<KeyOutlined />}
-              onClick={() => { setSelectedCard(record); setKeygenOpen(true); }}
-            />
-          </Tooltip>
-          <Tooltip title="重置 PIN">
-            <Button
-              type="text" size="small" icon={<LockOutlined />}
-              onClick={() => { setPinResetCard(record); setPinResetOpen(true); }}
-            />
-          </Tooltip>
-          <Tooltip title="导出卡片">
-            <Button
-              type="text" size="small" icon={<SafetyCertificateOutlined />}
-              disabled={record.security_level === 'high'}
-              onClick={() => { setExportCard(record); setExportOpen(true); }}
-            />
-          </Tooltip>
-          <Tooltip title="删除">
-            <Button type="text" size="small" danger icon={<DeleteOutlined />}
-              onClick={() => { setDeleteCard2(record); setDeleteOpen(true); }}
-            />
-          </Tooltip>
+        <Space size={4} wrap>
+          <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => openCerts(record)}>
+            详情
+          </Button>
+          <Button
+            type="link" size="small" icon={<EditOutlined />}
+            onClick={() => {
+              setEditCard(record);
+              editForm.setFieldsValue({
+                remark: record.remark || '',
+                expires_at: record.expires_at ? dayjs(record.expires_at) : null,
+                never_expire: !record.expires_at,
+              });
+              setEditOpen(true);
+            }}
+          >
+            修改
+          </Button>
+          <Button
+            type="link" size="small" icon={<KeyOutlined />}
+            onClick={() => { setSelectedCard(record); setKeygenOpen(true); }}
+          >
+            密钥
+          </Button>
+          <Button
+            type="link" size="small" icon={<PoweroffOutlined />}
+            style={{ color: record.enabled === false ? '#52c41a' : '#fa8c16' }}
+            onClick={async () => {
+              try {
+                const newEnabled = record.enabled === false;
+                await updateCard(record.uuid, { enabled: newEnabled } as any);
+                message.success(newEnabled ? '卡片已启用' : '卡片已禁用');
+                load();
+              } catch (e: any) { message.error(e.message); }
+            }}
+          >
+            {record.enabled === false ? '启用' : '禁用'}
+          </Button>
+          <Button
+            type="link" size="small" icon={<LockOutlined />}
+            onClick={() => { setPinResetCard(record); setPinResetOpen(true); }}
+          >
+            密码
+          </Button>
+          <Button
+            type="link" size="small" icon={<ExportOutlined />}
+            disabled={record.security_level === 'high'}
+            onClick={() => { setExportCard(record); setExportOpen(true); }}
+          >
+            备份
+          </Button>
+          <Button
+            type="link" size="small" icon={<UndoOutlined />}
+            onClick={() => { setSelectedCard(record); setRestoreOpen(true); }}
+          >
+            恢复
+          </Button>
+          <Button type="link" size="small" danger icon={<DeleteOutlined />}
+            onClick={() => { setDeleteCard2(record); setDeleteOpen(true); }}
+          >
+            删除
+          </Button>
         </Space>
       ),
     },
@@ -458,23 +556,11 @@ const Cards: React.FC = () => {
     {
       title: '证书名称',
       dataIndex: 'common_name',
-      width: 140,
+      width: 280,
       render: (v: string) => <Text style={{ fontSize: 12 }}>{v || '-'}</Text>,
     },
     {
-      title: '颁发者',
-      dataIndex: 'issuer_cn',
-      width: 140,
-      render: (v: string) => <Text style={{ fontSize: 12 }}>{v || '-'}</Text>,
-    },
-    {
-      title: '密钥类型',
-      dataIndex: 'key_type',
-      width: 100,
-      render: (v: string) => <Tag color="blue">{v?.toUpperCase()}</Tag>,
-    },
-    {
-      title: '证书类型',
+      title: '类型',
       dataIndex: 'cert_type',
       width: 80,
       render: (v: string) => <Tag>{v || 'x509'}</Tag>,
@@ -489,7 +575,7 @@ const Cards: React.FC = () => {
       dataIndex: 'created_at',
       width: 150,
       render: (v: string) => (
-        <Text style={{ fontSize: 12, color: '#999' }}>{dayjs(v).format('MM-DD HH:mm:ss')}</Text>
+        <Text style={{ fontSize: 12, color: '#999' }}>{dayjs(v).format('YY-MM-DD HH:mm')}</Text>
       ),
     },
     {
@@ -508,25 +594,28 @@ const Cards: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Space>
-          <Title level={4} style={{ margin: 0, color: darkMode ? '#c9d1d9' : undefined }}>💳 智能卡片管理</Title>
+    <div>
+      <PageHeader
+        icon={<CreditCardOutlined />}
+        title="智能卡片管理"
+        tags={
           <Radio.Group value={filterMode} onChange={(e) => { setFilterMode(e.target.value); setPage(1); }} size="small" buttonStyle="solid">
             <Radio.Button value="active">当前账号</Radio.Button>
             <Radio.Button value="all">全部已登录</Radio.Button>
           </Radio.Group>
-        </Space>
-        <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => load()}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-            新建卡片
-          </Button>
-          <Button onClick={() => setRestoreOpen(true)}>
-            恢复卡片
-          </Button>
-        </Space>
-      </div>
+        }
+        extra={
+          <>
+            <Button icon={<ReloadOutlined />} onClick={() => load()} size="small">刷新</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)} size="small">
+              新建卡片
+            </Button>
+            <Button icon={<UndoOutlined />} onClick={() => setRestoreOpen(true)} size="small">
+              恢复卡片
+            </Button>
+          </>
+        }
+      />
 
       <Card style={cardStyle} bodyStyle={{ padding: 0 }}>
         <Table
@@ -555,8 +644,8 @@ const Cards: React.FC = () => {
         width={480}
       >
         <Form form={createForm} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item name="card_name" label="卡片名称" rules={[{ required: true, message: '请输入卡片名称' }]}>
-            <Input placeholder="智能卡的名称" defaultValue="OpenCert SmartCard" />
+          <Form.Item name="card_name" label="卡片名称" initialValue="OpenCert SmartCard" rules={[{ required: true, message: '请输入卡片名称' }]}>
+            <Input placeholder="智能卡的名称" />
           </Form.Item>
           <Form.Item name="slot_type" label="Slot类型" initialValue="local" rules={[{ required: true }]}>
             <Select
@@ -613,18 +702,20 @@ const Cards: React.FC = () => {
         </Form>
       </Modal>
 
-      {/* 证书抽屉 */}
+      {/* 卡片详情抽屉 */}
       <Drawer
         title={
           <Space>
             <SafetyCertificateOutlined />
-            <span>{selectedCard?.card_name} — 证书列表</span>
+            <span>{selectedCard?.card_name} — 卡片详情</span>
 {selectedCard && <Tag color={slotColor(selectedCard.slot_type)}>{slotLabel(selectedCard.slot_type)}</Tag>}
+            {selectedCard && selectedCard.enabled === false && <Tag color="red">已禁用</Tag>}
+            {selectedCard && selectedCard.expires_at && dayjs(selectedCard.expires_at).isBefore(dayjs()) && <Tag color="red">已过期</Tag>}
           </Space>
         }
         open={certDrawerOpen}
         onClose={() => setCertDrawerOpen(false)}
-        width={700}
+        width={750}
         extra={
           <Button
             type="primary" size="small" icon={<KeyOutlined />}
@@ -635,39 +726,88 @@ const Cards: React.FC = () => {
         }
       >
         {selectedCard && (
-          <Descriptions size="small" style={{ marginBottom: 16 }} column={2}>
-            <Descriptions.Item label="卡片 UUID">
-              <Text copyable style={{ fontSize: 12 }}>{selectedCard.uuid}</Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="安全等级">
-              {(() => {
-                const cfg = securityLevelConfig[selectedCard.security_level] || securityLevelConfig.low;
-                return <Tag color={cfg.color}>{cfg.label} - {cfg.desc}</Tag>;
-              })()}
-            </Descriptions.Item>
-            <Descriptions.Item label="类型">
+          <>
+            {/* 卡片状态警告 */}
+            {(selectedCard.enabled === false || (selectedCard.expires_at && dayjs(selectedCard.expires_at).isBefore(dayjs()))) && (
+              <Alert
+                message="此卡片当前不可用"
+                description={selectedCard.enabled === false ? '卡片已被禁用，其证书不会显示在用户证书管理中，也不会注册到系统。' : '卡片已过期，其证书不会显示在用户证书管理中，也不会注册到系统。'}
+                type="warning" showIcon style={{ marginBottom: 16 }}
+              />
+            )}
+
+            <Descriptions size="small" style={{ marginBottom: 16 }} column={2}>
+              <Descriptions.Item label="UUID">
+                <Text copyable style={{ fontSize: 12 }}>{selectedCard.uuid}</Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="安全等级">
+                {(() => {
+                  const cfg = securityLevelConfig[selectedCard.security_level] || securityLevelConfig.low;
+                  return <Tag color={cfg.color}>{cfg.label} - {cfg.desc}</Tag>;
+                })()}
+              </Descriptions.Item>
+              <Descriptions.Item label="卡片类型">
 <Tag color={slotColor(selectedCard.slot_type)}>{slotLabel(selectedCard.slot_type)}</Tag>
-            </Descriptions.Item>
-            <Descriptions.Item label="创建时间">
-              <Text style={{ fontSize: 12 }}>{dayjs(selectedCard.created_at).format('YYYY-MM-DD HH:mm:ss')}</Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="过期时间">
-              <Text style={{ fontSize: 12 }}>{selectedCard.expires_at ? dayjs(selectedCard.expires_at).format('YYYY-MM-DD HH:mm:ss') : '永不过期'}</Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="备注">
-              <Text style={{ fontSize: 12 }}>{selectedCard.remark || '-'}</Text>
-            </Descriptions.Item>
-            {selectedCard.cloud_url && (
-              <Descriptions.Item label="云地址">
-                <Text copyable style={{ fontSize: 12 }}>{selectedCard.cloud_url}</Text>
               </Descriptions.Item>
-            )}
-            {selectedCard.cloud_card_uuid && (
-              <Descriptions.Item label="云卡片 UUID">
-                <Text copyable style={{ fontSize: 12 }}>{selectedCard.cloud_card_uuid}</Text>
+              <Descriptions.Item label="创建时间">
+                <Text style={{ fontSize: 12 }}>{dayjs(selectedCard.created_at).format('YYYY-MM-DD HH:mm:ss')}</Text>
               </Descriptions.Item>
-            )}
-          </Descriptions>
+              <Descriptions.Item label="有效期至">
+                <Space>
+                  <Text style={{ fontSize: 12 }}>
+                    {selectedCard.expires_at ? dayjs(selectedCard.expires_at).format('YYYY-MM-DD') : '永不过期'}
+                  </Text>
+                  {selectedCard.expires_at && dayjs(selectedCard.expires_at).isBefore(dayjs()) && <Tag color="red" style={{ fontSize: 10 }}>已过期</Tag>}
+                  <Button
+                    type="link" size="small" icon={<EditOutlined />}
+                    onClick={() => {
+                      setEditCard(selectedCard);
+                      editForm.setFieldsValue({
+                        remark: selectedCard.remark || '',
+                        expires_at: selectedCard.expires_at ? dayjs(selectedCard.expires_at) : null,
+                        never_expire: !selectedCard.expires_at,
+                      });
+                      setEditOpen(true);
+                    }}
+                  >
+                    修改
+                  </Button>
+                </Space>
+              </Descriptions.Item>
+              <Descriptions.Item label="卡片状态">
+                <Switch
+                  checked={selectedCard.enabled !== false}
+                  checkedChildren="启用"
+                  unCheckedChildren="禁用"
+                  onChange={async (checked) => {
+                    try {
+                      await updateCard(selectedCard.uuid, { enabled: checked } as any);
+                      selectedCard.enabled = checked;
+                      message.success(checked ? '卡片已启用' : '卡片已禁用');
+                      load();
+                    } catch (e: any) { message.error(e.message); }
+                  }}
+                />
+              </Descriptions.Item>
+              <Descriptions.Item label="卡片备注">
+                <Text style={{ fontSize: 12 }}>{selectedCard.remark || '-'}</Text>
+              </Descriptions.Item>
+              {selectedCard.cloud_url && (
+                <Descriptions.Item label="云地址">
+                  <Text copyable style={{ fontSize: 12 }}>{selectedCard.cloud_url}</Text>
+                </Descriptions.Item>
+              )}
+              {selectedCard.cloud_card_uuid && (
+                <Descriptions.Item label="云卡片 UUID">
+                  <Text copyable style={{ fontSize: 12 }}>{selectedCard.cloud_card_uuid}</Text>
+                </Descriptions.Item>
+              )}
+            </Descriptions>
+
+            <Typography.Title level={5} style={{ marginTop: 8, marginBottom: 8, color: darkMode ? '#c9d1d9' : undefined }}>
+              证书列表
+            </Typography.Title>
+          </>
         )}
 
         {certs.length === 0 && !certsLoading ? (
@@ -686,23 +826,24 @@ const Cards: React.FC = () => {
 
       {/* PIN 重置弹窗 */}
       <Modal
-        title="重置 PIN"
+        title="修改 / 重置 PIN"
         open={pinResetOpen}
         onOk={handlePinReset}
         onCancel={() => { setPinResetOpen(false); pinResetForm.resetFields(); }}
-        okText="重置" cancelText="取消"
+        okText="确认" cancelText="取消"
         confirmLoading={pinResetting}
         width={420}
       >
         <Form form={pinResetForm} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item name="method" label="验证方式" initialValue="puk" rules={[{ required: true }]}>
+          <Form.Item name="method" label="验证方式" initialValue="pin" rules={[{ required: true }]}>
             <Select options={[
+              { value: 'pin', label: '使用当前 PIN 修改' },
               { value: 'puk', label: '使用 PUK 重置' },
               { value: 'admin', label: '使用 Admin Key 重置' },
             ]} />
           </Form.Item>
-          <Form.Item name="secret" label="PUK / Admin Key" rules={[{ required: true, message: '请输入凭据' }]}>
-            <Input.Password placeholder="输入 PUK 或 Admin Key" />
+          <Form.Item name="secret" label="当前 PIN / PUK / Admin Key" rules={[{ required: true, message: '请输入凭据' }]}>
+            <Input.Password placeholder="输入当前 PIN、PUK 或 Admin Key" />
           </Form.Item>
           <Form.Item name="new_pin" label="新 PIN" rules={[{ required: true, message: '请输入新 PIN' }]}>
             <Input.Password placeholder="设置新的 PIN" />
@@ -787,7 +928,7 @@ const Cards: React.FC = () => {
           <Form.Item name="key_type" label="密钥类型" initialValue="ec256" rules={[{ required: true }]}>
             <Select options={KEY_TYPE_OPTIONS} />
           </Form.Item>
-          <Form.Item name="password" label="卡片密码" rules={[{ required: true, message: '请输入卡片密码' }]}>
+          <Form.Item name="card_password" label="卡片密码" rules={[{ required: true, message: '请输入卡片密码' }]}>
             <Input.Password placeholder="验证卡片身份" />
           </Form.Item>
           <Form.Item name="remark" label="备注">
@@ -796,31 +937,31 @@ const Cards: React.FC = () => {
         </Form>
       </Modal>
 
-      {/* 导出卡片弹窗 */}
+      {/* 备份卡片弹窗 */}
       <Modal
-        title="导出智能卡"
+        title="备份智能卡"
         open={exportOpen}
         onOk={handleExport}
         onCancel={() => { setExportOpen(false); exportForm.resetFields(); }}
-        okText="导出" cancelText="取消"
+        okText="备份" cancelText="取消"
         confirmLoading={exporting}
         width={420}
       >
         <Alert
           message={exportCard?.security_level === 'medium'
-            ? '中安全性卡片需要 Admin Key 验证后才能导出'
-            : '请输入卡片密码以导出'}
+            ? '中安全性卡片需要 Admin Key 验证后才能备份'
+            : '请输入卡片密码以备份'}
           type="info" showIcon style={{ marginBottom: 16 }}
         />
         <Form form={exportForm} layout="vertical">
-          <Form.Item name="user_uuid" label="用户" rules={[{ required: true, message: '请选择用户' }]}>
-            <Select
-              options={users.map((u) => ({ value: u.uuid, label: u.display_name }))}
-              placeholder="选择用户"
-            />
+          <Form.Item name="confirm_uuid" label="请输入卡片 UUID 以确认" rules={[
+            { required: true, message: '请输入卡片 UUID' },
+            { validator: (_, value) => value === exportCard?.uuid ? Promise.resolve() : Promise.reject('UUID 不匹配') },
+          ]}>
+            <Input placeholder={exportCard?.uuid} style={{ fontFamily: 'monospace', fontSize: 12 }} />
           </Form.Item>
-          <Form.Item name="user_password" label="用户密码" rules={[{ required: true, message: '请输入用户密码' }]}>
-            <Input.Password placeholder="验证用户身份" />
+          <Form.Item name="user_password" label="当前用户密码" rules={[{ required: true, message: '请输入用户密码' }]}>
+            <Input.Password placeholder="验证当前用户身份" />
           </Form.Item>
           {exportCard?.security_level === 'medium' ? (
             <Form.Item name="admin_key" label="Admin Key" rules={[{ required: true, message: '请输入 Admin Key' }]}>
@@ -845,22 +986,24 @@ const Cards: React.FC = () => {
         width={480}
       >
         <Form form={restoreForm} layout="vertical">
-          <Form.Item name="ocs_file" label="选择 .ocs 文件" rules={[{ required: true, message: '请选择文件' }]}
+          {selectedCard && (
+            <Form.Item name="confirm_uuid" label="请输入卡片 UUID 以确认恢复" rules={[
+              { required: true, message: '请输入卡片 UUID' },
+              { validator: (_, value) => value === selectedCard?.uuid ? Promise.resolve() : Promise.reject('UUID 不匹配') },
+            ]}>
+              <Input placeholder={selectedCard?.uuid} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+            </Form.Item>
+          )}
+          <Form.Item name="ocs_file" label="选择 .ocs 备份文件" rules={[{ required: true, message: '请选择文件' }]}
             valuePropName="fileList" getValueFromEvent={(e: any) => e?.fileList}
           >
             <Input type="file" accept=".ocs" />
           </Form.Item>
-          <Form.Item name="password" label="解密密码" rules={[{ required: true, message: '请输入密码' }]}>
-            <Input.Password placeholder="输入导出时设置的密码" />
+          <Form.Item name="password" label="备份解密密码" rules={[{ required: true, message: '请输入密码' }]}>
+            <Input.Password placeholder="输入备份时设置的密码" />
           </Form.Item>
-          <Form.Item name="user_uuid" label="恢复到用户" rules={[{ required: true, message: '请选择用户' }]}>
-            <Select
-              options={users.map((u) => ({ value: u.uuid, label: u.display_name }))}
-              placeholder="选择目标用户"
-            />
-          </Form.Item>
-          <Form.Item name="user_password" label="用户密码" rules={[{ required: true, message: '请输入用户密码' }]}>
-            <Input.Password placeholder="验证用户身份" />
+          <Form.Item name="user_password" label="当前用户密码" rules={[{ required: true, message: '请输入用户密码' }]}>
+            <Input.Password placeholder="验证当前用户身份" />
           </Form.Item>
         </Form>
       </Modal>
@@ -881,14 +1024,70 @@ const Cards: React.FC = () => {
           type="error" showIcon style={{ marginBottom: 16 }}
         />
         <Form form={deleteForm} layout="vertical">
-          <Form.Item name="user_uuid" label="用户" rules={[{ required: true, message: '请选择用户' }]}>
-            <Select
-              options={users.map((u) => ({ value: u.uuid, label: u.display_name }))}
-              placeholder="选择用户"
-            />
+          <Form.Item name="confirm_uuid" label="请输入卡片 UUID 以确认" rules={[
+            { required: true, message: '请输入卡片 UUID' },
+            { validator: (_, value) => value === deleteCard2?.uuid ? Promise.resolve() : Promise.reject('UUID 不匹配') },
+          ]}>
+            <Input placeholder={deleteCard2?.uuid} style={{ fontFamily: 'monospace', fontSize: 12 }} />
           </Form.Item>
-          <Form.Item name="user_password" label="用户密码" rules={[{ required: true, message: '请输入用户密码' }]}>
-            <Input.Password placeholder="验证用户身份" />
+          <Form.Item name="user_password" label="当前用户密码" rules={[{ required: true, message: '请输入用户密码' }]}>
+            <Input.Password placeholder="验证当前用户身份" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 修改卡片弹窗 */}
+      <Modal
+        title={`修改卡片 — ${editCard?.card_name}`}
+        open={editOpen}
+        onOk={async () => {
+          if (!editCard) return;
+          try {
+            const values = await editForm.validateFields();
+            setEditing(true);
+            const updateData: any = { remark: values.remark };
+            if (values.never_expire) {
+              updateData.expires_at = '';
+            } else if (values.expires_at) {
+              updateData.expires_at = values.expires_at.format('YYYY-MM-DD');
+            }
+            await updateCard(editCard.uuid, updateData);
+            message.success('卡片已更新');
+            setEditOpen(false);
+            editForm.resetFields();
+            load();
+          } catch (e: any) {
+            if (e.message) message.error(e.message);
+          } finally {
+            setEditing(false);
+          }
+        }}
+        onCancel={() => { setEditOpen(false); editForm.resetFields(); }}
+        okText="保存" cancelText="取消"
+        confirmLoading={editing}
+        width={480}
+      >
+        <Form form={editForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="remark" label="备注">
+            <Input.TextArea rows={2} placeholder="卡片备注信息" />
+          </Form.Item>
+          <Form.Item name="never_expire" valuePropName="checked">
+            <Checkbox>永不过期</Checkbox>
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.never_expire !== cur.never_expire}>
+            {({ getFieldValue }) => !getFieldValue('never_expire') && (
+              <Form.Item name="expires_at" label="有效期">
+                <DatePicker style={{ width: '100%' }} placeholder="选择过期日期" />
+              </Form.Item>
+            )}
+          </Form.Item>
+          <Form.Item label="生成密钥对">
+            <Button
+              type="dashed" icon={<KeyOutlined />}
+              onClick={() => { setSelectedCard(editCard); setKeygenOpen(true); }}
+            >
+              为此卡片生成新密钥对
+            </Button>
           </Form.Item>
         </Form>
       </Modal>

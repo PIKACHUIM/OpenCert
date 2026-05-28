@@ -160,6 +160,8 @@ func (db *DB) migrate() error {
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN security_level TEXT NOT NULL DEFAULT 'low'`)
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_cert_key_enc TEXT`)
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_cert_key_salt TEXT`)
+	// 卡片启用/禁用
+	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`)
 
 	// 迁移旧 BLOB 数据为 base64 TEXT
 	db.migrateBlobToBase64()
@@ -283,6 +285,7 @@ CREATE TABLE IF NOT EXISTS cards (
     slot_type       TEXT NOT NULL,                  -- local / tpm2 / cloud
     card_name       TEXT NOT NULL,
     user_uuid       TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1,     -- 1=启用 0=禁用
     created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
     expires_at      DATETIME,
     card_keys       TEXT NOT NULL,                  -- JSON 数组，存储多个加密的主密钥记录

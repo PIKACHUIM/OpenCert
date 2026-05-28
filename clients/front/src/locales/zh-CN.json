@@ -47,13 +47,13 @@
     "localCa": "本地颁发机构",
     "certIssuance": "证书签发管理",
     "totpManage": "TOTP验证管理",
-    "cloudUsers": "云端账号管理",
+    "cloudUsers": "平台账号管理",
     "opLogs": "平台操作日志",
     "systemSettings": "平台系统设置"
   },
   "layout": {
     "appName": "OpenCert Manager",
-    "appDesc": "本地智能卡管理",
+    "appDesc": "智能卡 & 证书管理平台",
     "toggleDark": "切换暗色模式",
     "toggleLight": "切换亮色模式",
     "connected": "已连接 client-card v{{version}}",
@@ -198,6 +198,11 @@
     "activeSlots": "活跃 Slot",
     "totalCerts": "证书总数",
     "totpEntries": "TOTP 条目",
+    "smartCards": "智能卡",
+    "fidoCreds": "FIDO 凭据",
+    "securityCreds": "安全凭据",
+    "recentCards": "最近智能卡",
+    "recentCerts": "最近证书",
     "recentLogs": "最近操作日志",
     "certList": "证书列表",
     "totp": {

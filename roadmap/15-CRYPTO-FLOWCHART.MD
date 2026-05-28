@@ -34,7 +34,7 @@ graph TB
     end
 
     PIN -->|HMAC-SHA256 + AES-256-GCM| MK
-    PUK -->|加密 PIN 明文| PIN
+    PUK -->|HMAC-SHA256 + AES-256-GCM| MK
     ADMIN -->|HMAC-SHA256 + AES-256-GCM| MK
     CARD_PWD -->|HMAC-SHA256 + AES-256-GCM| MK
 
@@ -164,13 +164,11 @@ graph TD
 
     subgraph 加密关系
         MK[主密钥 MasterKey]
-        PIN_TEXT[PIN 明文]
     end
 
     ADMIN_KEY -->|"HMAC(admin,salt) → AES加密"| MK
     PIN_KEY -->|"HMAC(pin,salt) → AES加密"| MK
-    PUK_KEY -->|"HMAC(puk,salt) → AES加密"| PIN_TEXT
-    PIN_TEXT -->|"HMAC(pin,salt) → AES解密"| MK
+    PUK_KEY -->|"HMAC(puk,salt) → AES加密"| MK
 
     ADMIN_KEY -.->|可重置| PUK_KEY
     ADMIN_KEY -.->|可重置| PIN_KEY
@@ -190,20 +188,20 @@ flowchart TD
     style E fill:#c8e6c9
 ```
 
-### 3.3 PUK 加密存储流程（加密 PIN 而非主密钥）
+### 3.3 PUK 加密存储流程（直接加密主密钥，与 PIN/Admin 统一）
 
 ```mermaid
 flowchart TD
     A[用户设置 PUK] --> B[生成 32 字节随机 salt]
     B --> C["AES密钥 = HMAC-SHA256(PUK, salt)"]
-    C --> D["enc_pin = AES-256-GCM(AES密钥, PIN明文)"]
-    D --> E["存储 CardKeyEntry{<br/>key_type: 'puk',<br/>salt: salt,<br/>enc_master_key: enc_pin}"]
+    C --> D["enc_master_key = AES-256-GCM(AES密钥, 主密钥)"]
+    D --> E["存储 CardKeyEntry{<br/>key_type: 'puk',<br/>salt: salt,<br/>enc_master_key: 密文}"]
     
-    F[注意: PUK 条目的 enc_master_key<br/>实际存储的是加密后的 PIN]
+    F[PUK 与 PIN/Admin 统一架构<br/>都是主密钥的独立加密副本]
     
     style A fill:#fff3e0
     style E fill:#c8e6c9
-    style F fill:#ffecb3
+    style F fill:#e8f5e9
 ```
 
 ### 3.4 Admin Key 加密存储流程
@@ -229,24 +227,15 @@ sequenceDiagram
 
     User->>Sys: 提供 PUK + 新 PIN
     
-    Note over Sys: 步骤1: PUK 解密获得旧 PIN
+    Note over Sys: 步骤1: PUK 直接解密主密钥
     Sys->>Sys: AES密钥 = HMAC(PUK, puk_entry.Salt)
-    Sys->>Sys: 旧PIN = AES-GCM-Decrypt(AES密钥, puk_entry.EncMasterKey)
+    Sys->>Sys: masterKey = AES-GCM-Decrypt(AES密钥, puk_entry.EncMasterKey)
     
-    Note over Sys: 步骤2: 旧 PIN 解密主密钥
-    Sys->>Sys: AES密钥2 = HMAC(旧PIN, pin_entry.Salt)
-    Sys->>Sys: masterKey = AES-GCM-Decrypt(AES密钥2, pin_entry.EncMasterKey)
-    
-    Note over Sys: 步骤3: 新 PIN 重新加密主密钥
+    Note over Sys: 步骤2: 新 PIN 重新加密主密钥
     Sys->>Sys: 新salt = crypto/rand(32B)
-    Sys->>Sys: AES密钥3 = HMAC(新PIN, 新salt)
-    Sys->>Sys: 新enc = AES-GCM-Encrypt(AES密钥3, masterKey)
+    Sys->>Sys: AES密钥2 = HMAC(新PIN, 新salt)
+    Sys->>Sys: 新enc = AES-GCM-Encrypt(AES密钥2, masterKey)
     Sys->>Sys: 替换 pin_entry = {salt: 新salt, enc: 新enc}
-    
-    Note over Sys: 步骤4: PUK 重新加密新 PIN
-    Sys->>Sys: AES密钥4 = HMAC(PUK, 新puk_salt)
-    Sys->>Sys: 新puk_enc = AES-GCM-Encrypt(AES密钥4, 新PIN)
-    Sys->>Sys: 替换 puk_entry
     
     Sys->>DB: 更新卡片记录
     Sys-->>User: 重置成功
@@ -404,7 +393,7 @@ flowchart TD
     subgraph 创建卡片
         A1[生成 masterKey = rand(32B)] --> A2["PIN加密: HMAC(PIN,salt) → AES(masterKey)"]
         A2 --> A3["Admin加密: HMAC(Admin,salt) → AES(masterKey)"]
-        A3 --> A4["PUK加密: HMAC(PUK,salt) → AES(PIN明文)"]
+        A3 --> A4["PUK加密: HMAC(PUK,salt) → AES(masterKey)"]
     end
     
     subgraph 生成证书密钥
@@ -621,10 +610,9 @@ sequenceDiagram
 
 | 组件 | 算法 | 密钥长度 | Nonce | Tag | 盐值 | 备注 |
 |------|------|---------|-------|-----|------|------|
-| 主密钥加密 | AES-256-GCM | 32B | 12B | 16B | 32B | 密钥=HMAC(凭据,salt) |
+| 主密钥加密(PIN/PUK/Admin) | AES-256-GCM | 32B | 12B | 16B | 32B | 密钥=HMAC(凭据,salt) |
 | 临时密钥加密 | AES-256-GCM | 32B | 12B | 16B | 32B | 密钥=HMAC(masterKey,salt) |
 | 私钥加密 | AES-256-GCM | 32B | 12B | 16B | — | 密钥=tempKey |
-| PUK加密PIN | AES-256-GCM | 32B | 12B | 16B | 32B | 密钥=HMAC(PUK,salt) |
 | TPM证书密钥加密 | AES-256-GCM | 32B | 12B | 16B | 32B | 密钥=HMAC(AdminKey,salt) |
 | 密钥派生(新) | Argon2id | 32B输出 | — | — | 32B | time=3,mem=64MB,threads=4 |
 | 密钥派生(旧) | HMAC-SHA256 | 32B输出 | — | — | 32B | 向后兼容 |
@@ -635,16 +623,18 @@ sequenceDiagram
 
 ## 十、安全设计要点
 
-### 10.1 为什么 PUK 加密 PIN 而非主密钥？
+### 10.1 为什么 PUK 直接加密主密钥（与 PIN/Admin 统一）？
 
 ```
-设计决策：PUK 条目存储的是 AES-GCM(HMAC(PUK,salt), PIN明文)
+设计决策：PUK/PIN/Admin 三级凭据都独立加密主密钥副本
 
 原因：
-1. PUK 的职责是"重置 PIN"，而非"直接使用卡片"
-2. PUK 解密得到 PIN → PIN 解密主密钥 → 用新 PIN 重新加密主密钥
-3. 这确保了 PUK 不能绕过 PIN 直接操作私钥
-4. Admin Key 才有直接解密主密钥的权限（最高权限）
+1. 统一架构：PIN/PUK/Admin 均为 AES-GCM(HMAC(凭据,salt), masterKey)
+2. 修改 PIN 时不需要知道 PUK（PIN 解密主密钥 → 新 PIN 加密主密钥）
+3. PUK 重置 PIN 只需一步（PUK 解密主密钥 → 新 PIN 加密主密钥）
+4. Admin 重置 PIN/PUK 只需一步（Admin 解密主密钥 → 新凭据加密主密钥）
+5. 避免旧架构中"PUK 加密 PIN"导致的循环依赖问题：
+   修改 PIN 时不知道 PUK，无法同步更新 PUK 加密的 PIN 副本
 ```
 
 ### 10.2 为什么每个证书有独立的临时密钥？
@@ -739,10 +729,8 @@ erDiagram
 | 主密钥加密 | `card/local/keymgr.go` | `encryptMasterKey()` |
 | 主密钥解密 | `card/local/slot.go` | `unlockMasterKey()` |
 | 主密钥解密(指定类型) | `card/local/keymgr.go` | `tryUnlockByType()` |
-| PUK加密PIN | `card/local/keymgr.go` | `encryptPINWithPUK()` |
-| PUK解密PIN | `card/local/keymgr.go` | `decryptPINWithPUK()` |
-| PIN重置 | `card/local/keymgr.go` | `ResetPIN()` |
-| PUK重置 | `card/local/keymgr.go` | `ResetPUK()` |
+| PIN重置(PUK/Admin) | `card/local/keymgr.go` | `ResetPIN()` |
+| PUK重置(Admin) | `card/local/keymgr.go` | `ResetPUK()` |
 | 证书密钥生成+加密 | `card/local/keymgr.go` | `encryptAndStoreCert()` |
 | 证书密钥解密 | `card/local/slot.go` | `decryptPrivateKey()` |
 | 签名操作 | `card/local/slot.go` | `Sign()` |

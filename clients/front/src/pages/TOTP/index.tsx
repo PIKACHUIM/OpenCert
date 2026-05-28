@@ -7,6 +7,7 @@ import {
   PlusOutlined, DeleteOutlined, CopyOutlined, ClockCircleOutlined,
   ReloadOutlined, QrcodeOutlined, KeyOutlined,
 } from '@ant-design/icons';
+import PageHeader from '../../components/PageHeader';
 import { getTOTPList, getTOTPCode, createTOTP, deleteTOTP, getCards } from '../../api';
 import type { TOTPEntry, Card as CardType } from '../../types';
 
@@ -209,12 +210,12 @@ const TOTPPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <Card
-        title={
-          <Space>
-            <ClockCircleOutlined />
-            <span>TOTP 验证器</span>
+    <div>
+      <PageHeader
+        icon={<ClockCircleOutlined />}
+        title="TOTP 验证器"
+        tags={
+          <Space size={8}>
             <Tag color="blue">{entries.length} 个条目</Tag>
             {cards.length > 0 && (
               <Select
@@ -229,14 +230,15 @@ const TOTPPage: React.FC = () => {
           </Space>
         }
         extra={
-          <Space>
-            <Button icon={<ReloadOutlined />} onClick={refreshCodes}>刷新</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddVisible(true)}>
+          <>
+            <Button icon={<ReloadOutlined />} onClick={refreshCodes} size="small">刷新</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddVisible(true)} size="small">
               添加 TOTP
             </Button>
-          </Space>
+          </>
         }
-      >
+      />
+      <Card>
         <Table
           rowKey="uuid"
           columns={columns}

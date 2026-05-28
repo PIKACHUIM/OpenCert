@@ -118,6 +118,7 @@ func CreateCardWithCreds(ctx context.Context, cardRepo *storage.CardRepo, args C
 		SlotType:      storage.SlotTypeLocal,
 		CardName:      args.CardName,
 		UserUUID:      args.UserUUID,
+		Enabled:       true,
 		SecurityLevel: secLevel,
 		Remark:        args.Remark,
 	}
@@ -146,17 +147,17 @@ func CreateCardWithCreds(ctx context.Context, cardRepo *storage.CardRepo, args C
 
 	// 4. （PIN 已在步骤 2 处理，此处保留编号兼容）
 
-	// 5. PUK（加密 PIN 而非直接加密主密钥）
+	// 5. PUK（直接加密主密钥，与 PIN/Admin 统一架构）
 	puk := args.PUK
 	generatePUK := args.GeneratePUK || (args.PUK == "")
 	if puk == "" && generatePUK {
 		puk = randomCred(16)
 	}
 	if puk != "" {
-		// PUK 加密 PIN 明文（而非主密钥），使得 PUK 可解密并修改 PIN
-		pukEntry, err := encryptPINWithPUK([]byte(pin), []byte(puk))
+		// PUK 直接加密主密钥（与 PIN/Admin 一致）
+		pukEntry, err := encryptMasterKey(masterKey, []byte(puk), "puk", "")
 		if err != nil {
-			return nil, fmt.Errorf("加密 PIN（PUK）失败: %w", err)
+			return nil, fmt.Errorf("加密主密钥（PUK）失败: %w", err)
 		}
 		card.CardKeys = append(card.CardKeys, *pukEntry)
 		if generatePUK {
@@ -220,8 +221,8 @@ func CreateCardWithCreds(ctx context.Context, cardRepo *storage.CardRepo, args C
 }
 
 // ResetPIN 用 PUK 或 AdminKey 重置 PIN。
-// PUK 模式：PUK 解密获得旧 PIN → 旧 PIN 解密主密钥 → 用新 PIN 重新加密主密钥 → 用 PUK 重新加密新 PIN
-// Admin 模式：AdminKey 直接解密主密钥 → 用新 PIN 重新加密主密钥 → 用 PUK 重新加密新 PIN
+// PUK 模式：PUK 直接解密主密钥 → 用新 PIN 重新加密主密钥
+// Admin 模式：AdminKey 直接解密主密钥 → 用新 PIN 重新加密主密钥
 // keyType: "puk" 或 "admin"
 func ResetPIN(ctx context.Context, cardRepo *storage.CardRepo, card *storage.Card, keyType, secret, newPIN string) error {
 	if keyType != "puk" && keyType != "admin" {
@@ -235,24 +236,14 @@ func ResetPIN(ctx context.Context, cardRepo *storage.CardRepo, card *storage.Car
 	var err error
 
 	if keyType == "puk" {
-		// PUK 模式：先解密获得旧 PIN，再用旧 PIN 解密主密钥
-		oldPIN, pukErr := decryptPINWithPUK(card, secret)
-		if pukErr != nil {
-			if ferr := bumpFailure(ctx, cardRepo, card, "puk"); ferr != nil {
-				return fmt.Errorf("%w (记录失败次数时出错: %v)", pukErr, ferr)
-			}
-			return pukErr
-		}
-		// 用旧 PIN 解密主密钥
-		masterKey, err = tryUnlockByType(card, "pin", string(oldPIN))
+		// PUK 模式：PUK 直接解密主密钥（与 Admin 一致）
+		masterKey, err = tryUnlockByType(card, "puk", secret)
 		if err != nil {
-			// 如果 PIN 条目不存在，尝试 card 类型
-			masterKey, err = tryUnlockByType(card, "card", string(oldPIN))
-			if err != nil {
-				return fmt.Errorf("PUK 解密的 PIN 无法解锁主密钥: %w", err)
+			if ferr := bumpFailure(ctx, cardRepo, card, "puk"); ferr != nil {
+				return fmt.Errorf("%w (记录失败次数时出错: %v)", err, ferr)
 			}
+			return err
 		}
-		zeroBytes(oldPIN)
 	} else {
 		// Admin 模式：AdminKey 直接解密主密钥
 		masterKey, err = tryUnlockByType(card, "admin", secret)
@@ -291,23 +282,6 @@ func ResetPIN(ctx context.Context, cardRepo *storage.CardRepo, card *storage.Car
 		card.CardKeys = append(card.CardKeys, *newEntry)
 	}
 
-	// 用 PUK 重新加密新 PIN（更新 PUK 条目中存储的加密 PIN）
-	for i := range card.CardKeys {
-		if card.CardKeys[i].KeyType == "puk" {
-			// 找到 PUK 条目对应的 PUK 明文来重新加密新 PIN
-			// 如果是 PUK 模式，我们有 secret 就是 PUK
-			// 如果是 Admin 模式，我们无法获取 PUK 明文，跳过更新
-			if keyType == "puk" {
-				newPukEntry, pErr := encryptPINWithPUK([]byte(newPIN), []byte(secret))
-				if pErr != nil {
-					return fmt.Errorf("用 PUK 加密新 PIN 失败: %w", pErr)
-				}
-				card.CardKeys[i] = *newPukEntry
-			}
-			break
-		}
-	}
-
 	// 同步清零卡片级 PIN 失败标记
 	card.PINFailedCount = 0
 	card.PINLocked = false
@@ -315,13 +289,13 @@ func ResetPIN(ctx context.Context, cardRepo *storage.CardRepo, card *storage.Car
 	return cardRepo.Update(ctx, card)
 }
 
-// ResetPUK 用 AdminKey 验证权限，然后用 newPUK 重新加密当前 PIN。
-// 需要提供当前 PIN（或通过 AdminKey 解密主密钥后找到 PIN 条目对应的密码）。
+// ResetPUK 用 AdminKey 验证权限，然后用 newPUK 重新加密主密钥。
+// AdminKey 解密主密钥 → 用新 PUK 重新加密主密钥（PUK 与 PIN/Admin 统一架构）
 func ResetPUK(ctx context.Context, cardRepo *storage.CardRepo, card *storage.Card, adminKey, currentPIN, newPUK string) error {
 	if newPUK == "" {
 		return fmt.Errorf("新 PUK 不能为空")
 	}
-	// 验证 AdminKey 权限
+	// 验证 AdminKey 权限并解密主密钥
 	masterKey, err := tryUnlockByType(card, "admin", adminKey)
 	if err != nil {
 		if ferr := bumpFailure(ctx, cardRepo, card, "admin"); ferr != nil {
@@ -331,16 +305,10 @@ func ResetPUK(ctx context.Context, cardRepo *storage.CardRepo, card *storage.Car
 	}
 	defer zeroBytes(masterKey)
 
-	// 确定当前 PIN（用于被新 PUK 加密）
-	pinToEncrypt := currentPIN
-	if pinToEncrypt == "" {
-		return fmt.Errorf("需要提供当前 PIN 以便新 PUK 加密")
-	}
-
-	// 用新 PUK 加密当前 PIN
-	newEntry, err := encryptPINWithPUK([]byte(pinToEncrypt), []byte(newPUK))
+	// 用新 PUK 加密主密钥（与 PIN/Admin 统一逻辑）
+	newEntry, err := encryptMasterKey(masterKey, []byte(newPUK), "puk", "")
 	if err != nil {
-		return fmt.Errorf("用新 PUK 加密 PIN 失败: %w", err)
+		return fmt.Errorf("用新 PUK 加密主密钥失败: %w", err)
 	}
 	replaced := false
 	for i := range card.CardKeys {
@@ -595,43 +563,6 @@ func (m *KeyManager) ImportPrivateKey(ctx context.Context, req KeyGenRequest, ma
 }
 
 // ---- 内部工具函数 ----
-
-// encryptPINWithPUK 使用 PUK 加密 PIN 明文，生成一条 puk 类型的 CardKeyEntry。
-// PUK 条目的 EncMasterKey 字段存储的是加密后的 PIN（而非主密钥）。
-func encryptPINWithPUK(pin, puk []byte) (*storage.CardKeyEntry, error) {
-	salt, err := cryptoutil.GenerateSalt()
-	if err != nil {
-		return nil, err
-	}
-	aesKey := cryptoutil.HMACSHA256(puk, salt)
-	encPIN, err := cryptoutil.EncryptAES256GCM(aesKey, pin)
-	if err != nil {
-		return nil, err
-	}
-	return &storage.CardKeyEntry{
-		KeyType:      "puk",
-		Salt:         salt,
-		EncMasterKey: encPIN, // 注意：此处存储的是加密后的 PIN，而非主密钥
-	}, nil
-}
-
-// decryptPINWithPUK 使用 PUK 解密获得 PIN 明文。
-func decryptPINWithPUK(card *storage.Card, puk string) ([]byte, error) {
-	for _, e := range card.CardKeys {
-		if e.KeyType != "puk" {
-			continue
-		}
-		if e.Locked {
-			continue
-		}
-		aesKey := cryptoutil.HMACSHA256([]byte(puk), e.Salt)
-		pin, err := cryptoutil.DecryptAES256GCM(aesKey, e.EncMasterKey)
-		if err == nil {
-			return pin, nil
-		}
-	}
-	return nil, fmt.Errorf("PUK 验证失败")
-}
 
 // encryptMasterKey 用密码加密主密钥，生成一条 CardKeyEntry。
 func encryptMasterKey(masterKey, password []byte, keyType, userUUID string) (*storage.CardKeyEntry, error) {

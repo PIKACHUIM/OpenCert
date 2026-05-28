@@ -129,16 +129,16 @@ func TestResetPUK_WithAdmin(t *testing.T) {
 	if err != nil || reloaded == nil {
 		t.Fatalf("reload 失败: %v", err)
 	}
-	// 新 PUK 应能解密 PIN
-	pin, err := decryptPINWithPUK(reloaded, "new-puk-value")
+	// 新 PUK 应能直接解锁主密钥（PUK 现在直接加密主密钥）
+	mk, err := tryUnlockByType(reloaded, "puk", "new-puk-value")
 	if err != nil {
-		t.Fatalf("新 PUK 无法解密 PIN: %v", err)
+		t.Fatalf("新 PUK 无法解锁主密钥: %v", err)
 	}
-	if string(pin) != "mypin" {
-		t.Fatalf("解密的 PIN 不匹配: got %s", string(pin))
+	if len(mk) != 32 {
+		t.Fatalf("主密钥长度应为 32, 实际 %d", len(mk))
 	}
-	// 旧 PUK 失效（无法解密 PIN）
-	if _, err := decryptPINWithPUK(reloaded, res.PUK); err == nil {
+	// 旧 PUK 失效
+	if _, err := tryUnlockByType(reloaded, "puk", res.PUK); err == nil {
 		t.Fatalf("旧 PUK 不应再有效")
 	}
 }
@@ -212,7 +212,7 @@ func TestPUKLockoutAfter10Failures(t *testing.T) {
 	}
 }
 
-// TestTryUnlockByType_SkipsOtherTypes 验证 tryUnlockByType 不会用 PUK 解锁 PIN 条目。
+// TestTryUnlockByType_SkipsOtherTypes 验证 tryUnlockByType 只匹配对应类型。
 // 这是安全性关键测试：防止凭据类型误用。
 func TestTryUnlockByType_SkipsOtherTypes(t *testing.T) {
 	_, cardRepo := newTestRepos(t)
@@ -243,17 +243,17 @@ func TestTryUnlockByType_SkipsOtherTypes(t *testing.T) {
 		t.Fatalf("跨类型解锁不应成功")
 	}
 
-	// PUK 现在存储的是加密的 PIN，不能用 tryUnlockByType 解锁主密钥
-	if _, err := tryUnlockByType(res.Card, "puk", res.PUK); err == nil {
-		t.Fatalf("PUK 不应能直接解锁主密钥")
+	// PUK 现在直接加密主密钥，可以通过 tryUnlockByType 解锁
+	pukMK, err := tryUnlockByType(res.Card, "puk", res.PUK)
+	if err != nil {
+		t.Fatalf("PUK 直接解锁主密钥应成功: %v", err)
+	}
+	if len(pukMK) != 32 {
+		t.Fatalf("PUK 解出的主密钥长度错误")
 	}
 
-	// 但 PUK 应能解密出 PIN
-	pin, err := decryptPINWithPUK(res.Card, res.PUK)
-	if err != nil {
-		t.Fatalf("PUK 解密 PIN 失败: %v", err)
-	}
-	if string(pin) != "secret-shared" {
-		t.Fatalf("PUK 解密的 PIN 不匹配: got %s", string(pin))
+	// 用错误的 PUK 值应失败
+	if _, err := tryUnlockByType(res.Card, "puk", "wrong-puk"); err == nil {
+		t.Fatalf("错误 PUK 不应解锁成功")
 	}
 }

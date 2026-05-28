@@ -8,12 +8,13 @@ import {
   LockOutlined, DeleteOutlined, PlusOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import PageHeader from '../../components/PageHeader';
 import {
   getCards, getCerts, deleteCert, createCredential, type CredentialPayload,
 } from '../../api';
 import type { Card, Certificate } from '../../types';
 
-const { Title, Paragraph, Text } = Typography;
+const { Text } = Typography;
 
 // 将任意字符串/对象编码为 base64 (UTF-8 安全)。
 const toB64 = (s: string): string => {
@@ -354,15 +355,11 @@ const CredentialsPage: React.FC = () => {
 
   return (
     <div>
-      <Title level={3}>
-        <KeyOutlined /> {t('credentials.title')}
-      </Title>
-      <Paragraph>
-        <Text type="secondary">
-          <Tag color="blue">local</Tag>
-          {t('credentials.common.noCard')}
-        </Text>
-      </Paragraph>
+      <PageHeader
+        icon={<LockOutlined />}
+        title={t('credentials.title')}
+        tags={<Tag color="blue">本地加密存储</Tag>}
+      />
 
       <CardPicker
         cards={cards}

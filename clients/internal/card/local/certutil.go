@@ -35,10 +35,18 @@ type CertDetail struct {
 	Country           string   `json:"country,omitempty"`
 	State             string   `json:"state,omitempty"`
 	Locality          string   `json:"locality,omitempty"`
+	Street            string   `json:"street,omitempty"`            // 管辖地/街道地址
+	SubjectSerial     string   `json:"subject_serial,omitempty"`    // 主体序列号（公司序列号）
+	Description       string   `json:"description,omitempty"`       // 描述
 	IssuerCN          string   `json:"issuer_cn"`
 	IssuerOrg         string   `json:"issuer_org,omitempty"`
 	IssuerOU          string   `json:"issuer_ou,omitempty"`
 	IssuerCountry     string   `json:"issuer_country,omitempty"`
+	IssuerState       string   `json:"issuer_state,omitempty"`      // 颁发者省/州
+	IssuerLocality    string   `json:"issuer_locality,omitempty"`   // 颁发者城市
+	IssuerStreet      string   `json:"issuer_street,omitempty"`     // 颁发者管辖地/街道地址
+	IssuerSerial      string   `json:"issuer_serial,omitempty"`     // 颁发者序列号
+	IssuerDescription string   `json:"issuer_description,omitempty"` // 颁发者描述
 	NotBefore         string   `json:"not_before"`
 	NotAfter          string   `json:"not_after"`
 	SerialNumber      string   `json:"serial_number"`
@@ -88,15 +96,17 @@ func parseCertLenient(derData []byte) (*x509.Certificate, error) {
 // ---- ASN.1 辅助类型 ----
 
 type asn1TBSCert struct {
-	Raw       asn1.RawContent
-	Version   asn1.RawValue   `asn1:"optional,explicit,default:0,tag:0"`
-	Serial    *big.Int
-	SigAlgo   asn1.RawValue
-	Issuer    asn1.RawValue
-	Validity  asn1.RawValue
-	Subject   asn1.RawValue
-	PublicKey asn1.RawValue
-	// 后续字段可选，不解析
+	Raw             asn1.RawContent
+	Version         asn1.RawValue `asn1:"optional,explicit,default:0,tag:0"`
+	Serial          *big.Int
+	SigAlgo         asn1.RawValue
+	Issuer          asn1.RawValue
+	Validity        asn1.RawValue
+	Subject         asn1.RawValue
+	PublicKey       asn1.RawValue
+	IssuerUniqueID  asn1.RawValue `asn1:"optional,tag:1"`
+	SubjectUniqueID asn1.RawValue `asn1:"optional,tag:2"`
+	Extensions      asn1.RawValue `asn1:"optional,explicit,tag:3"`
 }
 
 type asn1Certificate struct {
@@ -187,6 +197,13 @@ func buildCertFromASN1(derData []byte, rawCert *asn1Certificate) *x509.Certifica
 	// 解析 SubjectPublicKeyInfo
 	if len(rawCert.TBS.PublicKey.FullBytes) > 0 {
 		parseSubjectPublicKeyInfo(cert, rawCert.TBS.PublicKey.FullBytes)
+	}
+
+	// 解析扩展（KeyUsage、ExtKeyUsage、SAN、CRL、AIA、BasicConstraints 等）
+	if len(rawCert.TBS.Extensions.Bytes) > 0 {
+		parseExtensionsInto(cert, rawCert.TBS.Extensions.Bytes)
+	} else if len(rawCert.TBS.Extensions.FullBytes) > 0 {
+		parseExtensionsInto(cert, rawCert.TBS.Extensions.FullBytes)
 	}
 
 	return cert
@@ -730,8 +747,12 @@ func ParseCertDetail(certData []byte) (*CertDetail, error) {
 
 	// Key Usage
 	detail.KeyUsage = parseKeyUsage(cert.KeyUsage)
+	if detail.KeyUsage == nil {
+		detail.KeyUsage = []string{}
+	}
 
 	// Extended Key Usage
+	detail.ExtKeyUsage = []string{}
 	for _, eku := range cert.ExtKeyUsage {
 		detail.ExtKeyUsage = append(detail.ExtKeyUsage, extKeyUsageName(eku))
 	}
@@ -765,10 +786,65 @@ func ParseCertDetail(certData []byte) (*CertDetail, error) {
 	if len(cert.Issuer.Country) > 0 {
 		detail.IssuerCountry = strings.Join(cert.Issuer.Country, ", ")
 	}
+	if len(cert.Issuer.Province) > 0 {
+		detail.IssuerState = strings.Join(cert.Issuer.Province, ", ")
+	}
+	if len(cert.Issuer.Locality) > 0 {
+		detail.IssuerLocality = strings.Join(cert.Issuer.Locality, ", ")
+	}
+
+	// 颁发者扩展字段（streetAddress / serialNumber / description）
+	for _, atv := range cert.Issuer.Names {
+		oidStr := atv.Type.String()
+		val := ""
+		switch v := atv.Value.(type) {
+		case string:
+			val = v
+		}
+		switch oidStr {
+		case "2.5.4.9": // streetAddress
+			if detail.IssuerStreet == "" {
+				detail.IssuerStreet = val
+			}
+		case "2.5.4.5": // serialNumber
+			if detail.IssuerSerial == "" {
+				detail.IssuerSerial = val
+			}
+		case "2.5.4.13": // description
+			if detail.IssuerDescription == "" {
+				detail.IssuerDescription = val
+			}
+		}
+	}
 
 	// Locality
 	if len(cert.Subject.Locality) > 0 {
 		detail.Locality = strings.Join(cert.Subject.Locality, ", ")
+	}
+
+	// Street（管辖地/街道地址）、SubjectSerial（主体序列号）、Description
+	// 这些字段在 Go 标准库 pkix.Name 中以 ExtraNames 存储
+	for _, atv := range cert.Subject.Names {
+		oidStr := atv.Type.String()
+		val := ""
+		switch v := atv.Value.(type) {
+		case string:
+			val = v
+		}
+		switch oidStr {
+		case "2.5.4.9": // streetAddress
+			if detail.Street == "" {
+				detail.Street = val
+			}
+		case "2.5.4.5": // serialNumber（主体序列号）
+			if detail.SubjectSerial == "" {
+				detail.SubjectSerial = val
+			}
+		case "2.5.4.13": // description
+			if detail.Description == "" {
+				detail.Description = val
+			}
+		}
 	}
 
 	// 密钥长度

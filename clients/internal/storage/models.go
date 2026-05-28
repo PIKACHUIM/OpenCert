@@ -76,6 +76,7 @@ type Card struct {
 	SlotType  SlotType       `json:"slot_type"`
 	CardName  string         `json:"card_name"`
 	UserUUID  string         `json:"user_uuid"`
+	Enabled   bool           `json:"enabled"`
 	CreatedAt time.Time      `json:"created_at"`
 	ExpiresAt *time.Time     `json:"expires_at,omitempty"`
 	CardKeys  []CardKeyEntry `json:"card_keys"` // 存储为 JSON TEXT

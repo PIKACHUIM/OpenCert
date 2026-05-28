@@ -108,7 +108,7 @@ const Users: React.FC = () => {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Title level={4} style={{ margin: 0 }}>用户管理</Title>
+        <Title level={4} style={{ margin: 0 }}>平台用户管理</Title>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => load()}>刷新</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditUser(null); form.resetFields(); setModalOpen(true); }}>新建用户</Button>

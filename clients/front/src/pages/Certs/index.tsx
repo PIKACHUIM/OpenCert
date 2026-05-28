@@ -5,7 +5,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Card, Table, Button, Space, Tag, Modal, message, Radio,
-  Descriptions, Typography, Tooltip, Drawer, Select, Form, Input, Empty, Upload,
+  Descriptions, Typography, Tooltip, Drawer, Select, Form, Input, Empty, Upload, Alert,
 } from 'antd';
 import {
   DeleteOutlined, EyeOutlined, ImportOutlined,
@@ -13,13 +13,14 @@ import {
   KeyOutlined, CloudDownloadOutlined, ReloadOutlined, InboxOutlined,
   LinkOutlined, GlobalOutlined, LockOutlined,
 } from '@ant-design/icons';
+import PageHeader from '../../components/PageHeader';
 import type { Certificate, Card as CardType, CertDetail } from '../../types';
 import { getCerts, deleteCert, getCards, deliverCert, getCertDetail, exportCertKey, importCertWithKey } from '../../api';
 import { useAppStore } from '../../store/appStore';
 import { useAuthStore } from '../../store/auth';
 import dayjs from 'dayjs';
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 const certTypeColors: Record<string, string> = {
   x509: 'blue', ssh: 'green', gpg: 'purple', totp: 'orange',
@@ -42,7 +43,6 @@ const slotLabel = (t: string) => {
 
 const CertsPage: React.FC = () => {
   const { darkMode } = useAppStore();
-  const accounts = useAuthStore((s) => s.accounts);
   const activeUUID = useAuthStore((s) => s.activeUUID);
 
   const [filterMode, setFilterMode] = useState<'active' | 'all'>('active');
@@ -88,7 +88,14 @@ const CertsPage: React.FC = () => {
       }
       const res = await getCards(params);
       const items = res?.items;
-      const cards = Array.isArray(items) ? items : [];
+      const allItems = Array.isArray(items) ? items : [];
+      // 过滤掉已禁用或已过期的卡片（其证书不显示在证书管理中）
+      const now = new Date();
+      const cards = allItems.filter((c) => {
+        if (c.enabled === false) return false;
+        if (c.expires_at && new Date(c.expires_at) < now) return false;
+        return true;
+      });
       setAllCards(cards);
       // 自动选中第一张卡片
       if (cards.length > 0 && !cards.find((c) => c.uuid === selectedCardUUID)) {
@@ -146,17 +153,52 @@ const CertsPage: React.FC = () => {
   }, [certs, selectedCardUUID]);
 
   const handleDelete = (cert: Certificate) => {
+    let confirmUUID = '';
+    let confirmPassword = '';
     Modal.confirm({
-      title: '确认删除',
-      content: `确定要删除证书 ${cert.uuid.slice(0, 8)}... 吗？此操作不可恢复。`,
+      title: '确认删除证书',
+      icon: null,
+      width: 440,
       okType: 'danger',
+      okText: '删除',
+      cancelText: '取消',
+      content: (
+        <div style={{ marginTop: 12 }}>
+          <Alert message={`确定要删除证书 ${cert.uuid.slice(0, 8)}... 吗？此操作不可恢复。`} type="error" showIcon style={{ marginBottom: 12 }} />
+          <div style={{ marginBottom: 8 }}>
+            <Text style={{ fontSize: 12 }}>请输入证书 UUID 以确认：</Text>
+            <Input
+              placeholder={cert.uuid}
+              style={{ marginTop: 4, fontFamily: 'monospace', fontSize: 12 }}
+              onChange={(e) => { confirmUUID = e.target.value; }}
+            />
+          </div>
+          <div>
+            <Text style={{ fontSize: 12 }}>当前用户密码：</Text>
+            <Input.Password
+              placeholder="验证当前用户身份"
+              style={{ marginTop: 4 }}
+              onChange={(e) => { confirmPassword = e.target.value; }}
+            />
+          </div>
+        </div>
+      ),
       onOk: async () => {
+        if (confirmUUID !== cert.uuid) {
+          message.error('UUID 不匹配，删除已取消');
+          return Promise.reject();
+        }
+        if (!confirmPassword) {
+          message.error('请输入用户密码');
+          return Promise.reject();
+        }
         try {
           await deleteCert(selectedCardUUID, cert.uuid);
           message.success('证书已删除');
           loadCerts();
         } catch (err: any) {
           message.error(err.message || '删除失败');
+          return Promise.reject();
         }
       },
     });
@@ -237,11 +279,16 @@ const CertsPage: React.FC = () => {
 
   const columns = [
     {
-      title: '类型', dataIndex: 'cert_type', width: 80,
-      render: (type: string) => <Tag color={certTypeColors[type] || 'default'}>{certTypeLabels[type] || type}</Tag>,
+      title: '类型', width: 100,
+      render: (_: unknown, record: Certificate) => (
+        <div>
+          <Tag color={certTypeColors[record.cert_type] || 'default'}>{certTypeLabels[record.cert_type] || record.cert_type}</Tag>
+          <Tag color={record.slot_type === 'cloud' ? 'purple' : record.slot_type === 'tpm2' ? 'cyan' : 'green'} style={{ fontSize: 10 }}>{record.slot_type}</Tag>
+        </div>
+      ),
     },
     {
-      title: '证书信息', width: 240, ellipsis: true,
+      title: '证书信息', width: 360, ellipsis: true,
       render: (_: unknown, record: Certificate) => {
         const detail = certDetailsMap[record.uuid];
         if (record.cert_type !== 'x509') return <Text type="secondary">-</Text>;
@@ -258,36 +305,50 @@ const CertsPage: React.FC = () => {
         );
       },
     },
+    // {
+    //   title: '颁发者', width: 240, ellipsis: true,
+    //   render: (_: unknown, record: Certificate) => {
+    //     const detail = certDetailsMap[record.uuid];
+    //     if (record.cert_type !== 'x509') return <Text type="secondary">-</Text>;
+    //     if (!detail) return <Text type="secondary">未知</Text>;
+    //     return (
+    //       <Tooltip title={
+    //         <div>
+    //           <div>CN: {detail.issuer_cn || '-'}</div>
+    //           {detail.issuer_org && <div>O: {detail.issuer_org}</div>}
+    //           {detail.issuer_ou && <div>OU: {detail.issuer_ou}</div>}
+    //           {detail.issuer_country && <div>C: {detail.issuer_country}</div>}
+    //         </div>
+    //       }>
+    //         <div>
+    //           <span style={{ fontSize: 12 }}>{detail.issuer_cn}{detail.is_self_signed && <Tag color="orange" style={{ marginLeft: 4, fontSize: 10 }}>自签名</Tag>}</span>
+    //           {detail.issuer_org && <div><Text style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#999' }}>{detail.issuer_org}</Text></div>}
+    //         </div>
+    //       </Tooltip>
+    //     );
+    //   },
+    // },
     {
-      title: '颁发者', width: 240, ellipsis: true,
-      render: (_: unknown, record: Certificate) => {
-        const detail = certDetailsMap[record.uuid];
-        if (record.cert_type !== 'x509') return <Text type="secondary">-</Text>;
-        if (!detail) return <Text type="secondary">未知</Text>;
-        return (
-          <Tooltip title={detail.issuer_org ? `${detail.issuer_cn} (${detail.issuer_org})` : detail.issuer_cn}>
-            <span style={{ fontSize: 12 }}>{detail.issuer_cn}{detail.is_self_signed && <Tag color="orange" style={{ marginLeft: 4, fontSize: 10 }}>自签名</Tag>}</span>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: 'SAN', width: 120, ellipsis: true,
+      title: '拓展信息', width: 200, ellipsis: true,
       render: (_: unknown, record: Certificate) => {
         const detail = certDetailsMap[record.uuid];
         if (record.cert_type !== 'x509') return <Text type="secondary">-</Text>;
         if (!detail) return <Text type="secondary">-</Text>;
-        const items: string[] = [
-          ...(detail.san_dns || []),
-          ...(detail.san_ip || []),
-          ...(detail.san_email || []),
-          ...(detail.san_uri || []),
+        const items: { type: string; value: string }[] = [
+          ...(detail.san_dns || []).map(v => ({ type: 'DNS', value: v })),
+          ...(detail.san_ip || []).map(v => ({ type: 'IP', value: v })),
+          ...(detail.san_email || []).map(v => ({ type: 'Email', value: v })),
+          ...(detail.san_uri || []).map(v => ({ type: 'URI', value: v })),
         ];
         if (items.length === 0) return <Text type="secondary">-</Text>;
         return (
-          <Tooltip title={items.join('\n')}>
+          <Tooltip title={
+            <div>
+              {items.map((s, i) => <div key={i}><Tag color="blue" style={{ fontSize: 10 }}>{s.type}</Tag> {s.value}</div>)}
+            </div>
+          }>
             <div style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#666' }}>
-              {items.slice(0, 2).map((s, i) => <div key={i}>{s}</div>)}
+              {items.slice(0, 2).map((s, i) => <div key={i}><Tag style={{ fontSize: 9, padding: '0 4px' }}>{s.type}</Tag>{s.value}</div>)}
               {items.length > 2 && <Text type="secondary" style={{ fontSize: 10 }}>+{items.length - 2} 更多</Text>}
             </div>
           </Tooltip>
@@ -295,7 +356,7 @@ const CertsPage: React.FC = () => {
       },
     },
     {
-      title: '有效期', width: 150,
+      title: '有效期', width: 60,
       render: (_: unknown, record: Certificate) => {
         const detail = certDetailsMap[record.uuid];
         if (record.cert_type !== 'x509') return <Text type="secondary">-</Text>;
@@ -313,21 +374,27 @@ const CertsPage: React.FC = () => {
       },
     },
     {
-      title: '签名/公钥算法', width: 150, ellipsis: true,
+      title: '证书算法', width: 120, ellipsis: true,
       render: (_: unknown, record: Certificate) => {
         const detail = certDetailsMap[record.uuid];
         if (record.cert_type !== 'x509') return <Text type="secondary">-</Text>;
         if (!detail) return <Text type="secondary">-</Text>;
         return (
-          <div style={{ fontSize: 11 }}>
-            <div><Text strong style={{ fontSize: 10 }}>签名:</Text> {detail.signature_algo}</div>
-            <div><Text strong style={{ fontSize: 10 }}>公钥:</Text> {detail.public_key_algo}{detail.key_bits ? ` (${detail.key_bits}bit)` : ''}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Space size={4}>
+              <Tag color="geekblue" style={{ fontSize: 10, margin: 0 }}>签名</Tag>
+              <Text style={{ fontSize: 11 }}>{detail.signature_algo}</Text>
+            </Space>
+            <Space size={4}>
+              <Tag color="volcano" style={{ fontSize: 10, margin: 0 }}>公钥</Tag>
+              <Text style={{ fontSize: 11 }}>{detail.public_key_algo}{detail.key_bits ? ` (${detail.key_bits}bit)` : ''}</Text>
+            </Space>
           </div>
         );
       },
     },
     {
-      title: '密钥用途', width: 160, ellipsis: true,
+      title: '密钥用途', width: 120, ellipsis: true,
       render: (_: unknown, record: Certificate) => {
         const detail = certDetailsMap[record.uuid];
         if (record.cert_type !== 'x509') return <Text type="secondary">-</Text>;
@@ -345,46 +412,72 @@ const CertsPage: React.FC = () => {
         );
       },
     },
+    // {
+    //   title: '链接', width: 80,
+    //   render: (_: unknown, record: Certificate) => {
+    //     const detail = certDetailsMap[record.uuid];
+    //     if (record.cert_type !== 'x509' || !detail) return <Text type="secondary">-</Text>;
+    //     const hasOCSP = detail.ocsp_servers && detail.ocsp_servers.length > 0;
+    //     const hasCRL = detail.crl_dist_points && detail.crl_dist_points.length > 0;
+    //     const hasAIA = detail.issuing_cert_url && detail.issuing_cert_url.length > 0;
+    //     const hasCPS = detail.cps_urls && detail.cps_urls.length > 0;
+    //     if (!hasOCSP && !hasCRL && !hasAIA && !hasCPS) return <Text type="secondary">-</Text>;
+    //     return (
+    //       <Space size={2}>
+    //         {hasOCSP && <Tooltip title={`OCSP: ${detail.ocsp_servers!.join(', ')}`}><GlobalOutlined style={{ color: '#1677ff', fontSize: 13 }} /></Tooltip>}
+    //         {hasCRL && <Tooltip title={`CRL: ${detail.crl_dist_points!.join(', ')}`}><LinkOutlined style={{ color: '#fa8c16', fontSize: 13 }} /></Tooltip>}
+    //         {hasAIA && <Tooltip title={`AIA: ${detail.issuing_cert_url!.join(', ')}`}><SafetyCertificateOutlined style={{ color: '#52c41a', fontSize: 13 }} /></Tooltip>}
+    //         {hasCPS && <Tooltip title={`CPS: ${detail.cps_urls!.join(', ')}`}><LockOutlined style={{ color: '#722ed1', fontSize: 13 }} /></Tooltip>}
+    //       </Space>
+    //     );
+    //   },
+    // },
     {
-      title: '链接', width: 80,
+      title: '序列号/哈希', width: 200, ellipsis: true,
       render: (_: unknown, record: Certificate) => {
         const detail = certDetailsMap[record.uuid];
         if (record.cert_type !== 'x509' || !detail) return <Text type="secondary">-</Text>;
-        const hasOCSP = detail.ocsp_servers && detail.ocsp_servers.length > 0;
-        const hasCRL = detail.crl_dist_points && detail.crl_dist_points.length > 0;
-        const hasAIA = detail.issuing_cert_url && detail.issuing_cert_url.length > 0;
-        const hasCPS = detail.cps_urls && detail.cps_urls.length > 0;
-        if (!hasOCSP && !hasCRL && !hasAIA && !hasCPS) return <Text type="secondary">-</Text>;
+        const sn = detail.serial_number?.toUpperCase() || '';
+        const sha1 = (detail.sha1_fingerprint || '').replace(/:/g, '').toUpperCase();
+        const sha256 = (detail.sha256_fingerprint || '').replace(/:/g, '').toUpperCase();
         return (
-          <Space size={2}>
-            {hasOCSP && <Tooltip title={`OCSP: ${detail.ocsp_servers!.join(', ')}`}><GlobalOutlined style={{ color: '#1677ff', fontSize: 13 }} /></Tooltip>}
-            {hasCRL && <Tooltip title={`CRL: ${detail.crl_dist_points!.join(', ')}`}><LinkOutlined style={{ color: '#fa8c16', fontSize: 13 }} /></Tooltip>}
-            {hasAIA && <Tooltip title={`AIA: ${detail.issuing_cert_url!.join(', ')}`}><SafetyCertificateOutlined style={{ color: '#52c41a', fontSize: 13 }} /></Tooltip>}
-            {hasCPS && <Tooltip title={`CPS: ${detail.cps_urls!.join(', ')}`}><LockOutlined style={{ color: '#722ed1', fontSize: 13 }} /></Tooltip>}
-          </Space>
+          <Tooltip title={
+            <div>
+              <div>序列号: {sn}</div>
+              <div>SHA-1: {sha1}</div>
+              {sha256 && <div>SHA-256: {sha256}</div>}
+            </div>
+          }>
+            <div style={{ fontSize: 11 }}>
+              <div><Tag style={{ fontSize: 9, padding: '0 3px', margin: 0 }}>SN</Tag> <Text copyable={{ text: sn }} style={{ fontSize: 10, fontFamily: 'monospace' }}>{sn}</Text></div>
+              <div><Tag style={{ fontSize: 9, padding: '0 3px', margin: 0 }}>SHA1</Tag> <Text copyable={{ text: sha1 }} style={{ fontSize: 10, fontFamily: 'monospace', color: darkMode ? '#8b949e' : '#999' }}>{sha1}</Text></div>
+            </div>
+          </Tooltip>
         );
       },
     },
-    {
-      title: 'Slot', dataIndex: 'slot_type', width: 60,
-      render: (v: string) => <Tag color={v === 'cloud' ? 'purple' : v === 'tpm2' ? 'cyan' : 'green'}>{v}</Tag>,
-    },
     { title: '备注', dataIndex: 'remark', width: 100, ellipsis: true, render: (v: string) => v || <Text type="secondary">-</Text> },
     {
-      title: '操作', width: 140, fixed: 'right' as const,
+      title: '操作', width: 150, fixed: 'right' as const,
       render: (_: unknown, record: Certificate) => (
-        <Space size={0}>
-          <Tooltip title="查看详情">
-            <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => showDetail(record)} />
-          </Tooltip>
+        <Space size={4} wrap>
+          <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => showDetail(record)}>
+            详情
+          </Button>
           {isCloudCard && (
-            <Tooltip title="下发到本地">
-              <Button type="text" size="small" icon={<CloudDownloadOutlined />} onClick={() => openDeliver(record)} style={{ color: '#1677ff' }} />
-            </Tooltip>
+            <Button type="link" size="small" icon={<CloudDownloadOutlined />} onClick={() => openDeliver(record)}>
+              下发
+            </Button>
           )}
-          <Tooltip title="删除">
-            <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)} />
-          </Tooltip>
+          <Button type="link" size="small" icon={<ExportOutlined />} onClick={() => handleExportCrt(record)}>
+            导出
+          </Button>
+          <Button type="link" size="small" icon={<KeyOutlined />} onClick={() => { setKeyExportCert(record); setKeyExportOpen(true); }}>
+            密钥
+          </Button>
+          <Button type="link" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)}>
+            删除
+          </Button>
         </Space>
       ),
     },
@@ -498,27 +591,25 @@ const CertsPage: React.FC = () => {
   };
 
   return (
-    <div style={{ padding: 24 }}>
-      <Card
-        style={cardStyle}
-        title={
-          <Space>
-            <SafetyCertificateOutlined />
-            <span>用户证书管理</span>
-            <Radio.Group value={filterMode} onChange={(e) => { setFilterMode(e.target.value); }} size="small" buttonStyle="solid">
-              <Radio.Button value="active">当前账号</Radio.Button>
-              <Radio.Button value="all">全部已登录</Radio.Button>
-            </Radio.Group>
-          </Space>
+    <div>
+      <PageHeader
+        icon={<SafetyCertificateOutlined />}
+        title="用户证书管理"
+        tags={
+          <Radio.Group value={filterMode} onChange={(e) => { setFilterMode(e.target.value); }} size="small" buttonStyle="solid">
+            <Radio.Button value="active">当前账号</Radio.Button>
+            <Radio.Button value="all">全部已登录</Radio.Button>
+          </Radio.Group>
         }
         extra={
-          <Space>
+          <>
             <Select
-              style={{ width: 260 }}
+              style={{ width: 240 }}
               placeholder="选择卡片"
               value={selectedCardUUID || undefined}
               onChange={(v) => setSelectedCardUUID(v)}
               loading={cardsLoading}
+              size="small"
               options={allCards.map((c) => ({
                 value: c.uuid,
                 label: (
@@ -531,21 +622,23 @@ const CertsPage: React.FC = () => {
                 ),
               }))}
             />
-            <Button icon={<ReloadOutlined />} onClick={loadCerts}>刷新</Button>
-            <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)} disabled={!selectedCardUUID}>
+            <Button icon={<ReloadOutlined />} onClick={loadCerts} size="small">刷新</Button>
+            <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)} disabled={!selectedCardUUID} size="small">
               导入证书
             </Button>
-          </Space>
+          </>
         }
-      >
+      />
+      <Card style={cardStyle} styles={{ body: { padding: 0 } }}>
         {!selectedCardUUID ? (
-          <Empty description="请选择一张卡片查看证书" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          <Empty description="请选择一张卡片查看证书" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: 40 }} />
         ) : (
           <Table
             rowKey="uuid" columns={columns} dataSource={certs} loading={loading}
             pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
             scroll={{ x: 1200 }}
             size="small"
+            className="nowrap-table"
             expandable={{
               expandedRowRender: (record: Certificate) => {
                 const detail = certDetailsMap[record.uuid];
@@ -554,114 +647,105 @@ const CertsPage: React.FC = () => {
                 }
                 return (
                   <div style={{ padding: '8px 16px' }}>
-                    <Descriptions column={2} size="small" bordered labelStyle={{ width: 130, fontSize: 12 }} contentStyle={{ fontSize: 12 }}>
-                      {/* 主体信息 */}
-                      <Descriptions.Item label="主体 (Subject)" span={2}>
-                        <div style={{ lineHeight: '1.6' }}>
-                          <span><Text strong>CN:</Text> {detail.common_name || '-'}</span>
-                          {detail.organization && <span style={{ marginLeft: 12 }}><Text strong>O:</Text> {detail.organization}</span>}
-                          {detail.org_unit && <span style={{ marginLeft: 12 }}><Text strong>OU:</Text> {detail.org_unit}</span>}
-                          {detail.locality && <><br /><Text strong>L:</Text> {detail.locality}</>}
-                          {detail.state && <span style={{ marginLeft: 12 }}><Text strong>ST:</Text> {detail.state}</span>}
-                          {detail.country && <span style={{ marginLeft: 12 }}><Text strong>C:</Text> {detail.country}</span>}
-                        </div>
-                      </Descriptions.Item>
+                    <Descriptions column={10} size="small" bordered labelStyle={{ width: 110 }}>
+                      {/* 行1: 使用者 CN / 国家 / 省份 / 城市 */}
+                      <Descriptions.Item label="使用者" span={5}>{detail.common_name || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="国家CC" span={1}>{detail.country || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="所在省" span={2}>{detail.state || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="所在市" span={2}>{detail.locality || '-'}</Descriptions.Item>
 
-                      {/* 颁发者 */}
-                      <Descriptions.Item label="颁发者 (Issuer)" span={2}>
-                        <div style={{ lineHeight: '1.6' }}>
-                          <span><Text strong>CN:</Text> {detail.issuer_cn || '-'}</span>
-                          {detail.issuer_org && <span style={{ marginLeft: 12 }}><Text strong>O:</Text> {detail.issuer_org}</span>}
-                          {detail.issuer_ou && <span style={{ marginLeft: 12 }}><Text strong>OU:</Text> {detail.issuer_ou}</span>}
-                          {detail.issuer_country && <span style={{ marginLeft: 12 }}><Text strong>C:</Text> {detail.issuer_country}</span>}
-                          {detail.is_self_signed && <Tag color="orange" style={{ marginLeft: 8, fontSize: 10 }}>自签名</Tag>}
-                        </div>
-                      </Descriptions.Item>
+                      {/* 行2: 组织 / 部门 / 管辖地 / 公司序列号 / 描述 */}
+                      <Descriptions.Item label="组织" span={5}>{detail.organization || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="部门" span={3}>{detail.org_unit || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="管辖地" span={2}>{detail.street || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="描述" span={5}>{detail.description || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="序列号" span={5}>{detail.subject_serial || '-'}</Descriptions.Item>
 
-                      {/* 有效期 */}
-                      <Descriptions.Item label="颁发日期">{dayjs(detail.not_before).format('YYYY-MM-DD HH:mm:ss')}</Descriptions.Item>
-                      <Descriptions.Item label="有效期至">{dayjs(detail.not_after).format('YYYY-MM-DD HH:mm:ss')}</Descriptions.Item>
 
-                      {/* 算法信息 */}
-                      <Descriptions.Item label="签名算法">{detail.signature_algo}</Descriptions.Item>
-                      <Descriptions.Item label="公钥算法">{detail.public_key_algo}{detail.key_bits ? ` (${detail.key_bits} bits)` : ''}</Descriptions.Item>
+                      {/* 行3: 颁发者 CN / 国家 / 省份 / 城市 */}
+                      <Descriptions.Item label="颁发者" span={5}>{detail.issuer_cn || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="国家CC" span={1}>{detail.issuer_country || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="所在省" span={2}>{detail.issuer_state || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="所在市" span={2}>{detail.issuer_locality || '-'}</Descriptions.Item>
 
-                      {/* 序列号和指纹 */}
-                      <Descriptions.Item label="序列号" span={2}>
-                        <Text copyable>{detail.serial_number}</Text>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="SHA-1 指纹" span={2}>
-                        <Text copyable>{detail.sha1_fingerprint}</Text>
-                      </Descriptions.Item>
-                      {detail.sha256_fingerprint && (
-                        <Descriptions.Item label="SHA-256 指纹" span={2}>
-                          <Text copyable style={{wordBreak: 'break-all' }}>{detail.sha256_fingerprint}</Text>
-                        </Descriptions.Item>
-                      )}
+                      {/* 行4: 颁发者组织 / 部门 / 管辖地 / 序列号 / 描述 */}
+                      <Descriptions.Item label="组织" span={5}>{detail.issuer_org || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="部门" span={3}>{detail.issuer_ou || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="管辖地" span={2}>{detail.issuer_street || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="描述" span={5}>{detail.issuer_description || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="序列号" span={5}>{detail.issuer_serial || '-'}</Descriptions.Item>
 
-                      {/* 基本约束 */}
-                      <Descriptions.Item label="基本约束">
+
+                      {/* 行5: 基本约束 / 公钥算法 / 签名算法 */}
+                      <Descriptions.Item label="基本约束" span={5}>
                         {detail.is_ca
                           ? <Tag color="red">CA 证书{detail.max_path_len_zero ? '（路径: 0）' : detail.max_path_len > 0 ? `（路径: ${detail.max_path_len}）` : ''}</Tag>
-                          : <Tag>终端实体</Tag>
-                        }
+                          : <Tag>终端证书 - {detail.is_self_signed ? '自签名' : '三方'}</Tag>}
                       </Descriptions.Item>
-                      <Descriptions.Item label="密钥用途">{detail.key_usage?.join(', ') || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="公钥算法" span={3}>{detail.public_key_algo}{detail.key_bits ? ` (${detail.key_bits} bits)` : ''}</Descriptions.Item>
+                      <Descriptions.Item label="签名算法" span={2}>{detail.signature_algo}</Descriptions.Item>
 
-                      {/* 扩展密钥用途 */}
-                      <Descriptions.Item label="扩展密钥用途" span={2}>{detail.ext_key_usage?.join(', ') || '-'}</Descriptions.Item>
 
-                      {/* SAN */}
-                      {((detail.san_dns && detail.san_dns.length > 0) || (detail.san_ip && detail.san_ip.length > 0) || (detail.san_email && detail.san_email.length > 0) || (detail.san_uri && detail.san_uri.length > 0)) && (
-                        <Descriptions.Item label="SAN" span={2}>
-                          <div style={{ lineHeight: '1.6' }}>
-                            {detail.san_dns && detail.san_dns.length > 0 && <div><Text strong>DNS:</Text> {detail.san_dns.join(', ')}</div>}
-                            {detail.san_ip && detail.san_ip.length > 0 && <div><Text strong>IP:</Text> {detail.san_ip.join(', ')}</div>}
-                            {detail.san_email && detail.san_email.length > 0 && <div><Text strong>Email:</Text> {detail.san_email.join(', ')}</div>}
-                            {detail.san_uri && detail.san_uri.length > 0 && <div><Text strong>URI:</Text> {detail.san_uri.map((u, i) => <span key={i} style={{ wordBreak: 'break-all' }}>{i > 0 ? ', ' : ''}{u}</span>)}</div>}
-                          </div>
-                        </Descriptions.Item>
-                      )}
+                      {/* 行6: 颁发日期 / 有效期至 / 序列号 */}
+                      <Descriptions.Item label="颁发日期" span={5}>{dayjs(detail.not_before).format('YYYY-MM-DD HH:mm:ss')}</Descriptions.Item>
+                      <Descriptions.Item label="有效期至" span={3}>{dayjs(detail.not_after).format('YYYY-MM-DD HH:mm:ss')}</Descriptions.Item>
+                      <Descriptions.Item label="序列号" span={2}><Text copyable>{detail.serial_number}</Text></Descriptions.Item>
 
-                      {/* 证书策略 OID */}
-                      {detail.cert_policies && detail.cert_policies.length > 0 && (
-                        <Descriptions.Item label="证书策略 (OID)" span={2}>
-                          {detail.cert_policies.map((p, i) => (
+                      {/* 行7: SHA-1 / SHA-256 */}
+                      <Descriptions.Item label="SHA1-160" span={5}>
+                        <Text copyable>{(detail.sha1_fingerprint || '').replace(/:/g, '').toUpperCase()}</Text>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="SHA2-256" span={5}>
+                        <Text copyable style={{ wordBreak: 'break-all' }}>{(detail.sha256_fingerprint || '').replace(/:/g, '').toUpperCase() || '-'}</Text>
+                      </Descriptions.Item>
+
+                      {/* 行8: 密钥用途 / 扩展用途 */}
+                      <Descriptions.Item label="密钥用途" span={5}>{detail.key_usage?.join(', ') || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="扩展用途" span={5}>{detail.ext_key_usage?.join(', ') || '-'}</Descriptions.Item>
+
+                      {/* 行9: OCSP / AIA */}
+                      <Descriptions.Item label="OCSP地址" span={8}>
+                        {detail.ocsp_servers && detail.ocsp_servers.length > 0
+                          ? detail.ocsp_servers.map((u, i) => <div key={i}><a href={u} target="_blank" rel="noreferrer" style={{ wordBreak: 'break-all' }}>{u}</a></div>)
+                          : '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="AIA 地址" span={5}>
+                        {detail.issuing_cert_url && detail.issuing_cert_url.length > 0
+                          ? detail.issuing_cert_url.map((u, i) => <div key={i}><a href={u} target="_blank" rel="noreferrer" style={{ wordBreak: 'break-all' }}>{u}</a></div>)
+                          : '-'}
+                      </Descriptions.Item>
+
+                      {/* 行10: CRL / SAN */}
+                      <Descriptions.Item label="CRL 地址" span={8}>
+                        {detail.crl_dist_points && detail.crl_dist_points.length > 0
+                          ? detail.crl_dist_points.map((u, i) => <div key={i}><a href={u} target="_blank" rel="noreferrer" style={{ wordBreak: 'break-all' }}>{u}</a></div>)
+                          : '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="SAN 信息" span={5}>
+                        {(() => {
+                          const items = [
+                            ...(detail.san_dns || []).map(v => `DNS: ${v}`),
+                            ...(detail.san_ip || []).map(v => `IP: ${v}`),
+                            ...(detail.san_email || []).map(v => `Email: ${v}`),
+                            ...(detail.san_uri || []).map(v => `URI: ${v}`),
+                          ];
+                          return items.length > 0
+                            ? <div style={{ whiteSpace: 'normal' }}>{items.map((s, i) => <div key={i}>{s}</div>)}</div>
+                            : '-';
+                        })()}
+                      </Descriptions.Item>
+
+                      {/* 行11: 证书策略 */}
+                      <Descriptions.Item label="证书策略" span={10}>
+                        {detail.cert_policies && detail.cert_policies.length > 0
+                          ? detail.cert_policies.map((p, i) => (
                             <span key={i} style={{ marginRight: 12 }}>
-                              <Text code style={{ fontSize: 11 }}>{p.oid}</Text>
-                              {p.description && <Tag color={p.description.startsWith('EV') ? 'green' : p.description.startsWith('OV') ? 'blue' : p.description.startsWith('DV') ? 'default' : 'purple'} style={{ marginLeft: 4, fontSize: 10 }}>{p.description}</Tag>}
+                              <Text code>{p.oid}</Text>
+                              {p.description && <Tag color={p.description.startsWith('EV') ? 'green' : p.description.startsWith('OV') ? 'blue' : 'purple'} style={{ marginLeft: 4 }}>{p.description}</Tag>}
                             </span>
-                          ))}
-                        </Descriptions.Item>
-                      )}
-
-                      {/* CRL */}
-                      {detail.crl_dist_points && detail.crl_dist_points.length > 0 && (
-                        <Descriptions.Item label="CRL 分发点" span={2}>
-                          {detail.crl_dist_points.map((u, i) => <div key={i}><a href={u} target="_blank" rel="noreferrer" style={{ fontSize: 11, wordBreak: 'break-all' }}>{u}</a></div>)}
-                        </Descriptions.Item>
-                      )}
-
-                      {/* OCSP */}
-                      {detail.ocsp_servers && detail.ocsp_servers.length > 0 && (
-                        <Descriptions.Item label="OCSP 服务器" span={2}>
-                          {detail.ocsp_servers.map((u, i) => <div key={i}><a href={u} target="_blank" rel="noreferrer" style={{ fontSize: 11, wordBreak: 'break-all' }}>{u}</a></div>)}
-                        </Descriptions.Item>
-                      )}
-
-                      {/* AIA */}
-                      {detail.issuing_cert_url && detail.issuing_cert_url.length > 0 && (
-                        <Descriptions.Item label="AIA 颁发者证书" span={2}>
-                          {detail.issuing_cert_url.map((u, i) => <div key={i}><a href={u} target="_blank" rel="noreferrer" style={{ fontSize: 11, wordBreak: 'break-all' }}>{u}</a></div>)}
-                        </Descriptions.Item>
-                      )}
-
-                      {/* CPS */}
-                      {detail.cps_urls && detail.cps_urls.length > 0 && (
-                        <Descriptions.Item label="CPS 策略 URL" span={2}>
-                          {detail.cps_urls.map((u, i) => <div key={i}><a href={u} target="_blank" rel="noreferrer" style={{ fontSize: 11, wordBreak: 'break-all' }}>{u}</a></div>)}
-                        </Descriptions.Item>
-                      )}
+                          ))
+                          : '-'}
+                      </Descriptions.Item>
                     </Descriptions>
                   </div>
                 );
@@ -671,10 +755,8 @@ const CertsPage: React.FC = () => {
           />
         )}
       </Card>
-
-      {/* 证书详情抽屉 */}
       <Drawer
-        title="证书详情" width={560} open={detailVisible} onClose={() => setDetailVisible(false)}
+        title="证书详情" open={detailVisible} onClose={() => setDetailVisible(false)} styles={{ wrapper: { width: 560 } }}
         extra={
           <Space>
             <Button icon={<ExportOutlined />} onClick={() => selectedCert && handleExportCrt(selectedCert)}>导出证书</Button>
@@ -719,6 +801,8 @@ const CertsPage: React.FC = () => {
                     <div><Text strong>CN:</Text> {certDetail.issuer_cn || '-'}</div>
                     {certDetail.issuer_org && <div><Text strong>O:</Text> {certDetail.issuer_org}</div>}
                     {certDetail.issuer_ou && <div><Text strong>OU:</Text> {certDetail.issuer_ou}</div>}
+                    {certDetail.issuer_locality && <div><Text strong>L:</Text> {certDetail.issuer_locality}</div>}
+                    {certDetail.issuer_state && <div><Text strong>ST:</Text> {certDetail.issuer_state}</div>}
                     {certDetail.issuer_country && <div><Text strong>C:</Text> {certDetail.issuer_country}</div>}
                     {certDetail.is_self_signed && <Tag color="orange" style={{ marginTop: 4 }}>自签名证书</Tag>}
                   </div>

@@ -309,7 +309,7 @@ export const revokePKICert = (uuid: string) =>
   http.post(`/api/pki/certs/${uuid}/revoke`).then((r) => r.data);
 
 // ---- 卡片 PIN/PUK/AdminKey 重置 ----
-export const resetCardPIN = (cardUUID: string, data: { puk?: string; admin_key?: string; new_pin: string }) =>
+export const resetCardPIN = (cardUUID: string, data: { old_pin?: string; puk?: string; admin_key?: string; new_pin: string }) =>
   http.post(`/api/cards/${cardUUID}/reset-pin`, data).then((r) => r.data);
 
 export const resetCardPUK = (cardUUID: string, data: { admin_key: string; current_pin: string; new_puk: string }) =>

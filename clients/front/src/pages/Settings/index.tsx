@@ -9,6 +9,7 @@ import {
   SaveOutlined, ApiOutlined, BulbOutlined, DesktopOutlined, MoonOutlined, SunOutlined,
   CloudOutlined, SettingOutlined, LockOutlined, SyncOutlined,
 } from '@ant-design/icons';
+import PageHeader from '../../components/PageHeader';
 import { useTranslation } from 'react-i18next';
 import i18n from '../../i18n';
 import { useAppStore } from '../../store/appStore';
@@ -94,13 +95,16 @@ const Settings: React.FC = () => {
   };
 
   return (
-    <div style={{ padding: 24, maxWidth: 720 }}>
-      <Space style={{ marginBottom: 24, width: '100%', justifyContent: 'space-between' }}>
-        <Title level={4} style={{ margin: 0, color: darkMode ? '#c9d1d9' : undefined }}>{t('settings.title')}</Title>
-        <Button type="primary" icon={<SaveOutlined />} onClick={handleSaveSettings} loading={saving}>
-          {t('settings.saveAll')}
-        </Button>
-      </Space>
+    <div style={{ maxWidth: 720 }}>
+      <PageHeader
+        icon={<SettingOutlined />}
+        title={t('settings.title')}
+        extra={
+          <Button type="primary" icon={<SaveOutlined />} onClick={handleSaveSettings} loading={saving} size="small">
+            {t('settings.saveAll')}
+          </Button>
+        }
+      />
 
       <Spin spinning={settingsLoading}>
         <Form form={form} layout="vertical">

@@ -355,25 +355,42 @@ func (s *Server) handleUpdateCard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		CardName  string `json:"card_name"`
-		ExpiresAt string `json:"expires_at"`
-		Remark    string `json:"remark"`
+		CardName  *string `json:"card_name"`
+		ExpiresAt *string `json:"expires_at"`
+		Remark    *string `json:"remark"`
+		Enabled   *bool   `json:"enabled"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
 		return
 	}
 
-	if req.CardName != "" {
-		card.CardName = req.CardName
+	if req.CardName != nil && *req.CardName != "" {
+		card.CardName = *req.CardName
 	}
-	if req.Remark != "" {
-		card.Remark = req.Remark
+	if req.Remark != nil {
+		card.Remark = *req.Remark
 	}
-	if req.ExpiresAt != "" {
-		t, err := time.Parse(time.RFC3339, req.ExpiresAt)
-		if err == nil {
-			card.ExpiresAt = &t
+	if req.Enabled != nil {
+		card.Enabled = *req.Enabled
+	}
+	if req.ExpiresAt != nil {
+		if *req.ExpiresAt == "" {
+			// 空字符串表示永不过期
+			card.ExpiresAt = nil
+		} else {
+			// 支持多种格式：RFC3339、YYYY-MM-DD
+			var t time.Time
+			var parseErr error
+			for _, layout := range []string{time.RFC3339, "2006-01-02", "2006-01-02T15:04:05"} {
+				t, parseErr = time.Parse(layout, *req.ExpiresAt)
+				if parseErr == nil {
+					break
+				}
+			}
+			if parseErr == nil {
+				card.ExpiresAt = &t
+			}
 		}
 	}
 
@@ -489,8 +506,8 @@ func (s *Server) handleResetPUK(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
 		return
 	}
-	if req.AdminKey == "" || req.NewPUK == "" || req.CurrentPIN == "" {
-		writeError(w, http.StatusBadRequest, "admin_key、current_pin 与 new_puk 不能为空")
+	if req.AdminKey == "" || req.NewPUK == "" {
+		writeError(w, http.StatusBadRequest, "admin_key 与 new_puk 不能为空")
 		return
 	}
 
