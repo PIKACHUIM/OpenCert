@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"
@@ -449,8 +450,8 @@ func signRSA(key *rsa.PrivateKey, mechanism pkcs11types.Mechanism, data []byte) 
 		// 原始 RSA PKCS#1 v1.5，data 已经是 DigestInfo
 		return rsa.SignPKCS1v15(rand.Reader, key, 0, data)
 	case pkcs11types.CKM_SHA1_RSA_PKCS:
-		h := sha256.Sum256(data) // 实际应用 SHA1，此处简化
-		return rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, h[:])
+		h := sha1.Sum(data)
+		return rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA1, h[:])
 	case pkcs11types.CKM_SHA256_RSA_PKCS:
 		h := sha256.Sum256(data)
 		return rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, h[:])
@@ -460,13 +461,35 @@ func signRSA(key *rsa.PrivateKey, mechanism pkcs11types.Mechanism, data []byte) 
 	case pkcs11types.CKM_SHA512_RSA_PKCS:
 		h := sha512.Sum512(data)
 		return rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA512, h[:])
-	case pkcs11types.CKM_RSA_PKCS_PSS, pkcs11types.CKM_SHA256_RSA_PKCS_PSS:
+	case pkcs11types.CKM_RSA_PKCS_PSS:
+		// PSS 接收预哈希数据（由 KSP 或上层传入已哈希的值），不再次哈希
+		hashAlg := hashAlgFromDataLen(len(data))
+		return rsa.SignPSS(rand.Reader, key, hashAlg, data, &rsa.PSSOptions{
+			SaltLength: rsa.PSSSaltLengthAuto,
+		})
+	case pkcs11types.CKM_SHA256_RSA_PKCS_PSS:
 		h := sha256.Sum256(data)
 		return rsa.SignPSS(rand.Reader, key, crypto.SHA256, h[:], &rsa.PSSOptions{
 			SaltLength: rsa.PSSSaltLengthAuto,
 		})
 	default:
 		return nil, fmt.Errorf("RSA 不支持算法 0x%X", uint32(mechanism.Type))
+	}
+}
+
+// hashAlgFromDataLen 根据哈希值长度推断 crypto.Hash 类型。
+func hashAlgFromDataLen(dataLen int) crypto.Hash {
+	switch dataLen {
+	case 20:
+		return crypto.SHA1
+	case 32:
+		return crypto.SHA256
+	case 48:
+		return crypto.SHA384
+	case 64:
+		return crypto.SHA512
+	default:
+		return crypto.SHA256
 	}
 }
 

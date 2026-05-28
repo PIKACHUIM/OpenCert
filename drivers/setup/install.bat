@@ -12,6 +12,7 @@ set "CARD_NAME=Pikachu Secure SmartCard"
 set "DLL_NAME=pkcs11-mock-x64.dll"
 set "MINIDRIVER_DLL=PikachuMD.dll"
 set "KSP_DLL=OpenCertKSP.dll"
+set "KSP_DLL_X86=OpenCertKSP_x86.dll"
 set "CSP_NAME=Pikachu SmartCard Crypto Provider"
 set "KSP_NAME=OpenCert Key Storage Provider"
 set "MANUFACTURER=Pikachu SmartCard MiniDriver"
@@ -114,10 +115,18 @@ echo [4/7] Registering KSP (OpenCert Key Storage Provider)...
 :: Copy KSP DLL to System32
 if exist "%SCRIPT_DIR%%KSP_DLL%" (
     copy /Y "%SCRIPT_DIR%%KSP_DLL%" "%SystemRoot%\System32\%KSP_DLL%" >nul 2>&1
-    echo       [OK] %SystemRoot%\System32\%KSP_DLL%
+    echo       [OK] %SystemRoot%\System32\%KSP_DLL% (x64)
 ) else (
     echo       [SKIP] %KSP_DLL% not found, KSP registration skipped
     goto :skip_ksp
+)
+
+:: Copy x86 KSP DLL to SysWOW64 (for 32-bit processes)
+if exist "%SCRIPT_DIR%%KSP_DLL_X86%" (
+    copy /Y "%SCRIPT_DIR%%KSP_DLL_X86%" "%SystemRoot%\SysWOW64\%KSP_DLL%" >nul 2>&1
+    echo       [OK] %SystemRoot%\SysWOW64\%KSP_DLL% (x86, for 32-bit apps)
+) else (
+    echo       [WARN] %KSP_DLL_X86% not found, 32-bit apps won't be able to use KSP!
 )
 
 :: Register KSP in CNG provider registry

@@ -2,116 +2,71 @@
 chcp 65001 >nul 2>&1
 
 :: ============================================================
-:: OpenCert KSP DLL - Build Script (MSVC)
-:: ============================================================
-:: 使用方法：
-::   1. 打开 "x64 Native Tools Command Prompt for VS 2022"
-::   2. cd 到本目录
-::   3. 运行 build.bat
-::
-:: 或者直接双击运行（会自动查找 VS 环境）
+:: OpenCert KSP DLL - Build Script (MSVC x64 + x86)
 :: ============================================================
 
 setlocal enabledelayedexpansion
 
-:: 检查 cl.exe 是否可用
-where cl.exe >nul 2>&1
-if %errorlevel% equ 0 goto :do_build
-
-:: 尝试自动查找 VS 环境
-echo [INFO] cl.exe not found, searching for Visual Studio...
-
-:: VS 2022
-if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-    goto :do_build
-)
-if exist "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-    goto :do_build
-)
-if exist "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-    goto :do_build
-)
-
-:: VS 2019
-if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-    goto :do_build
-)
-if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-    goto :do_build
-)
-
-:: VS Build Tools
-if exist "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-    goto :do_build
-)
-if exist "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-    goto :do_build
-)
-
-echo.
-echo [ERROR] Cannot find Visual Studio or Build Tools!
-echo.
-echo Please install one of:
-echo   - Visual Studio 2022 (with "Desktop development with C++" workload)
-echo   - Visual Studio Build Tools 2022
-echo     https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022
-echo.
-echo Or open "x64 Native Tools Command Prompt for VS" and run this script.
-echo.
-pause
-exit /b 1
-
-:do_build
-echo.
-echo ============================================================
-echo   Building OpenCertKSP.dll (x64 Release)
-echo ============================================================
-echo.
-
 set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%"
 
-:: 创建输出目录
-if not exist "build" mkdir build
+if not exist "build\x64" mkdir "build\x64"
+if not exist "build\x86" mkdir "build\x86"
 
-:: 编译
-cl.exe /nologo /O2 /W3 /LD ^
-    /utf-8 ^
-    /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
-    opencert_ksp.c ^
-    /Fe"build\OpenCertKSP.dll" ^
-    /Fo"build\opencert_ksp.obj" ^
-    /link /DEF:OpenCertKSP.def ^
-    ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib credui.lib ^
-    /NOLOGO /DLL /MACHINE:X64
+:: ---- 查找 VS 安装路径 ----
+set "VSBASE="
+if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build" set "VSBASE=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build"
+if exist "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build" set "VSBASE=C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build"
+if exist "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build" set "VSBASE=C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build"
+if exist "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build" if "!VSBASE!"=="" set "VSBASE=C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build"
+if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build" if "!VSBASE!"=="" set "VSBASE=C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build"
 
-if %errorlevel% neq 0 (
-    echo.
-    echo [FAILED] Build failed!
+if "!VSBASE!"=="" (
+    echo [ERROR] Cannot find Visual Studio or Build Tools!
+    pause
     exit /b 1
 )
 
 echo.
-echo [OK] Build successful!
-echo     Output: %SCRIPT_DIR%build\OpenCertKSP.dll
+echo ============================================================
+echo   Building OpenCertKSP.dll (x64 + x86)
+echo ============================================================
 echo.
 
-:: 复制到 setup 目录
+:: Build x64
+echo [1/2] Building x64...
+call "!VSBASE!\vcvars64.bat" >nul 2>&1
+cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
+    opencert_ksp.c /Fe"build\x64\OpenCertKSP.dll" /Fo"build\x64\opencert_ksp.obj" ^
+    /link /DEF:OpenCertKSP.def ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib credui.lib /NOLOGO /DLL /MACHINE:X64
+if %errorlevel% neq 0 (echo [FAILED] x64 build failed! & exit /b 1)
+echo [OK] build\x64\OpenCertKSP.dll
+del /Q build\x64\*.obj build\x64\*.exp build\x64\*.lib >nul 2>&1
+
+:: Build x86
+echo.
+echo [2/2] Building x86...
+call "!VSBASE!\vcvars32.bat" >nul 2>&1
+cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
+    opencert_ksp.c /Fe"build\x86\OpenCertKSP.dll" /Fo"build\x86\opencert_ksp.obj" ^
+    /link /DEF:OpenCertKSP.def ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib credui.lib /NOLOGO /DLL /MACHINE:X86
+if %errorlevel% neq 0 (echo [FAILED] x86 build failed! & exit /b 1)
+echo [OK] build\x86\OpenCertKSP.dll
+del /Q build\x86\*.obj build\x86\*.exp build\x86\*.lib >nul 2>&1
+
+:: Copy to setup
+copy /Y "build\x64\OpenCertKSP.dll" "build\OpenCertKSP.dll" >nul 2>&1
 if exist "..\setup" (
-    copy /Y "build\OpenCertKSP.dll" "..\setup\OpenCertKSP.dll" >nul 2>&1
-    echo [OK] Copied to: ..\setup\OpenCertKSP.dll
+    copy /Y "build\x64\OpenCertKSP.dll" "..\setup\OpenCertKSP.dll" >nul 2>&1
+    copy /Y "build\x86\OpenCertKSP.dll" "..\setup\OpenCertKSP_x86.dll" >nul 2>&1
+    echo.
+    echo [OK] Copied to ..\setup\
 )
 
 echo.
 echo ============================================================
-echo   Done! Next: run drivers\setup\install.bat as Administrator
+echo   Build Complete!
+echo     x64: build\x64\OpenCertKSP.dll
+echo     x86: build\x86\OpenCertKSP.dll
 echo ============================================================
-echo.
 exit /b 0

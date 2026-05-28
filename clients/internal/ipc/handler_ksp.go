@@ -16,7 +16,6 @@ package ipc
 
 import (
 	"context"
-	"crypto"
 	"encoding/binary"
 	"fmt"
 	"log/slog"
@@ -436,22 +435,6 @@ func digestInfoPrefix(hashAlg string) ([]byte, error) {
 		}, nil
 	default:
 		return nil, fmt.Errorf("不支持的哈希算法: %s", hashAlg)
-	}
-}
-
-// hashAlgFromDataLen 根据哈希值长度推断哈希算法（用于 PSS 等场景）。
-func hashAlgFromDataLen(dataLen int) crypto.Hash {
-	switch dataLen {
-	case 20:
-		return crypto.SHA1
-	case 32:
-		return crypto.SHA256
-	case 48:
-		return crypto.SHA384
-	case 64:
-		return crypto.SHA512
-	default:
-		return crypto.SHA256
 	}
 }
 

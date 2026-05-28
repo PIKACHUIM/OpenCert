@@ -427,6 +427,8 @@ func mechanismToString(t pkcs11types.MechanismType) string {
 		return "SHA512_RSA_PKCS"
 	case pkcs11types.CKM_SHA256_RSA_PKCS_PSS:
 		return "SHA256_RSA_PSS"
+	case pkcs11types.CKM_RSA_PKCS_PSS:
+		return "RSA_PKCS_PSS"
 	case pkcs11types.CKM_RSA_PKCS:
 		return "RSA_PKCS"
 	case pkcs11types.CKM_RSA_PKCS_OAEP:

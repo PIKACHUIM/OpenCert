@@ -288,6 +288,79 @@ static BYTE *json_get_b64_field(const char *json, const char *key, DWORD *out_le
     return decoded;
 }
 
+/* ---- ASN.1 / Public Key Conversion ---- */
+
+static int asn1_read_len(const BYTE *p, DWORD remaining, DWORD *out_len, DWORD *out_consumed)
+{
+    if (remaining < 1) return -1;
+    if (p[0] < 0x80) { *out_len = p[0]; *out_consumed = 1; return 0; }
+    DWORD nbytes = p[0] & 0x7F;
+    if (nbytes == 0 || nbytes > 4 || remaining < 1 + nbytes) return -1;
+    DWORD len = 0;
+    for (DWORD i = 0; i < nbytes; i++) len = (len << 8) | p[1 + i];
+    *out_len = len; *out_consumed = 1 + nbytes; return 0;
+}
+
+static int spki_extract_rsa(const BYTE *spki, DWORD spki_len,
+    const BYTE **out_mod, DWORD *out_mod_len, const BYTE **out_exp, DWORD *out_exp_len)
+{
+    if (spki_len < 4 || spki[0] != 0x30) return -1;
+    DWORD len, consumed;
+    if (asn1_read_len(spki + 1, spki_len - 1, &len, &consumed) != 0) return -1;
+    const BYTE *p = spki + 1 + consumed; DWORD remaining = len;
+    /* Skip AlgorithmIdentifier SEQUENCE */
+    if (remaining < 2 || p[0] != 0x30) return -1;
+    if (asn1_read_len(p + 1, remaining - 1, &len, &consumed) != 0) return -1;
+    DWORD alg_total = 1 + consumed + len;
+    if (alg_total > remaining) return -1;
+    p += alg_total; remaining -= alg_total;
+    /* BIT STRING */
+    if (remaining < 2 || p[0] != 0x03) return -1;
+    if (asn1_read_len(p + 1, remaining - 1, &len, &consumed) != 0) return -1;
+    p += 1 + consumed;
+    if (len < 1) return -1;
+    p += 1; /* skip unused-bits byte */
+    DWORD bs_len = len - 1;
+    /* RSAPublicKey SEQUENCE */
+    if (bs_len < 2 || p[0] != 0x30) return -1;
+    if (asn1_read_len(p + 1, bs_len - 1, &len, &consumed) != 0) return -1;
+    p += 1 + consumed;
+    /* modulus INTEGER */
+    if (p[0] != 0x02) return -1;
+    if (asn1_read_len(p + 1, len, &len, &consumed) != 0) return -1;
+    const BYTE *mod = p + 1 + consumed; DWORD mod_len = len;
+    if (mod_len > 0 && mod[0] == 0x00) { mod++; mod_len--; }
+    p = p + 1 + consumed + len;
+    /* publicExponent INTEGER */
+    if (p[0] != 0x02) return -1;
+    if (asn1_read_len(p + 1, 16, &len, &consumed) != 0) return -1;
+    const BYTE *exp = p + 1 + consumed; DWORD exp_len = len;
+    if (exp_len > 0 && exp[0] == 0x00) { exp++; exp_len--; }
+    *out_mod = mod; *out_mod_len = mod_len;
+    *out_exp = exp; *out_exp_len = exp_len;
+    return 0;
+}
+
+static BYTE *spki_to_rsapublic_blob(const BYTE *spki, DWORD spki_len, DWORD *out_blob_len)
+{
+    const BYTE *modulus, *exp; DWORD mod_len, exp_len;
+    if (spki_extract_rsa(spki, spki_len, &modulus, &mod_len, &exp, &exp_len) != 0) return NULL;
+    DWORD blob_len = sizeof(BCRYPT_RSAKEY_BLOB) + exp_len + mod_len;
+    BYTE *blob = (BYTE *)malloc(blob_len);
+    if (!blob) return NULL;
+    BCRYPT_RSAKEY_BLOB *hdr = (BCRYPT_RSAKEY_BLOB *)blob;
+    hdr->Magic = BCRYPT_RSAPUBLIC_MAGIC;
+    hdr->BitLength = mod_len * 8;
+    hdr->cbPublicExp = exp_len;
+    hdr->cbModulus = mod_len;
+    hdr->cbPrime1 = 0; hdr->cbPrime2 = 0;
+    BYTE *dst = blob + sizeof(BCRYPT_RSAKEY_BLOB);
+    memcpy(dst, exp, exp_len); dst += exp_len;
+    memcpy(dst, modulus, mod_len);
+    *out_blob_len = blob_len;
+    return blob;
+}
+
 /* ---- NCrypt Provider Functions ---- */
 
 static SECURITY_STATUS WINAPI KspOpenProvider(
@@ -618,6 +691,14 @@ static SECURITY_STATUS WINAPI KspOpenKey(
                 if (bits_pos) {
                     key->dwKeyBits = (DWORD)strtoul(bits_pos + 7, NULL, 10);
                 }
+                /* Parse and cache public_key (base64 SubjectPublicKeyInfo DER) */
+                DWORD pub_len = 0;
+                BYTE *pub_der = json_get_b64_field(resp, "public_key", &pub_len);
+                if (pub_der && pub_len > 0) {
+                    key->pbPublicKeyInfo = pub_der;
+                    key->cbPublicKeyInfo = pub_len;
+                    ksp_log("KspOpenKey: public_key cached (len=%u)", pub_len);
+                }
                 free(resp);
             }
         } else {
@@ -641,6 +722,7 @@ static SECURITY_STATUS WINAPI KspFreeKey(
     if (!key || key->dwMagic != KSP_KEY_MAGIC)
         return NTE_INVALID_HANDLE;
 
+    if (key->pbPublicKeyInfo) free(key->pbPublicKeyInfo);
     key->dwMagic = 0;
     HeapFree(GetProcessHeap(), 0, key);
     return ERROR_SUCCESS;
@@ -660,6 +742,8 @@ static SECURITY_STATUS WINAPI KspGetKeyProperty(
         return NTE_INVALID_HANDLE;
     if (!pszProperty || !pcbResult)
         return NTE_INVALID_PARAMETER;
+
+    ksp_log("KspGetKeyProperty: property=%ls, cbOutput=%u", pszProperty, cbOutput);
 
     /* NCRYPT_ALGORITHM_PROPERTY */
     if (wcscmp(pszProperty, NCRYPT_ALGORITHM_PROPERTY) == 0) {
@@ -747,13 +831,48 @@ static SECURITY_STATUS WINAPI KspGetKeyProperty(
         return ERROR_SUCCESS;
     }
 
-    /* NCRYPT_WINDOW_HANDLE_PROPERTY - 窗口句柄（用于 PIN 弹窗） */
+    /* NCRYPT_WINDOW_HANDLE_PROPERTY */
     if (wcscmp(pszProperty, NCRYPT_WINDOW_HANDLE_PROPERTY) == 0) {
-        /* 接受设置但不存储（我们使用自己的弹窗） */
         *pcbResult = sizeof(HWND);
         if (!pbOutput) return ERROR_SUCCESS;
         if (cbOutput < sizeof(HWND)) return NTE_BUFFER_TOO_SMALL;
         *(HWND *)pbOutput = NULL;
+        return ERROR_SUCCESS;
+    }
+
+    /* NCRYPT_ALGORITHM_GROUP_PROPERTY */
+    if (wcscmp(pszProperty, NCRYPT_ALGORITHM_GROUP_PROPERTY) == 0) {
+        const WCHAR *group = (wcscmp(key->szAlgorithm, BCRYPT_RSA_ALGORITHM) == 0)
+            ? NCRYPT_RSA_ALGORITHM_GROUP : NCRYPT_ECDSA_ALGORITHM_GROUP;
+        DWORD needed = (DWORD)((wcslen(group) + 1) * sizeof(WCHAR));
+        *pcbResult = needed;
+        if (!pbOutput) return ERROR_SUCCESS;
+        if (cbOutput < needed) return NTE_BUFFER_TOO_SMALL;
+        memcpy(pbOutput, group, needed);
+        return ERROR_SUCCESS;
+    }
+
+    /* NCRYPT_BLOCK_LENGTH_PROPERTY */
+    if (wcscmp(pszProperty, NCRYPT_BLOCK_LENGTH_PROPERTY) == 0) {
+        *pcbResult = sizeof(DWORD);
+        if (!pbOutput) return ERROR_SUCCESS;
+        if (cbOutput < sizeof(DWORD)) return NTE_BUFFER_TOO_SMALL;
+        *(DWORD *)pbOutput = key->dwKeyBits / 8;
+        return ERROR_SUCCESS;
+    }
+
+    /* Public key blob via GetProperty */
+    if (wcscmp(pszProperty, BCRYPT_RSAPUBLIC_BLOB) == 0 ||
+        wcscmp(pszProperty, BCRYPT_PUBLIC_KEY_BLOB) == 0 ||
+        wcscmp(pszProperty, L"PublicKeyBlob") == 0) {
+        if (!key->pbPublicKeyInfo || key->cbPublicKeyInfo == 0) return NTE_NOT_SUPPORTED;
+        DWORD blob_len = 0;
+        BYTE *blob = spki_to_rsapublic_blob(key->pbPublicKeyInfo, key->cbPublicKeyInfo, &blob_len);
+        if (!blob) return NTE_INTERNAL_ERROR;
+        *pcbResult = blob_len;
+        if (!pbOutput) { free(blob); return ERROR_SUCCESS; }
+        if (cbOutput < blob_len) { free(blob); return NTE_BUFFER_TOO_SMALL; }
+        memcpy(pbOutput, blob, blob_len); free(blob);
         return ERROR_SUCCESS;
     }
 
@@ -973,6 +1092,9 @@ static SECURITY_STATUS WINAPI KspSetKeyProperty(
     NCRYPT_PROV_HANDLE hProvider, NCRYPT_KEY_HANDLE hKey,
     LPCWSTR pszProperty, PBYTE pbInput, DWORD cbInput, DWORD dwFlags)
 {
+    ksp_log("KspSetKeyProperty: property=%ls, flags=0x%X", pszProperty ? pszProperty : L"(null)", dwFlags);
+    if (pszProperty && wcscmp(pszProperty, NCRYPT_WINDOW_HANDLE_PROPERTY) == 0)
+        return ERROR_SUCCESS;
     return NTE_NOT_SUPPORTED;
 }
 
@@ -1241,7 +1363,25 @@ static SECURITY_STATUS WINAPI KspExportKey(
     NCryptBufferDesc *pParameterList,
     PBYTE pbOutput, DWORD cbOutput, DWORD *pcbResult, DWORD dwFlags)
 {
-    return NTE_NOT_SUPPORTED;
+    OPENCERT_KSP_KEY *key = (OPENCERT_KSP_KEY *)hKey;
+    if (!key || key->dwMagic != KSP_KEY_MAGIC) return NTE_INVALID_HANDLE;
+    if (!pszBlobType || !pcbResult) return NTE_INVALID_PARAMETER;
+    ksp_log("KspExportKey: blobType=%ls, flags=0x%X", pszBlobType, dwFlags);
+    if (wcscmp(pszBlobType, BCRYPT_RSAPUBLIC_BLOB) != 0 &&
+        wcscmp(pszBlobType, BCRYPT_PUBLIC_KEY_BLOB) != 0 &&
+        wcscmp(pszBlobType, L"PublicKeyBlob") != 0) {
+        return NTE_NOT_SUPPORTED;
+    }
+    if (!key->pbPublicKeyInfo || key->cbPublicKeyInfo == 0) return NTE_NOT_SUPPORTED;
+    DWORD blob_len = 0;
+    BYTE *blob = spki_to_rsapublic_blob(key->pbPublicKeyInfo, key->cbPublicKeyInfo, &blob_len);
+    if (!blob) return NTE_INTERNAL_ERROR;
+    *pcbResult = blob_len;
+    if (!pbOutput) { free(blob); return ERROR_SUCCESS; }
+    if (cbOutput < blob_len) { free(blob); return NTE_BUFFER_TOO_SMALL; }
+    memcpy(pbOutput, blob, blob_len); free(blob);
+    ksp_log("KspExportKey: SUCCESS (len=%u)", blob_len);
+    return ERROR_SUCCESS;
 }
 
 static SECURITY_STATUS WINAPI KspEncrypt(

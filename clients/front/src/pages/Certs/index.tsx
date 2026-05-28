@@ -736,10 +736,10 @@ const CertsPage: React.FC = () => {
                 </Descriptions.Item>
 
                 {/* ===== 序列号和指纹 ===== */}
-                <Descriptions.Item label="序列号"><Text copyable style={{  fontSize: 11 }}>{certDetail.serial_number}</Text></Descriptions.Item>
-                <Descriptions.Item label="SHA-1 指纹"><Text copyable style={{ fontSize: 11 }}>{certDetail.sha1_fingerprint}</Text></Descriptions.Item>
+                <Descriptions.Item label="序列号"><Text copyable>{certDetail.serial_number}</Text></Descriptions.Item>
+                <Descriptions.Item label="SHA-1 指纹"><Text copyable>{certDetail.sha1_fingerprint}</Text></Descriptions.Item>
                 {certDetail.sha256_fingerprint && (
-                  <Descriptions.Item label="SHA-256 指纹"><Text copyable style={{ fontSize: 11, wordBreak: 'break-all' }}>{certDetail.sha256_fingerprint}</Text></Descriptions.Item>
+                  <Descriptions.Item label="SHA-256 指纹"><Text copyable style={{wordBreak: 'break-all' }}>{certDetail.sha256_fingerprint}</Text></Descriptions.Item>
                 )}
 
                 {/* ===== 基本约束 ===== */}

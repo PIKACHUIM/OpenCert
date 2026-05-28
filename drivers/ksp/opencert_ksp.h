@@ -93,6 +93,9 @@ typedef struct _OPENCERT_KSP_KEY {
     DWORD       dwKeyBits;
     DWORD       dwFlags;
     OPENCERT_KSP_PROVIDER *pProvider;
+    /* SubjectPublicKeyInfo DER（从后端 IPC 响应中获取，用于公钥导出） */
+    BYTE        *pbPublicKeyInfo;
+    DWORD       cbPublicKeyInfo;
 } OPENCERT_KSP_KEY;
 
 #define KSP_KEY_MAGIC       0x4B455931  /* "KEY1" */
