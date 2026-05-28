@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/globaltrusts/client-card/internal/card/local"
@@ -201,16 +202,17 @@ func (s *Server) handleListCards(w http.ResponseWriter, r *http.Request) {
 // handleCreateCard POST /api/cards
 func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SlotType     string `json:"slot_type"`
-		CardName     string `json:"card_name"`
-		UserUUID     string `json:"user_uuid"`
-		UserPassword string `json:"user_password"` // 必填，验证用户身份
-		CardPassword string `json:"card_password"` // 可选
-		PIN          string `json:"pin"`           // 必填，用于加密主密钥
-		PUK          string `json:"puk"`           // 可选，未提供时自动生成
-		AdminKey     string `json:"admin_key"`     // 可选，未提供时自动生成
-		ExpiresAt    string `json:"expires_at"`    // RFC3339 格式
-		Remark       string `json:"remark"`
+		SlotType      string `json:"slot_type"`
+		CardName      string `json:"card_name"`
+		UserUUID      string `json:"user_uuid"`
+		UserPassword  string `json:"user_password"`  // 必填，验证用户身份
+		CardPassword  string `json:"card_password"`  // 可选
+		PIN           string `json:"pin"`            // 必填，用于加密主密钥
+		PUK           string `json:"puk"`            // 可选，未提供时自动生成
+		AdminKey      string `json:"admin_key"`      // 可选，未提供时自动生成
+		ExpiresAt     string `json:"expires_at"`     // RFC3339 格式
+		Remark        string `json:"remark"`
+		SecurityLevel string `json:"security_level"` // 安全等级：high / medium / low（可选，默认 low）
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
@@ -233,13 +235,34 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ---- 解析并校验安全等级 ----
+	// 前端默认 low；选择 tpmsc 时强制 high；选择本地 high 时拒绝（当前实现不支持本地 TPM Provider）。
+	secLevel := storage.SecurityLevel(strings.ToLower(strings.TrimSpace(req.SecurityLevel)))
+	switch secLevel {
+	case storage.SecurityLevelHigh, storage.SecurityLevelMedium, storage.SecurityLevelLow:
+		// ok
+	case "":
+		secLevel = storage.SecurityLevelLow
+	default:
+		writeError(w, http.StatusBadRequest, "security_level 仅支持 high / medium / low")
+		return
+	}
+
 	// ---- 根据 slot_type 分发创建逻辑 ----
 	switch storage.SlotType(req.SlotType) {
 	case storage.SlotTypeTPMSC:
+		// TPMSC 强制 high，调用方传任何值都忽略（内部硬编码）
 		s.handleCreateTPMSCCard(w, r, req.UserUUID, req.CardName, req.PIN, req.Remark)
 		return
 	default:
 		// local / tpm2 / cloud 走原有逻辑
+	}
+
+	// 本地卡 high 等级目前未启用 TPM Provider，会在后续生成密钥时失败，提前拦截给出明确提示
+	if secLevel == storage.SecurityLevelHigh {
+		writeError(w, http.StatusBadRequest,
+			"高安全等级需要硬件 TPM 支持，请改用 slot_type=tpmsc 创建虚拟智能卡；本地卡片当前仅支持 medium / low")
+		return
 	}
 
 	// 调用三级凭据版本；未提供 PUK/AdminKey 时自动生成并在响应中一次性返回
@@ -252,6 +275,7 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		AdminKey:      req.AdminKey,
 		GeneratePUK:   req.PUK == "",
 		GenerateAdmin: req.AdminKey == "",
+		SecurityLevel: secLevel,
 		Remark:        req.Remark,
 	})
 	if err != nil {

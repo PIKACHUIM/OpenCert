@@ -108,12 +108,21 @@ func CreateCard(ctx context.Context, args CreateCardArgs) (*CreateCardResult, er
 	cmdCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
-	// 通过 cmd /c 执行，先设置代码页为 UTF-8（65001），避免中文 GBK 乱码
-	// 注意：/name 参数可能包含空格，需要用引号包裹
-	cmdLine := fmt.Sprintf("chcp 65001 >nul && tpmvscmgr.exe create /name \"%s\" /AdminKey DEFAULT /PIN DEFAULT /PUK DEFAULT /generate", args.Name)
-	cmd := exec.CommandContext(cmdCtx, "cmd", "/c", cmdLine)
+	// 直接调用 tpmvscmgr.exe，由 Go 的 os/exec 负责将含空格的 name 参数正确转义。
+	// 不再使用 `cmd /c "chcp 65001 && tpmvscmgr ..."`，因为 cmd /c 在嵌套引号场景下
+	// 会吞掉内层引号，导致 `/name "My Card"` 变成 `/name My Card`，从而出现类似
+	// "Unknown parameter: Card" 的错误。
+	cmdArgs := []string{
+		"create",
+		"/name", args.Name,
+		"/AdminKey", "DEFAULT",
+		"/PIN", "DEFAULT",
+		"/PUK", "DEFAULT",
+		"/generate",
+	}
+	cmd := exec.CommandContext(cmdCtx, "tpmvscmgr.exe", cmdArgs...)
 
-	log.Printf("[TPMSC] 执行命令: cmd /c %s", cmdLine)
+	log.Printf("[TPMSC] 执行命令: tpmvscmgr.exe %s", strings.Join(cmdArgs, " "))
 
 	// 直接获取输出（DEFAULT 模式无需 stdin 交互）
 	output, err := cmd.CombinedOutput()
@@ -144,8 +153,7 @@ func DeleteCard(ctx context.Context, instanceID string) error {
 		return fmt.Errorf("实例 ID 不能为空")
 	}
 
-	cmdLine := fmt.Sprintf("chcp 65001 >nul && tpmvscmgr.exe destroy /instance %s", instanceID)
-	cmd := exec.CommandContext(ctx, "cmd", "/c", cmdLine)
+	cmd := exec.CommandContext(ctx, "tpmvscmgr.exe", "destroy", "/instance", instanceID)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("删除虚拟智能卡失败: %w\n输出: %s", err, string(output))

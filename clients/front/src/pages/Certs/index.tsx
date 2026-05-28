@@ -356,7 +356,7 @@ const CertsPage: React.FC = () => {
       },
     },
     {
-      title: '有效期', width: 60,
+      title: '有效期', width: 130,
       render: (_: unknown, record: Certificate) => {
         const detail = certDetailsMap[record.uuid];
         if (record.cert_type !== 'x509') return <Text type="secondary">-</Text>;
@@ -366,8 +366,8 @@ const CertsPage: React.FC = () => {
         const expired = notAfter.isBefore(now);
         return (
           <div style={{ fontSize: 11 }}>
-            <div style={{ color: darkMode ? '#8b949e' : '#999' }}>{dayjs(detail.not_before).format('YYYY-MM-DD')}
-              ~ {notAfter.format('YYYY-MM-DD')} {expired && <Tag color="red" style={{ marginLeft: 4, fontSize: 10 }}>已过期</Tag>}
+            <div style={{ color: darkMode ? '#8b949e' : '#999' }}>生效日期：{dayjs(detail.not_before).format('YYYY-MM-DD')}
+              <br></br> 失效日期：{notAfter.format('YYYY-MM-DD')} {expired && <Tag color="red" style={{ marginLeft: 4, fontSize: 10 }}>已过期</Tag>}
             </div>
           </div>
         );

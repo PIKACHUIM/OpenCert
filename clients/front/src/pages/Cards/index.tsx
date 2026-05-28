@@ -29,10 +29,13 @@ const KEY_TYPE_OPTIONS = [
 ];
 
 // 安全等级颜色和标签
+// 说明：当前实现里只有 slot_type=tpmsc 是真正的硬件保护（密钥落在 Windows TPM）；
+// 本地卡的 medium 仅在导出私钥时增加 ADMINKEY 校验，加密强度与 low 一致；
+// 本地卡的 high 暂未启用 TPM Provider，后端会拒绝创建。
 const securityLevelConfig: Record<string, { color: string; label: string; desc: string }> = {
-  high: { color: 'red', label: '高', desc: '密钥存储于 TPM，不可导出' },
-  medium: { color: 'orange', label: '中', desc: 'TPM 证书密钥加密，ADMINKEY 可导出' },
-  low: { color: 'green', label: '低', desc: '仅主密钥加密，密码可导出' },
+  high: { color: 'red', label: '高', desc: '硬件 TPM 保护，私钥永不可导出（仅 TPM 智能卡支持）' },
+  medium: { color: 'orange', label: '中', desc: '软件加密 + ADMINKEY 校验，可导出私钥需 ADMINKEY' },
+  low: { color: 'green', label: '低', desc: '仅 PIN/卡密码软件加密，可凭密码导出' },
 };
 
 // Slot 类型颜色
