@@ -258,15 +258,17 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		// local / tpm2 / cloud 走原有逻辑
 	}
 
-	// 本地卡 high 等级目前未启用 TPM Provider，会在后续生成密钥时失败，提前拦截给出明确提示
-	if secLevel == storage.SecurityLevelHigh {
-		writeError(w, http.StatusBadRequest,
-			"高安全等级需要硬件 TPM 支持，请改用 slot_type=tpmsc 创建虚拟智能卡；本地卡片当前仅支持 medium / low")
-		return
+	// medium / high 都需要 TPM Provider；缺失时给出明确错误，避免落库后再失败。
+	if secLevel == storage.SecurityLevelMedium || secLevel == storage.SecurityLevelHigh {
+		if s.tpmProvider == nil || !s.tpmProvider.Available() {
+			writeError(w, http.StatusBadRequest,
+				string(secLevel)+" 安全等级需要 TPM Provider；当前服务未注入或不可用，请改用 low 或联系管理员检查 TPM 配置")
+			return
+		}
 	}
 
 	// 调用三级凭据版本；未提供 PUK/AdminKey 时自动生成并在响应中一次性返回
-	result, err := local.CreateCardWithCreds(r.Context(), s.cardRepo, local.CreateCardArgs{
+	result, err := local.CreateCardWithCredsAndTPM(r.Context(), s.cardRepo, s.tpmProvider, local.CreateCardArgs{
 		UserUUID:      req.UserUUID,
 		CardName:      req.CardName,
 		CardPassword:  req.CardPassword,

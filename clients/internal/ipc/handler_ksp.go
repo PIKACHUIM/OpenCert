@@ -522,10 +522,20 @@ func (h *PKCSHandler) resolveContainer(ctx context.Context, container string) (c
 		classBytes := make([]byte, 4)
 		binary.BigEndian.PutUint32(classBytes, uint32(pkcs11types.CKO_PRIVATE_KEY))
 
-		handles, err := slot.FindObjects(ctx, []pkcs11types.Attribute{
+		findAttrs := []pkcs11types.Attribute{
 			{Type: pkcs11types.CKA_CLASS, Value: classBytes},
 			{Type: pkcs11types.CKA_ID, Value: []byte(certUUID)},
-		})
+		}
+
+		handles, err := slot.FindObjects(ctx, findAttrs)
+		if err != nil || len(handles) == 0 {
+			// 可能是证书导入后缓存未刷新，尝试 reload 一次
+			if reloader, ok := slot.(interface{ ReloadObjects(context.Context) error }); ok {
+				if rerr := reloader.ReloadObjects(ctx); rerr == nil {
+					handles, err = slot.FindObjects(ctx, findAttrs)
+				}
+			}
+		}
 		if err != nil || len(handles) == 0 {
 			slog.Warn("resolveContainer: 找不到私钥",
 				"container", container, "certUUID", certUUID)

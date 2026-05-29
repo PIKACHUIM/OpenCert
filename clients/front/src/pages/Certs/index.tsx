@@ -167,6 +167,9 @@ const CertsPage: React.FC = () => {
           <Alert message={`确定要删除证书 ${cert.uuid.slice(0, 8)}... 吗？此操作不可恢复。`} type="error" showIcon style={{ marginBottom: 12 }} />
           <div style={{ marginBottom: 8 }}>
             <Text style={{ fontSize: 12 }}>请输入证书 UUID 以确认：</Text>
+            <div style={{ marginTop: 4, marginBottom: 4, padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>
+              <Text copyable style={{ fontSize: 12, fontFamily: 'monospace' }}>{cert.uuid}</Text>
+            </div>
             <Input
               placeholder={cert.uuid}
               style={{ marginTop: 4, fontFamily: 'monospace', fontSize: 12 }}
@@ -604,7 +607,7 @@ const CertsPage: React.FC = () => {
         extra={
           <>
             <Select
-              style={{ width: 240 }}
+              style={{ width: 360 }}
               placeholder="选择卡片"
               value={selectedCardUUID || undefined}
               onChange={(v) => setSelectedCardUUID(v)}
@@ -774,7 +777,7 @@ const CertsPage: React.FC = () => {
       >
         {selectedCert && (
           <Descriptions column={1} bordered size="small">
-            <Descriptions.Item label="UUID">{selectedCert.uuid}</Descriptions.Item>
+            <Descriptions.Item label="UUID"><Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>{selectedCert.uuid}</Text></Descriptions.Item>
             <Descriptions.Item label="证书类型">
               <Tag color={certTypeColors[selectedCert.cert_type]}>{certTypeLabels[selectedCert.cert_type] || selectedCert.cert_type}</Tag>
             </Descriptions.Item>

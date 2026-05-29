@@ -476,7 +476,7 @@ func (s *Server) deliverToCard(ctx context.Context, req *deliverRequest, d *clou
 		return nil, fmt.Errorf("解析证书公钥失败: %w", err)
 	}
 
-	km := local.NewKeyManager(s.certRepo, s.cardRepo)
+	km := local.NewKeyManagerWithTPM(s.certRepo, s.cardRepo, s.tpmProvider)
 	result, err := km.ImportPrivateKey(ctx, local.KeyGenRequest{
 		CardUUID: card.UUID,
 		CertType: storage.CertTypeX509,

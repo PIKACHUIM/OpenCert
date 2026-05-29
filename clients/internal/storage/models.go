@@ -84,12 +84,16 @@ type Card struct {
 	// 安全等级
 	SecurityLevel SecurityLevel `json:"security_level"` // high/medium/low
 	// TPM 证书密钥（仅 medium 安全等级使用）
-	TPMCertKeyEnc  Base64Bytes `json:"-"`                // 被 ADMINKEY 加密的 TPM 证书密钥
-	TPMCertKeySalt Base64Bytes `json:"-"`                // TPM 证书密钥加密盐值
+	TPMCertKeyEnc  Base64Bytes `json:"-"` // 被 ADMINKEY 加密的应急恢复副本
+	TPMCertKeySalt Base64Bytes `json:"-"` // 应急恢复副本加密盐值
+	// medium：TPM 证书密钥在 TPM NV 域中的句柄；0 表示未启用
+	TPMCertKeyNVHandle uint32 `json:"-"`
+	// medium/high：TPM Provider 平台名（sw-stub / windows-cng / linux-tpm2 / mock 等）
+	TPMProvider string `json:"tpm_provider,omitempty"`
 	// PIN 安全字段
-	PINRetries      int  `json:"pin_retries"`       // PIN 错误最大次数（默认 3）
-	PINFailedCount  int  `json:"pin_failed_count"`  // 当前连续错误次数
-	PINLocked       bool `json:"pin_locked"`        // PIN 是否被锁定
+	PINRetries     int  `json:"pin_retries"`      // PIN 错误最大次数（默认 3）
+	PINFailedCount int  `json:"pin_failed_count"` // 当前连续错误次数
+	PINLocked      bool `json:"pin_locked"`       // PIN 是否被锁定
 	// Cloud Slot 专用字段
 	CloudURL      string `json:"cloud_url,omitempty"`       // servers 服务地址，如 http://localhost:1027
 	CloudCardUUID string `json:"cloud_card_uuid,omitempty"` // 在 servers 中的卡片 UUID
@@ -124,22 +128,27 @@ const (
 
 // Certificate 是证书/密钥数据模型。
 type Certificate struct {
-	UUID        string   `json:"uuid"`
-	SlotType    SlotType `json:"slot_type"`
-	CardUUID    string   `json:"card_uuid"`
-	CertType    CertType `json:"cert_type"`
-	KeyType     string   `json:"key_type"`     // rsa2048/ec256/ed25519/...
+	UUID        string      `json:"uuid"`
+	SlotType    SlotType    `json:"slot_type"`
+	CardUUID    string      `json:"card_uuid"`
+	CertType    CertType    `json:"cert_type"`
+	KeyType     string      `json:"key_type"`     // rsa2048/ec256/ed25519/...
 	CertContent Base64Bytes `json:"cert_content"` // 公开部分
 	TempKeySalt Base64Bytes `json:"-"`            // 32 字节随机盐值
 	TempKeyEnc  Base64Bytes `json:"-"`            // 加密的临时密钥
 	PrivateData Base64Bytes `json:"-"`            // 加密的私钥/私密数据
-	// TPM2 专用
+	// medium 模式专用：TPM 证书密钥再加密层（PrivateData 已是 TPM 加密 + master 加密的双层包）
+	// 该字段为空表示按旧 low/medium 路径（仅 master 加密）解密；非空时按双层解密。
+	TPMCertKeySalt Base64Bytes `json:"-"`
+	// TPM2 / high 模式专用
 	TPMPlatform    TPMPlatform `json:"tpm_platform,omitempty"`
 	TPMKeyHandle   *int64      `json:"-"`
 	TPMPublicBlob  Base64Bytes `json:"-"`
 	TPMPrivateBlob Base64Bytes `json:"-"`
 	TPMPCRPolicy   Base64Bytes `json:"-"`
 	TPMAuthPolicy  Base64Bytes `json:"-"`
+	// high 模式专用：tpm.WrappedKey 序列化（JSON），私钥永不出 TPM。
+	TPMWrappedBlob Base64Bytes `json:"-"`
 	Remark         string      `json:"remark"`
 	CreatedAt      time.Time   `json:"created_at"`
 	UpdatedAt      time.Time   `json:"updated_at"`

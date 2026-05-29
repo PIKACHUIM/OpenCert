@@ -1,5 +1,9 @@
 // Package local 实现本地智能卡 Slot。
 // 证书和私钥存储在本地 SQLite 数据库中，私钥被临时密钥 AES-256 加密。
+//
+// medium / high 安全等级时，签名/解密路径会调用 tpm.Provider：
+//   - medium：从 TPM NV 读出"TPM 证书密钥"做外层解密，再用 master 派生 KEK 解内层
+//   - high  ：把 wrapped blob 加载进 TPM，由 TPM 内部完成签名/解密；私钥永不暴露
 package local
 
 import (
@@ -23,6 +27,7 @@ import (
 	cryptoutil "github.com/globaltrusts/client-card/internal/crypto"
 	"github.com/globaltrusts/client-card/internal/pki"
 	"github.com/globaltrusts/client-card/internal/storage"
+	"github.com/globaltrusts/client-card/internal/tpm"
 	"github.com/globaltrusts/client-card/pkg/pkcs11types"
 )
 
@@ -33,17 +38,18 @@ type Slot struct {
 	card     *storage.Card
 	certRepo *storage.CertRepo
 	cardRepo *storage.CardRepo // 用于更新 PIN 状态
+	tpmProv  tpm.Provider      // medium/high 必需，可为 nil（此时仅 low 卡可用）
 
 	// 登录状态
-	loggedIn   bool
-	masterKey  []byte // 解密后的卡片主密鑰（登录后有效）
+	loggedIn  bool
+	masterKey []byte // 解密后的卡片主密鑰（登录后有效）
 
 	// 对象缓存：handle -> certificate
-	objects map[pkcs11types.ObjectHandle]*storage.Certificate
+	objects    map[pkcs11types.ObjectHandle]*storage.Certificate
 	nextHandle uint32
 }
 
-// New 创建本地 Slot 实例。
+// New 创建本地 Slot 实例（无 TPM Provider；仅 low 等级卡可正常工作）。
 func New(slotID pkcs11types.SlotID, card *storage.Card, certRepo *storage.CertRepo) *Slot {
 	return &Slot{
 		slotID:     slotID,
@@ -58,6 +64,13 @@ func New(slotID pkcs11types.SlotID, card *storage.Card, certRepo *storage.CertRe
 func NewWithCardRepo(slotID pkcs11types.SlotID, card *storage.Card, certRepo *storage.CertRepo, cardRepo *storage.CardRepo) *Slot {
 	s := New(slotID, card, certRepo)
 	s.cardRepo = cardRepo
+	return s
+}
+
+// NewWithTPM 创建本地 Slot 实例（含 CardRepo + TPM Provider，支持 medium/high）。
+func NewWithTPM(slotID pkcs11types.SlotID, card *storage.Card, certRepo *storage.CertRepo, cardRepo *storage.CardRepo, tpmProv tpm.Provider) *Slot {
+	s := NewWithCardRepo(slotID, card, certRepo, cardRepo)
+	s.tpmProv = tpmProv
 	return s
 }
 
@@ -283,6 +296,12 @@ func (s *Slot) GetAttributes(ctx context.Context, handle pkcs11types.ObjectHandl
 }
 
 // Sign 使用私钥签名。
+//
+// 签名路径分三类：
+//   - high   (cert.TPMPlatform == "high-v1")：把 wrapped blob LoadKey 进 TPM，由 TPM 内部签名
+//   - medium (cert.TPMPlatform == "medium-v2")：先调 TPM NV 解外层，再用 master 解内层得到 privDER，
+//     用 Go crypto 包签名（私钥仅短暂存在于 Go 进程中）
+//   - low    ：原 master 加密的 privDER，按以前方式解出后签名
 func (s *Slot) Sign(ctx context.Context, handle pkcs11types.ObjectHandle, mechanism pkcs11types.Mechanism, data []byte) ([]byte, error) {
 	s.mu.RLock()
 	cert, ok := s.objects[handle]
@@ -291,6 +310,11 @@ func (s *Slot) Sign(ctx context.Context, handle pkcs11types.ObjectHandle, mechan
 
 	if !ok {
 		return nil, fmt.Errorf("对象句柄 %d 不存在", handle)
+	}
+
+	// high 模式：在 TPM 内部完成签名
+	if string(cert.TPMPlatform) == "high-v1" {
+		return s.signWithTPM(cert, mechanism, data, masterKey)
 	}
 
 	privKey, err := s.decryptPrivateKey(cert, masterKey)
@@ -310,6 +334,11 @@ func (s *Slot) Decrypt(ctx context.Context, handle pkcs11types.ObjectHandle, mec
 
 	if !ok {
 		return nil, fmt.Errorf("对象句柄 %d 不存在", handle)
+	}
+
+	// high 模式：在 TPM 内部完成解密
+	if string(cert.TPMPlatform) == "high-v1" {
+		return s.decryptWithTPM(cert, mechanism, ciphertext, masterKey)
 	}
 
 	privKey, err := s.decryptPrivateKey(cert, masterKey)
@@ -374,8 +403,31 @@ func (s *Slot) loadObjects(ctx context.Context) error {
 	return nil
 }
 
+// ReloadObjects 在已登录状态下重新从数据库加载证书到内存缓存。
+// 用于证书导入后刷新 Slot 对象列表，使新证书立即可用于签名/解密。
+func (s *Slot) ReloadObjects(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.loggedIn {
+		return nil // 未登录时无需刷新
+	}
+	return s.loadObjects(ctx)
+}
+
 // decryptPrivateKey 解密证书的私钥数据，返回 crypto.PrivateKey。
+//
+//   - low / 旧 medium 标记：cert.PrivateData = AES-GCM(tempKey, privDER)
+//   - 新 medium-v2     ：cert.PrivateData = AES-GCM(tpmCertKey, AES-GCM(tempKey, privDER))
+//   - high-import-v1   ：cert.PrivateData = AES-GCM(aesKey, privDER), cert.TPMPrivateBlob = RSA-OAEP(aesKey)
+//
+// 高安全等级（high-v1, 片上生成）不会走这里——上层 Sign/Decrypt 已经分流到 TPM 内部完成。
 func (s *Slot) decryptPrivateKey(cert *storage.Certificate, masterKey []byte) (crypto.PrivateKey, error) {
+	// high-import-v1：用 TPM 解密 AES key，再 AES 解密 privDER
+	if string(cert.TPMPlatform) == "high-import-v1" {
+		return s.decryptHighImportPrivateKey(cert, masterKey)
+	}
+
 	// 1. 用 HMAC(masterKey, tempKeySalt) 解密临时密钥
 	tempKeyAESKey := cryptoutil.HMACSHA256(masterKey, cert.TempKeySalt)
 	tempKey, err := cryptoutil.DecryptAES256GCM(tempKeyAESKey, cert.TempKeyEnc)
@@ -383,13 +435,234 @@ func (s *Slot) decryptPrivateKey(cert *storage.Certificate, masterKey []byte) (c
 		return nil, fmt.Errorf("解密临时密钥失败: %w", err)
 	}
 
-	// 2. 用临时密钥解密私钥数据
-	privDER, err := cryptoutil.DecryptAES256GCM(tempKey, cert.PrivateData)
+	privateData := cert.PrivateData
+
+	// 2. medium-v2：先用 TPM 证书密钥解外层
+	if string(cert.TPMPlatform) == "medium-v2" {
+		if s.tpmProv == nil {
+			return nil, fmt.Errorf("medium 卡片需要 TPM Provider 才能签名/解密")
+		}
+		inner, err := DecryptMediumPrivateData(s.tpmProv, s.card, cert, masterKey)
+		if err != nil {
+			return nil, err
+		}
+		privateData = inner
+	}
+
+	// 3. 用临时密钥解密私钥数据
+	privDER, err := cryptoutil.DecryptAES256GCM(tempKey, privateData)
 	if err != nil {
 		return nil, fmt.Errorf("解密私钥数据失败: %w", err)
 	}
 
-	// 3. 解析 DER 格式私钥
+	// 4. 解析 DER 格式私钥
+	return parsePrivateKey(privDER)
+}
+
+// signWithTPM 让 TPM 在内部对 digest 做签名（high 模式）。
+func (s *Slot) signWithTPM(cert *storage.Certificate, mechanism pkcs11types.Mechanism, data []byte, masterKey []byte) ([]byte, error) {
+	if s.tpmProv == nil {
+		return nil, fmt.Errorf("high 卡片需要 TPM Provider")
+	}
+	wrapped, err := unmarshalWrappedKey(cert.TPMWrappedBlob)
+	if err != nil {
+		return nil, err
+	}
+	auth := deriveTPMHighKeyAuth(masterKey, cert.UUID)
+	defer zeroBytes(auth)
+	h, err := s.tpmProv.LoadKey(wrapped, auth)
+	if err != nil {
+		return nil, fmt.Errorf("LoadKey 失败: %w", err)
+	}
+	defer s.tpmProv.FlushHandle(h)
+
+	scheme, digest, err := mechanismToScheme(mechanism, data)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := s.tpmProv.Sign(h, digest, scheme)
+	if err != nil {
+		return nil, fmt.Errorf("TPM 签名失败: %w", err)
+	}
+	// PKCS#11 ECDSA 期望 raw r||s；TPM 返回 ASN.1。需要转换。
+	if scheme == tpm.SignSchemeECDSASHA256 || scheme == tpm.SignSchemeECDSASHA384 ||
+		scheme == tpm.SignSchemeECDSASHA512 {
+		raw, err := ecdsaASN1ToRaw(sig, wrapped.Alg)
+		if err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+	return sig, nil
+}
+
+// decryptWithTPM 让 TPM 在内部完成 RSA 解密（high 模式）。
+func (s *Slot) decryptWithTPM(cert *storage.Certificate, mechanism pkcs11types.Mechanism, ciphertext []byte, masterKey []byte) ([]byte, error) {
+	if s.tpmProv == nil {
+		return nil, fmt.Errorf("high 卡片需要 TPM Provider")
+	}
+	if mechanism.Type != pkcs11types.CKM_RSA_PKCS && mechanism.Type != pkcs11types.CKM_RSA_PKCS_OAEP {
+		return nil, fmt.Errorf("high 卡片解密目前仅支持 CKM_RSA_PKCS / CKM_RSA_PKCS_OAEP")
+	}
+	wrapped, err := unmarshalWrappedKey(cert.TPMWrappedBlob)
+	if err != nil {
+		return nil, err
+	}
+	auth := deriveTPMHighKeyAuth(masterKey, cert.UUID)
+	defer zeroBytes(auth)
+	h, err := s.tpmProv.LoadKey(wrapped, auth)
+	if err != nil {
+		return nil, fmt.Errorf("LoadKey 失败: %w", err)
+	}
+	defer s.tpmProv.FlushHandle(h)
+	return s.tpmProv.Decrypt(h, ciphertext)
+}
+
+// mechanismToScheme 把 PKCS#11 mechanism 翻译成 tpm.SignScheme，并返回需要传给 TPM 的 digest。
+// 对未做摘要的算法（CKM_RSA_PKCS / CKM_ECDSA），data 已是 digest；
+// 对一体化算法（CKM_SHA256_RSA_PKCS / CKM_ECDSA_SHA256 等），先在本地做摘要。
+func mechanismToScheme(mechanism pkcs11types.Mechanism, data []byte) (tpm.SignScheme, []byte, error) {
+	switch mechanism.Type {
+	case pkcs11types.CKM_RSA_PKCS:
+		return tpm.SignSchemeRaw, data, nil
+	case pkcs11types.CKM_SHA1_RSA_PKCS:
+		// 真 TPM 通常不支持 SHA-1；此处先在本地做摘要后用 raw 提交，由 sw-stub 兼容。
+		h := sha1.Sum(data)
+		return tpm.SignSchemeRaw, h[:], nil
+	case pkcs11types.CKM_SHA256_RSA_PKCS:
+		h := sha256.Sum256(data)
+		return tpm.SignSchemeRSAPKCS1SHA256, h[:], nil
+	case pkcs11types.CKM_SHA384_RSA_PKCS:
+		h := sha512.Sum384(data)
+		return tpm.SignSchemeRSAPKCS1SHA384, h[:], nil
+	case pkcs11types.CKM_SHA512_RSA_PKCS:
+		h := sha512.Sum512(data)
+		return tpm.SignSchemeRSAPKCS1SHA512, h[:], nil
+	case pkcs11types.CKM_RSA_PKCS_PSS:
+		// 默认 SHA-256 PSS
+		return tpm.SignSchemeRSAPSSSHA256, data, nil
+	case pkcs11types.CKM_SHA256_RSA_PKCS_PSS:
+		h := sha256.Sum256(data)
+		return tpm.SignSchemeRSAPSSSHA256, h[:], nil
+	case pkcs11types.CKM_ECDSA:
+		return tpm.SignSchemeRaw, data, nil
+	case pkcs11types.CKM_ECDSA_SHA256:
+		h := sha256.Sum256(data)
+		return tpm.SignSchemeECDSASHA256, h[:], nil
+	case pkcs11types.CKM_ECDSA_SHA384:
+		h := sha512.Sum384(data)
+		return tpm.SignSchemeECDSASHA384, h[:], nil
+	case pkcs11types.CKM_ECDSA_SHA512:
+		h := sha512.Sum512(data)
+		return tpm.SignSchemeECDSASHA512, h[:], nil
+	case pkcs11types.CKM_EDDSA:
+		return tpm.SignSchemeRaw, data, nil
+	default:
+		return "", nil, fmt.Errorf("不支持的 PKCS#11 机制 0x%X", uint32(mechanism.Type))
+	}
+}
+
+// ecdsaASN1ToRaw 把 ASN.1 编码的 ECDSA 签名转成 PKCS#11 raw 格式（r||s 各填充到曲线字节长度）。
+func ecdsaASN1ToRaw(sig []byte, alg tpm.KeyAlg) ([]byte, error) {
+	var keyBytes int
+	switch alg {
+	case tpm.KeyAlgECP256:
+		keyBytes = 32
+	case tpm.KeyAlgECP384:
+		keyBytes = 48
+	case tpm.KeyAlgECP521:
+		keyBytes = 66
+	default:
+		return nil, fmt.Errorf("未知 ECDSA 曲线: %s", alg)
+	}
+	r, ssig, err := parseECDSAASN1(sig)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 2*keyBytes)
+	copy(out[keyBytes-len(r):keyBytes], r)
+	copy(out[2*keyBytes-len(ssig):], ssig)
+	return out, nil
+}
+
+// parseECDSAASN1 解析 SEQUENCE { INTEGER r, INTEGER s }。
+func parseECDSAASN1(sig []byte) ([]byte, []byte, error) {
+	type ecSig struct {
+		R, S []byte
+	}
+	// crypto/x509 已有 Marshal/Unmarshal，但避免引入私有依赖，这里用最小手写解析
+	if len(sig) < 8 || sig[0] != 0x30 {
+		return nil, nil, fmt.Errorf("ECDSA ASN.1 格式错误")
+	}
+	// SEQUENCE 长度
+	idx := 2
+	if sig[1]&0x80 != 0 {
+		nbytes := int(sig[1] & 0x7f)
+		idx = 2 + nbytes
+	}
+	readInt := func(p int) ([]byte, int, error) {
+		if p+2 > len(sig) || sig[p] != 0x02 {
+			return nil, 0, fmt.Errorf("ECDSA ASN.1 INTEGER 缺失")
+		}
+		ln := int(sig[p+1])
+		start := p + 2
+		end := start + ln
+		if end > len(sig) {
+			return nil, 0, fmt.Errorf("ECDSA ASN.1 INTEGER 越界")
+		}
+		v := sig[start:end]
+		// 去掉 INTEGER 高位 0x00 填充
+		for len(v) > 0 && v[0] == 0x00 {
+			v = v[1:]
+		}
+		return v, end, nil
+	}
+	r, p1, err := readInt(idx)
+	if err != nil {
+		return nil, nil, err
+	}
+	ssig, _, err := readInt(p1)
+	if err != nil {
+		return nil, nil, err
+	}
+	return r, ssig, nil
+}
+
+// decryptHighImportPrivateKey 解密 high-import-v1 格式的导入私钥。
+//
+// 流程：
+//  1. 获取 wrapping key（从 card 的内部证书）
+//  2. TPM LoadKey + Decrypt(encAESKey) → aesKey
+//  3. AES-GCM(aesKey, cert.PrivateData) → privDER
+func (s *Slot) decryptHighImportPrivateKey(cert *storage.Certificate, masterKey []byte) (crypto.PrivateKey, error) {
+	if s.tpmProv == nil {
+		return nil, fmt.Errorf("high-import 解密需要 TPM Provider")
+	}
+	// 1. 获取 wrapping key
+	wrappingKey, err := getOrCreateWrappingKey(context.Background(), s.certRepo, s.tpmProv, masterKey, s.card)
+	if err != nil {
+		return nil, fmt.Errorf("获取 TPM 保护密钥失败: %w", err)
+	}
+	// 2. TPM 解密 AES key
+	wrapAuth := deriveTPMHighKeyAuth(masterKey, "wrapping-key:"+s.card.UUID)
+	defer zeroBytes(wrapAuth)
+	handle, err := s.tpmProv.LoadKey(wrappingKey, wrapAuth)
+	if err != nil {
+		return nil, fmt.Errorf("LoadKey(wrapping) 失败: %w", err)
+	}
+	defer s.tpmProv.FlushHandle(handle)
+
+	aesKey, err := s.tpmProv.Decrypt(handle, cert.TPMPrivateBlob)
+	if err != nil {
+		return nil, fmt.Errorf("TPM 解密 AES key 失败: %w", err)
+	}
+	defer zeroBytes(aesKey)
+
+	// 3. AES 解密 privDER
+	privDER, err := cryptoutil.DecryptAES256GCM(aesKey, cert.PrivateData)
+	if err != nil {
+		return nil, fmt.Errorf("AES 解密私钥失败: %w", err)
+	}
 	return parsePrivateKey(privDER)
 }
 

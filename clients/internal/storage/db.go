@@ -160,6 +160,12 @@ func (db *DB) migrate() error {
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN security_level TEXT NOT NULL DEFAULT 'low'`)
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_cert_key_enc TEXT`)
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_cert_key_salt TEXT`)
+	// medium 真 TPM 集成：NV 句柄 + Provider 平台标识
+	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_cert_key_nv_handle INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_provider TEXT NOT NULL DEFAULT ''`)
+	// high 模式：证书表新增 wrapped key blob 字段、TPM 证书密钥盐值
+	_, _ = db.conn.Exec(`ALTER TABLE certificates ADD COLUMN tpm_wrapped_blob TEXT`)
+	_, _ = db.conn.Exec(`ALTER TABLE certificates ADD COLUMN tpm_cert_key_salt TEXT`)
 	// 卡片启用/禁用
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`)
 
@@ -178,7 +184,8 @@ func (db *DB) migrateBlobToBase64() {
 		pk      string
 	}{
 		{"certificates", []string{"cert_content", "temp_key_salt", "temp_key_enc", "private_data",
-			"tpm_public_blob", "tpm_private_blob", "tpm_pcr_policy", "tpm_auth_policy"}, "uuid"},
+			"tpm_public_blob", "tpm_private_blob", "tpm_pcr_policy", "tpm_auth_policy",
+			"tpm_wrapped_blob", "tpm_cert_key_salt"}, "uuid"},
 		{"users", []string{"auth_token"}, "uuid"},
 		{"cards", []string{"tpm_cert_key_enc", "tpm_cert_key_salt"}, "uuid"},
 		{"pki_csrs", []string{"private_key_enc"}, "uuid"},
@@ -291,8 +298,10 @@ CREATE TABLE IF NOT EXISTS cards (
     card_keys       TEXT NOT NULL,                  -- JSON 数组，存储多个加密的主密钥记录
     remark          TEXT NOT NULL DEFAULT '',
     security_level  TEXT NOT NULL DEFAULT 'low',    -- high / medium / low
-    tpm_cert_key_enc  TEXT,                         -- 被 ADMINKEY 加密的 TPM 证书密钥（仅 medium）
-    tpm_cert_key_salt TEXT,                         -- TPM 证书密钥加密盐值
+    tpm_cert_key_enc  TEXT,                         -- medium：被 ADMINKEY 加密的应急恢复副本
+    tpm_cert_key_salt TEXT,                         -- medium：应急恢复副本盐值
+    tpm_cert_key_nv_handle INTEGER NOT NULL DEFAULT 0, -- medium：TPM NV 句柄（0=未启用）
+    tpm_provider    TEXT NOT NULL DEFAULT '',       -- medium/high：TPM Provider 平台名
     cloud_url       TEXT NOT NULL DEFAULT '',       -- Cloud Slot: servers 服务地址
     cloud_card_uuid TEXT NOT NULL DEFAULT '',       -- Cloud Slot: 在 servers 中的卡片 UUID
     FOREIGN KEY (user_uuid) REFERENCES users(uuid) ON DELETE CASCADE
@@ -309,13 +318,15 @@ CREATE TABLE IF NOT EXISTS certificates (
     temp_key_salt   TEXT,                           -- 32 字节随机盐值
     temp_key_enc    TEXT,                           -- AES256 加密的临时密钥
     private_data    TEXT,                           -- 临时密钥加密的私钥/私密数据
-    -- TPM2 专用字段
-    tpm_platform    TEXT NOT NULL DEFAULT '',       -- tpm2 / apple_t2 / apple_se
+    -- TPM2 / 安全等级专用字段
+    tpm_platform    TEXT NOT NULL DEFAULT '',       -- tpm2 / apple_t2 / apple_se / sw-stub
     tpm_key_handle  INTEGER,                        -- TPM 持久化句柄
     tpm_public_blob TEXT,                           -- TPM 公钥 Blob
     tpm_private_blob TEXT,                          -- TPM 私钥 Blob
     tpm_pcr_policy  TEXT,                           -- PCR 策略（可选）
     tpm_auth_policy TEXT,                           -- 授权策略哈希
+    tpm_wrapped_blob TEXT,                          -- high：tpm.WrappedKey 序列化（JSON）
+    tpm_cert_key_salt TEXT,                         -- medium：本证书使用的 TPM 证书密钥派生盐
     remark          TEXT NOT NULL DEFAULT '',
     created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at      DATETIME NOT NULL DEFAULT (datetime('now')),

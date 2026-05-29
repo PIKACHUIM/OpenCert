@@ -193,6 +193,11 @@ func (s *Slot) MasterKey() []byte {
 	return cp
 }
 
+// ReloadObjects 在已登录状态下重新从数据库加载证书到内存缓存。
+func (s *Slot) ReloadObjects(ctx context.Context) error {
+	return s.localSlot.ReloadObjects(ctx)
+}
+
 // ---- 内部方法 ----
 
 // unlockMasterKey 通过 PIN 解密主密钥，再用 TPM Unseal 验证绑定。

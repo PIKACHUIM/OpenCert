@@ -486,7 +486,7 @@ func (s *Server) handleImportPKICertToCard(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	km := local.NewKeyManager(s.certRepo, s.cardRepo)
+	km := local.NewKeyManagerWithTPM(s.certRepo, s.cardRepo, s.tpmProvider)
 
 	// 将证书 PEM 转为 DER
 	certDER, err := certPEMToDER(cert.CertPEM)

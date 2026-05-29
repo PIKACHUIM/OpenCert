@@ -85,7 +85,7 @@ func (s *Server) handleCreateCredential(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	km := local.NewKeyManager(s.certRepo, s.cardRepo)
+	km := local.NewKeyManagerWithTPM(s.certRepo, s.cardRepo, s.tpmProvider)
 	cert, err := km.ImportCredential(r.Context(), local.CredentialRequest{
 		CardUUID:   cardUUID,
 		CertType:   storage.CertType(req.CertType),

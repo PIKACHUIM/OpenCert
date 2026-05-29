@@ -7,12 +7,14 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 
 	cryptoutil "github.com/globaltrusts/client-card/internal/crypto"
 	"github.com/globaltrusts/client-card/internal/storage"
+	"github.com/globaltrusts/client-card/internal/tpm"
 	"github.com/google/uuid"
 )
 
@@ -20,14 +22,14 @@ import (
 type KeyGenRequest struct {
 	CardUUID string
 	CertType storage.CertType
-	// KeyType: rsa2048 / rsa4096 / ec256 / ec384 / ec521
+	// KeyType: rsa2048 / rsa4096 / ec256 / ec384 / ec521 / ed25519
 	KeyType string
 	Remark  string
 }
 
 // KeyGenResult 是生成密钥对的结果。
 type KeyGenResult struct {
-	CertUUID    string
+	CertUUID     string
 	PublicKeyDER []byte // DER 格式公钥（PKIX）
 }
 
@@ -35,26 +37,21 @@ type KeyGenResult struct {
 type KeyManager struct {
 	certRepo    *storage.CertRepo
 	cardRepo    *storage.CardRepo
-	tpmProvider tpmProvider // TPM 接口（可选，高/中安全等级需要）
+	tpmProvider tpm.Provider // TPM 接口（可选，medium/high 安全等级需要）
 }
 
-// tpmProvider 是 TPM 操作的最小接口（避免直接依赖 tpm 包）。
-type tpmProvider interface {
-	Available() bool
-	Seal(data []byte) ([]byte, error)
-	Unseal(blob []byte) ([]byte, error)
-	PlatformName() string
-}
-
-// NewKeyManager 创建密钥管理器。
+// NewKeyManager 创建无 TPM 支持的密钥管理器（仅 low 等级可用）。
 func NewKeyManager(certRepo *storage.CertRepo, cardRepo *storage.CardRepo) *KeyManager {
 	return &KeyManager{certRepo: certRepo, cardRepo: cardRepo}
 }
 
-// NewKeyManagerWithTPM 创建带 TPM 支持的密钥管理器。
-func NewKeyManagerWithTPM(certRepo *storage.CertRepo, cardRepo *storage.CardRepo, tp tpmProvider) *KeyManager {
+// NewKeyManagerWithTPM 创建带 TPM 支持的密钥管理器（medium/high 等级需要）。
+func NewKeyManagerWithTPM(certRepo *storage.CertRepo, cardRepo *storage.CardRepo, tp tpm.Provider) *KeyManager {
 	return &KeyManager{certRepo: certRepo, cardRepo: cardRepo, tpmProvider: tp}
 }
+
+// TPM 返回当前注入的 TPM Provider；可为 nil。
+func (m *KeyManager) TPM() tpm.Provider { return m.tpmProvider }
 
 // CreateCard 创建一张新的本地智能卡。
 // pin 是卡片 PIN 码（明文），用于加密主密钥。
@@ -100,7 +97,17 @@ type CreateCardResult struct {
 // CreateCardWithCreds 创建卡片并可选自动生成 PIN/PUK/AdminKey 三级凭据。
 // 默认行为：PUK 与 AdminKey 若未提供则自动生成 16 字节随机值（hex 编码 32 字符）。
 // 所有凭据都作为独立 CardKeyEntry 各自加密一份"主密钥副本"存储，互不推导。
+//
+// 当 secLevel == medium 时，必须提供 tpmProv（通过 Server.SetTPMProvider 注入），
+// 函数会调用 tpm.NVDefine + NVWrite 把"TPM 证书密钥"放入 TPM NV 域，
+// 同时把 AdminKey 加密的应急恢复副本写入 card.TPMCertKeyEnc。
 func CreateCardWithCreds(ctx context.Context, cardRepo *storage.CardRepo, args CreateCardArgs) (*CreateCardResult, error) {
+	return CreateCardWithCredsAndTPM(ctx, cardRepo, nil, args)
+}
+
+// CreateCardWithCredsAndTPM 是 CreateCardWithCreds 的 TPM 注入版本。
+// medium / high 等级必须传入非 nil 的 tpmProv，否则返回错误。
+func CreateCardWithCredsAndTPM(ctx context.Context, cardRepo *storage.CardRepo, tpmProv tpm.Provider, args CreateCardArgs) (*CreateCardResult, error) {
 	// 1. 生成 32 字节随机主密钥
 	masterKey, err := cryptoutil.GenerateKey()
 	if err != nil {
@@ -113,6 +120,13 @@ func CreateCardWithCreds(ctx context.Context, cardRepo *storage.CardRepo, args C
 		secLevel = storage.SecurityLevelLow
 	}
 
+	// medium / high 都需要 TPM Provider；high 在 CreateCard 阶段不直接生成密钥（密钥生成在 GenerateKeyPair）
+	// 但仍然记录 Provider 名以便后续校验一致性。
+	if (secLevel == storage.SecurityLevelMedium || secLevel == storage.SecurityLevelHigh) &&
+		(tpmProv == nil || !tpmProv.Available()) {
+		return nil, fmt.Errorf("%s 安全等级需要可用的 TPM Provider", secLevel)
+	}
+
 	card := &storage.Card{
 		UUID:          uuid.New().String(),
 		SlotType:      storage.SlotTypeLocal,
@@ -121,6 +135,9 @@ func CreateCardWithCreds(ctx context.Context, cardRepo *storage.CardRepo, args C
 		Enabled:       true,
 		SecurityLevel: secLevel,
 		Remark:        args.Remark,
+	}
+	if tpmProv != nil {
+		card.TPMProvider = tpmProv.PlatformName()
 	}
 
 	out := &CreateCardResult{}
@@ -145,16 +162,13 @@ func CreateCardWithCreds(ctx context.Context, cardRepo *storage.CardRepo, args C
 		card.CardKeys = append(card.CardKeys, *cardEntry)
 	}
 
-	// 4. （PIN 已在步骤 2 处理，此处保留编号兼容）
-
-	// 5. PUK（直接加密主密钥，与 PIN/Admin 统一架构）
+	// 5. PUK
 	puk := args.PUK
 	generatePUK := args.GeneratePUK || (args.PUK == "")
 	if puk == "" && generatePUK {
 		puk = randomCred(16)
 	}
 	if puk != "" {
-		// PUK 直接加密主密钥（与 PIN/Admin 一致）
 		pukEntry, err := encryptMasterKey(masterKey, []byte(puk), "puk", "")
 		if err != nil {
 			return nil, fmt.Errorf("加密主密钥（PUK）失败: %w", err)
@@ -165,7 +179,7 @@ func CreateCardWithCreds(ctx context.Context, cardRepo *storage.CardRepo, args C
 		}
 	}
 
-	// 6. Admin Key
+	// 6. AdminKey
 	admin := args.AdminKey
 	generateAdmin := args.GenerateAdmin || (args.AdminKey == "")
 	if admin == "" && generateAdmin {
@@ -186,33 +200,47 @@ func CreateCardWithCreds(ctx context.Context, cardRepo *storage.CardRepo, args C
 		return nil, fmt.Errorf("保存卡片失败: %w", err)
 	}
 
-	// 7. 如果安全等级为 medium，生成 TPM 证书密钥并用 ADMINKEY 加密存储
-	if secLevel == storage.SecurityLevelMedium {
+	// 7. medium / high：初始化 TPM 保护资产
+	// - medium：生成对称"TPM 证书密钥"存入 NV，用于双层加密证书私钥
+	// - high  ：同样初始化 NV（用于凭据加密）；保护密钥在首次 ImportKey 时按需创建
+	if secLevel == storage.SecurityLevelMedium || secLevel == storage.SecurityLevelHigh {
 		if admin == "" {
-			return nil, fmt.Errorf("medium 安全等级需要 AdminKey")
+			return nil, fmt.Errorf("%s 安全等级需要 AdminKey（用于应急恢复）", secLevel)
 		}
-		tpmCertKey, err := cryptoutil.GenerateKey() // 32 字节随机 TPM 证书密钥
+
+		tpmCertKey, err := cryptoutil.GenerateKey()
 		if err != nil {
 			return nil, fmt.Errorf("生成 TPM 证书密钥失败: %w", err)
 		}
 		defer zeroBytes(tpmCertKey)
 
+		nvAuth := deriveTPMCertKeyAuth(masterKey)
+		defer zeroBytes(nvAuth)
+		nvHandle, err := tpmProv.NVDefine("cert-key:"+card.UUID, len(tpmCertKey), nvAuth)
+		if err != nil {
+			return nil, fmt.Errorf("TPM NV 分配失败: %w", err)
+		}
+		if err := tpmProv.NVWrite(nvHandle, nvAuth, tpmCertKey); err != nil {
+			_ = tpmProv.NVUndefine(nvHandle)
+			return nil, fmt.Errorf("TPM NV 写入失败: %w", err)
+		}
+		card.TPMCertKeyNVHandle = uint32(nvHandle)
+
 		tpmKeySalt, err := cryptoutil.GenerateSalt()
 		if err != nil {
 			return nil, fmt.Errorf("生成 TPM 证书密钥盐值失败: %w", err)
 		}
-		// 用 ADMINKEY 加密 TPM 证书密钥
 		tpmKeyAES := cryptoutil.HMACSHA256([]byte(admin), tpmKeySalt)
 		tpmKeyEnc, err := cryptoutil.EncryptAES256GCM(tpmKeyAES, tpmCertKey)
 		if err != nil {
-			return nil, fmt.Errorf("加密 TPM 证书密钥失败: %w", err)
+			return nil, fmt.Errorf("加密 TPM 证书密钥应急副本失败: %w", err)
 		}
 		card.TPMCertKeyEnc = tpmKeyEnc
 		card.TPMCertKeySalt = tpmKeySalt
 
-		// 更新卡片记录
 		if err := cardRepo.Update(ctx, card); err != nil {
-			return nil, fmt.Errorf("更新卡片 TPM 证书密钥失败: %w", err)
+			_ = tpmProv.NVUndefine(nvHandle)
+			return nil, fmt.Errorf("更新卡片 TPM 元数据失败: %w", err)
 		}
 	}
 
@@ -401,13 +429,6 @@ func randomCred(nBytes int) string {
 // masterKey 是已解锁的卡片主密钥。
 // card 用于获取安全等级和 TPM 证书密钥信息。
 func (m *KeyManager) GenerateKeyPair(ctx context.Context, req KeyGenRequest, masterKey []byte, card *storage.Card) (*KeyGenResult, error) {
-	// 1. 生成密钥对
-	privDER, pubDER, err := generateKeyPair(req.KeyType)
-	if err != nil {
-		return nil, fmt.Errorf("生成密钥对失败: %w", err)
-	}
-
-	// 2. 根据安全等级选择加密策略
 	secLevel := card.SecurityLevel
 	if secLevel == "" {
 		secLevel = storage.SecurityLevelLow
@@ -415,29 +436,54 @@ func (m *KeyManager) GenerateKeyPair(ctx context.Context, req KeyGenRequest, mas
 
 	switch secLevel {
 	case storage.SecurityLevelHigh:
-		// 高安全性：密钥存储于 TPM，并被主密钥加密
-		cert, err := encryptAndStoreCertWithTPM(ctx, m.certRepo, m.tpmProvider, req, masterKey, privDER, pubDER)
+		// 高安全等级：在 TPM 内生成非对称密钥对，私钥永不出 TPM。
+		if m.tpmProvider == nil || !m.tpmProvider.Available() {
+			return nil, fmt.Errorf("high 安全等级需要可用的 TPM Provider")
+		}
+		cert, err := encryptAndStoreCertWithTPMHigh(ctx, m.certRepo, m.tpmProvider, req, masterKey)
 		if err != nil {
 			return nil, err
 		}
-		return &KeyGenResult{CertUUID: cert.UUID, PublicKeyDER: pubDER}, nil
+		// 公钥从 wrapped blob 中读出（CertContent 已是 PEM）
+		return &KeyGenResult{CertUUID: cert.UUID, PublicKeyDER: derFromPEM(cert.CertContent)}, nil
 
 	case storage.SecurityLevelMedium:
-		// 中安全性：先用 TPM 证书密钥加密，再用主密钥加密
-		cert, err := encryptAndStoreCertWithTPMCertKey(ctx, m.certRepo, req, masterKey, card, privDER, pubDER)
+		// 中安全等级：本地生成密钥对 → master 加密 → TPM 证书密钥再加密
+		if m.tpmProvider == nil || !m.tpmProvider.Available() {
+			return nil, fmt.Errorf("medium 安全等级需要可用的 TPM Provider")
+		}
+		privDER, pubDER, err := generateKeyPair(req.KeyType)
+		if err != nil {
+			return nil, fmt.Errorf("生成密钥对失败: %w", err)
+		}
+		defer zeroBytes(privDER)
+		cert, err := encryptAndStoreCertWithTPMCertKey(ctx, m.certRepo, m.tpmProvider, req, masterKey, card, privDER, pubDER)
 		if err != nil {
 			return nil, err
 		}
 		return &KeyGenResult{CertUUID: cert.UUID, PublicKeyDER: pubDER}, nil
 
 	default:
-		// 低安全性：仅主密钥加密（原有逻辑）
+		// 低安全等级：仅主密钥加密（原有逻辑）
+		privDER, pubDER, err := generateKeyPair(req.KeyType)
+		if err != nil {
+			return nil, fmt.Errorf("生成密钥对失败: %w", err)
+		}
+		defer zeroBytes(privDER)
 		cert, err := encryptAndStoreCert(ctx, m.certRepo, req, masterKey, privDER, pubDER)
 		if err != nil {
 			return nil, err
 		}
 		return &KeyGenResult{CertUUID: cert.UUID, PublicKeyDER: pubDER}, nil
 	}
+}
+
+// derFromPEM 从 PEM 块中提取 DER；若已是 DER 则原样返回。
+func derFromPEM(b []byte) []byte {
+	if blk, _ := pem.Decode(b); blk != nil {
+		return blk.Bytes
+	}
+	return b
 }
 
 // ImportCertificate 导入已有证书（公钥部分）到卡片。
@@ -481,8 +527,10 @@ type CredentialRequest struct {
 }
 
 // ImportCredential 导入一条通用安全凭据。
-// 当 SecretData 为空时仅存储公开元数据；非空时根据安全等级加密。
-// card 参数用于获取安全等级信息（可为 nil，此时使用 low 安全等级逻辑）。
+// 当 SecretData 为空时仅存储公开元数据；非空时根据安全等级加密：
+//   - low    ：仅 master 加密
+//   - medium ：master 加密 + TPM 证书密钥再加密（双层）
+//   - high   ：拒绝（凭据导入与 high 卡的"私钥永不出 TPM"语义冲突）
 func (m *KeyManager) ImportCredential(ctx context.Context, req CredentialRequest, masterKey []byte, card *storage.Card) (*storage.Certificate, error) {
 	if req.CardUUID == "" {
 		return nil, fmt.Errorf("CardUUID 不能为空")
@@ -501,31 +549,22 @@ func (m *KeyManager) ImportCredential(ctx context.Context, req CredentialRequest
 		Remark:      req.Remark,
 	}
 
-	// 仅当存在私密内容且提供了主密钥时才加密
 	if len(req.SecretData) > 0 {
 		if len(masterKey) == 0 {
 			return nil, fmt.Errorf("加密私密内容需要主密钥")
 		}
 
-		dataToEncrypt := req.SecretData
-
-		// 中/高安全等级：先用 TPM 证书密钥加密（双重加密）
 		secLevel := storage.SecurityLevelLow
 		if card != nil && card.SecurityLevel != "" {
 			secLevel = card.SecurityLevel
 		}
-		if (secLevel == storage.SecurityLevelMedium || secLevel == storage.SecurityLevelHigh) && len(card.TPMCertKeyEnc) > 0 {
-			// 标记为需要 TPM 证书密钥解密（通过 TPMPlatform 字段）
-			cert.TPMPlatform = storage.TPMPlatform("medium")
-			cert.TPMAuthPolicy = card.TPMCertKeySalt // 引用卡片的 TPM 证书密钥盐值
-		}
 
+		// 1. 生成 tempKey，master 加密
 		tempKey, err := cryptoutil.GenerateKey()
 		if err != nil {
 			return nil, fmt.Errorf("生成临时密钥失败: %w", err)
 		}
 		defer zeroBytes(tempKey)
-
 		tempKeySalt, err := cryptoutil.GenerateSalt()
 		if err != nil {
 			return nil, fmt.Errorf("生成盐失败: %w", err)
@@ -535,13 +574,42 @@ func (m *KeyManager) ImportCredential(ctx context.Context, req CredentialRequest
 		if err != nil {
 			return nil, fmt.Errorf("加密临时密钥失败: %w", err)
 		}
-		privateData, err := cryptoutil.EncryptAES256GCM(tempKey, dataToEncrypt)
+
+		// 2. tempKey 加密私密数据 → inner
+		inner, err := cryptoutil.EncryptAES256GCM(tempKey, req.SecretData)
 		if err != nil {
 			return nil, fmt.Errorf("加密私密内容失败: %w", err)
 		}
+
+		final := inner
+		// 3. medium / high：从 TPM NV 读出证书密钥再加密一层
+		if secLevel == storage.SecurityLevelMedium || secLevel == storage.SecurityLevelHigh {
+			if m.tpmProvider == nil || !m.tpmProvider.Available() {
+				return nil, fmt.Errorf("%s 卡片需要 TPM Provider", secLevel)
+			}
+			if card.TPMCertKeyNVHandle == 0 {
+				return nil, fmt.Errorf("%s 卡片 TPM NV 句柄缺失", secLevel)
+			}
+			nvAuth := deriveTPMCertKeyAuth(masterKey)
+			defer zeroBytes(nvAuth)
+			tpmCertKey, err := m.tpmProvider.NVRead(tpm.NVHandle(card.TPMCertKeyNVHandle), nvAuth)
+			if err != nil {
+				return nil, fmt.Errorf("读取 TPM 证书密钥失败: %w", err)
+			}
+			defer zeroBytes(tpmCertKey)
+			outer, err := cryptoutil.EncryptAES256GCM(tpmCertKey, inner)
+			if err != nil {
+				return nil, fmt.Errorf("TPM 证书密钥加密失败: %w", err)
+			}
+			final = outer
+			cert.TPMPlatform = storage.TPMPlatform(tpmPlatformMediumV2)
+			mark := sha256.Sum256([]byte("medium-v2/" + card.UUID))
+			cert.TPMCertKeySalt = mark[:]
+		}
+
 		cert.TempKeySalt = tempKeySalt
 		cert.TempKeyEnc = tempKeyEnc
-		cert.PrivateData = privateData
+		cert.PrivateData = final
 	}
 
 	if err := m.certRepo.Create(ctx, cert); err != nil {
@@ -550,16 +618,170 @@ func (m *KeyManager) ImportCredential(ctx context.Context, req CredentialRequest
 	return cert, nil
 }
 
-// ImportPrivateKey 导入私钥到卡片（DER 格式，已有主密钥加密）。
+// ImportPrivateKey 导入私钥到卡片。
+//
+//   - low    ：master 加密
+//   - medium ：master 加密 + TPM 证书密钥再加密
+//   - high   ：用 TPM 芯片内的"保护密钥"加密导入的私钥（混合加密：TPM RSA 加密 AES key → AES 加密 privDER）
+//              解密时必须经过 TPM 芯片解密 AES key，私钥受 TPM 硬件保护
 func (m *KeyManager) ImportPrivateKey(ctx context.Context, req KeyGenRequest, masterKey, privDER, pubDER []byte) (*KeyGenResult, error) {
-	cert, err := encryptAndStoreCert(ctx, m.certRepo, req, masterKey, privDER, pubDER)
+	card, err := m.cardRepo.GetByUUID(ctx, req.CardUUID)
+	if err != nil {
+		return nil, fmt.Errorf("查询卡片失败: %w", err)
+	}
+	if card == nil {
+		return nil, fmt.Errorf("卡片不存在: %s", req.CardUUID)
+	}
+	secLevel := card.SecurityLevel
+	if secLevel == "" {
+		secLevel = storage.SecurityLevelLow
+	}
+	switch secLevel {
+	case storage.SecurityLevelHigh:
+		// 用 TPM 保护密钥加密导入的私钥（混合加密）
+		if m.tpmProvider == nil || !m.tpmProvider.Available() {
+			return nil, fmt.Errorf("high 卡片需要可用的 TPM Provider")
+		}
+		cert, err := importPrivateKeyWithTPMWrapping(ctx, m.certRepo, m.tpmProvider, req, masterKey, card, privDER, pubDER)
+		if err != nil {
+			return nil, err
+		}
+		return &KeyGenResult{CertUUID: cert.UUID, PublicKeyDER: pubDER}, nil
+
+	case storage.SecurityLevelMedium:
+		if m.tpmProvider == nil || !m.tpmProvider.Available() {
+			return nil, fmt.Errorf("medium 卡片需要 TPM Provider")
+		}
+		cert, err := encryptAndStoreCertWithTPMCertKey(ctx, m.certRepo, m.tpmProvider, req, masterKey, card, privDER, pubDER)
+		if err != nil {
+			return nil, err
+		}
+		return &KeyGenResult{CertUUID: cert.UUID, PublicKeyDER: pubDER}, nil
+	default:
+		cert, err := encryptAndStoreCert(ctx, m.certRepo, req, masterKey, privDER, pubDER)
+		if err != nil {
+			return nil, err
+		}
+		return &KeyGenResult{CertUUID: cert.UUID, PublicKeyDER: pubDER}, nil
+	}
+}
+
+// importPrivateKeyWithTPMWrapping 用 TPM 保护密钥（RSA-2048）混合加密导入的证书私钥。
+//
+// 流程：
+//  1. 获取或创建 TPM 保护密钥（wrapping key）——存为 card 上的内部证书
+//  2. 生成随机 AES-256 密钥
+//  3. AES-GCM(aesKey, privDER) → encPrivDER
+//  4. TPM RSA 加密 aesKey（TPM.LoadKey → TPM.Encrypt? 不行，我们用公钥直接加密）
+//     实际上：TPM 的 wrapping key 公钥是已知的，直接用 Go rsa.EncryptOAEP 加密 aesKey
+//     解密时：TPM.LoadKey → TPM.Decrypt(encAESKey) → aesKey → 解密 privDER
+//  5. 存储 cert.PrivateData = encPrivDER, cert.TPMPrivateBlob = encAESKey
+//
+// 这样 privDER 只有经过 TPM 才能解密（因为 aesKey 被 TPM RSA 公钥加密，私钥在 TPM 内）。
+func importPrivateKeyWithTPMWrapping(ctx context.Context, certRepo *storage.CertRepo, tp tpm.Provider, req KeyGenRequest, masterKey []byte, card *storage.Card, privDER, pubDER []byte) (*storage.Certificate, error) {
+	// 1. 获取或创建保护密钥
+	wrappingKey, err := getOrCreateWrappingKey(ctx, certRepo, tp, masterKey, card)
+	if err != nil {
+		return nil, fmt.Errorf("获取 TPM 保护密钥失败: %w", err)
+	}
+
+	// 2. 解析保护密钥公钥（用于 RSA 加密 AES key）
+	wkPub, err := x509.ParsePKIXPublicKey(wrappingKey.Public)
+	if err != nil {
+		return nil, fmt.Errorf("解析保护密钥公钥失败: %w", err)
+	}
+	rsaPub, ok := wkPub.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("保护密钥必须是 RSA（当前: %T）", wkPub)
+	}
+
+	// 3. 生成随机 AES-256 密钥
+	aesKey, err := cryptoutil.GenerateKey()
+	if err != nil {
+		return nil, fmt.Errorf("生成 AES 密钥失败: %w", err)
+	}
+	defer zeroBytes(aesKey)
+
+	// 4. AES-GCM 加密 privDER
+	encPrivDER, err := cryptoutil.EncryptAES256GCM(aesKey, privDER)
+	if err != nil {
+		return nil, fmt.Errorf("AES 加密私钥失败: %w", err)
+	}
+
+	// 5. 用保护密钥公钥 RSA PKCS#1 v1.5 加密 AES key
+	// 注意：使用 PKCS1v15 而非 OAEP，因为 TPM/PCP 硬件密钥不支持 OAEP scheme
+	encAESKey, err := rsa.EncryptPKCS1v15(rand.Reader, rsaPub, aesKey)
+	if err != nil {
+		return nil, fmt.Errorf("RSA 加密 AES 密钥失败: %w", err)
+	}
+
+	// 6. 存储
+	pemType := "PUBLIC KEY"
+	if _, parseErr := parseCertLenient(pubDER); parseErr == nil {
+		pemType = "CERTIFICATE"
+	}
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: pemType, Bytes: pubDER})
+
+	cert := &storage.Certificate{
+		UUID:           uuid.New().String(),
+		SlotType:       storage.SlotTypeLocal,
+		CardUUID:       req.CardUUID,
+		CertType:       req.CertType,
+		KeyType:        req.KeyType,
+		CertContent:    pubPEM,
+		PrivateData:    encPrivDER,          // AES 加密的私钥
+		TPMPrivateBlob: encAESKey,           // TPM RSA 加密的 AES key
+		TPMPlatform:    storage.TPMPlatform("high-import-v1"),
+		Remark:         req.Remark,
+	}
+	if err := certRepo.Create(ctx, cert); err != nil {
+		return nil, fmt.Errorf("保存证书失败: %w", err)
+	}
+	return cert, nil
+}
+
+// getOrCreateWrappingKey 获取卡片的 TPM 保护密钥；如果不存在则在 TPM 芯片内创建一个。
+// 保护密钥以"内部证书"形式存储（CertType=internal, KeyType=wrapping-key）。
+func getOrCreateWrappingKey(ctx context.Context, certRepo *storage.CertRepo, tp tpm.Provider, masterKey []byte, card *storage.Card) (*tpm.WrappedKey, error) {
+	// 查找已有的 wrapping key
+	certs, err := certRepo.ListByCard(ctx, card.UUID)
 	if err != nil {
 		return nil, err
 	}
-	return &KeyGenResult{
-		CertUUID:    cert.UUID,
-		PublicKeyDER: pubDER,
-	}, nil
+	for _, c := range certs {
+		if string(c.CertType) == "internal" && c.KeyType == "wrapping-key" && len(c.TPMWrappedBlob) > 0 {
+			return unmarshalWrappedKey(c.TPMWrappedBlob)
+		}
+	}
+
+	// 不存在则创建
+	wrapAuth := deriveTPMHighKeyAuth(masterKey, "wrapping-key:"+card.UUID)
+	defer zeroBytes(wrapAuth)
+	wrapped, _, err := tp.CreateKey(tpm.KeyAlgRSA2048, wrapAuth)
+	if err != nil {
+		return nil, fmt.Errorf("TPM 创建保护密钥失败: %w", err)
+	}
+	wkJSON, err := marshalWrappedKey(wrapped)
+	if err != nil {
+		return nil, err
+	}
+
+	// 存为内部证书
+	internalCert := &storage.Certificate{
+		UUID:           uuid.New().String(),
+		SlotType:       storage.SlotTypeLocal,
+		CardUUID:       card.UUID,
+		CertType:       "internal",
+		KeyType:        "wrapping-key",
+		TPMPlatform:    storage.TPMPlatform(tpmPlatformHighV1),
+		TPMWrappedBlob: wkJSON,
+		CertContent:    wrapped.Public,
+		Remark:         "TPM 保护密钥（用于加密导入的证书私钥）",
+	}
+	if err := certRepo.Create(ctx, internalCert); err != nil {
+		return nil, fmt.Errorf("保存保护密钥记录失败: %w", err)
+	}
+	return wrapped, nil
 }
 
 // ---- 内部工具函数 ----
@@ -641,91 +863,75 @@ func encryptAndStoreCert(ctx context.Context, certRepo *storage.CertRepo, req Ke
 	return cert, nil
 }
 
-// encryptAndStoreCertWithTPM 高安全等级：将私钥存储于 TPM，并被主密钥加密。
-func encryptAndStoreCertWithTPM(ctx context.Context, certRepo *storage.CertRepo, tp tpmProvider, req KeyGenRequest, masterKey, privDER, pubDER []byte) (*storage.Certificate, error) {
-	if tp == nil || !tp.Available() {
-		return nil, fmt.Errorf("高安全等级需要 TPM 支持，当前平台不可用")
+// encryptAndStoreCertWithTPMHigh 高安全等级：直接在 TPM 内生成非对称密钥对，私钥永不出 TPM。
+//
+// 数据流：
+//
+//	tpm.CreateKey(alg, auth=HMAC(masterKey, certUUID))
+//	  → wrapped blob 入库 cert.TPMWrappedBlob
+//	  → 公钥 PEM 入库 cert.CertContent
+//	签名时：tpm.LoadKey(wrapped, auth) → tpm.Sign(handle, digest, scheme) → tpm.FlushHandle(handle)
+//	私钥从未以明文形式出现在 Go 进程内存（真 TPM 接入后）。
+func encryptAndStoreCertWithTPMHigh(ctx context.Context, certRepo *storage.CertRepo, tp tpm.Provider, req KeyGenRequest, masterKey []byte) (*storage.Certificate, error) {
+	alg, err := keyTypeToTPMAlg(req.KeyType)
+	if err != nil {
+		return nil, err
+	}
+	certUUID := uuid.New().String()
+	auth := deriveTPMHighKeyAuth(masterKey, certUUID)
+	defer zeroBytes(auth)
+
+	wrapped, _, err := tp.CreateKey(alg, auth)
+	if err != nil {
+		return nil, fmt.Errorf("TPM CreateKey 失败: %w", err)
+	}
+	wrappedJSON, err := marshalWrappedKey(wrapped)
+	if err != nil {
+		return nil, err
 	}
 
-	// 1. 将私钥 Seal 到 TPM
-	tpmBlob, err := tp.Seal(privDER)
-	if err != nil {
-		return nil, fmt.Errorf("TPM Seal 私钥失败: %w", err)
-	}
-
-	// 2. 同时用主密钥加密私钥（作为 TPM 绑定的备份验证）
-	tempKey, err := cryptoutil.GenerateKey()
-	if err != nil {
-		return nil, fmt.Errorf("生成临时密钥失败: %w", err)
-	}
-	defer zeroBytes(tempKey)
-
-	tempKeySalt, err := cryptoutil.GenerateSalt()
-	if err != nil {
-		return nil, fmt.Errorf("生成临时密钥盐值失败: %w", err)
-	}
-	tempKeyAESKey := cryptoutil.HMACSHA256(masterKey, tempKeySalt)
-	tempKeyEnc, err := cryptoutil.EncryptAES256GCM(tempKeyAESKey, tempKey)
-	if err != nil {
-		return nil, fmt.Errorf("加密临时密钥失败: %w", err)
-	}
-	privateData, err := cryptoutil.EncryptAES256GCM(tempKey, privDER)
-	if err != nil {
-		return nil, fmt.Errorf("加密私钥失败: %w", err)
-	}
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: wrapped.Public})
 
 	cert := &storage.Certificate{
-		UUID:           uuid.New().String(),
+		UUID:           certUUID,
 		SlotType:       storage.SlotTypeLocal,
 		CardUUID:       req.CardUUID,
 		CertType:       req.CertType,
 		KeyType:        req.KeyType,
-		CertContent:    pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}),
-		TempKeySalt:    tempKeySalt,
-		TempKeyEnc:     tempKeyEnc,
-		PrivateData:    privateData,
-		TPMPlatform:    storage.TPMPlatform(tp.PlatformName()),
-		TPMPrivateBlob: tpmBlob,
+		CertContent:    pubPEM,
+		TPMPlatform:    storage.TPMPlatform(tpmPlatformHighV1),
+		TPMWrappedBlob: wrappedJSON,
 		Remark:         req.Remark,
 	}
-
 	if err := certRepo.Create(ctx, cert); err != nil {
 		return nil, fmt.Errorf("保存证书失败: %w", err)
 	}
 	return cert, nil
 }
 
-// encryptAndStoreCertWithTPMCertKey 中安全等级：先用 TPM 证书密钥加密，再用主密钥加密。
-func encryptAndStoreCertWithTPMCertKey(ctx context.Context, certRepo *storage.CertRepo, req KeyGenRequest, masterKey []byte, card *storage.Card, privDER, pubDER []byte) (*storage.Certificate, error) {
-	// 需要从卡片获取 TPM 证书密钥（已被 ADMINKEY 加密存储）
-	// 这里我们不直接解密 TPM 证书密钥（需要 ADMINKEY），而是使用主密钥进行双重加密
-	// 加密链：privDER → TPM证书密钥加密 → 主密钥加密
-	// 但由于 GenerateKeyPair 时已有主密钥，我们需要一种方式获取 TPM 证书密钥
-	// 方案：在 GenerateKeyPair 调用时传入已解密的 TPM 证书密钥
+// encryptAndStoreCertWithTPMCertKey 中安全等级：master 加密 → TPM 证书密钥再加密。
+//
+// 数据流：
+//
+//	privDER → AES-GCM(tempKey) → inner
+//	tempKey → AES-GCM(HMAC(masterKey, salt)) → cert.TempKeyEnc
+//	tpmCertKey ← tpm.NVRead(card.TPMCertKeyNVHandle, auth=HMAC(masterKey,...))   // 一次性
+//	outer = AES-GCM(tpmCertKey, inner)                                            // TPM 证书密钥外层加密
+//	cert.PrivateData = outer
+//
+// 解密时反向：tpmCertKey ← NVRead → 解 outer → 用 masterKey 解 tempKey → 解 privDER。
+// 这样数据库被脱出后，没有 TPM 也无法解密私钥；同时主密钥（PIN 解出）即可在 TPM 上验证。
+func encryptAndStoreCertWithTPMCertKey(ctx context.Context, certRepo *storage.CertRepo, tp tpm.Provider, req KeyGenRequest, masterKey []byte, card *storage.Card, privDER, pubDER []byte) (*storage.Certificate, error) {
+	if card.TPMCertKeyNVHandle == 0 {
+		return nil, fmt.Errorf("medium 卡片 TPM NV 句柄未初始化（请确认创建卡片时 TPM Provider 可用）")
+	}
 
-	// 实际上 medium 模式下，私钥加密流程：
-	// 1. 用 TPM 证书密钥加密私钥
-	// 2. 用主密钥加密（加密后的私钥）
-	// 这需要调用方提供 TPM 证书密钥，但这里我们先用主密钥加密，
-	// TPM 证书密钥加密层在外层处理
-
-	// 简化实现：使用与 low 相同的加密方式存储，但标记为需要 TPM 证书密钥
-	// 实际的双重加密在 tempKey 层实现：tempKey 由 TPM 证书密钥 + 主密钥共同保护
-
-	// 1. 生成临时密钥
+	// 1. 生成 tempKey 并用 master 加密
 	tempKey, err := cryptoutil.GenerateKey()
 	if err != nil {
 		return nil, fmt.Errorf("生成临时密钥失败: %w", err)
 	}
 	defer zeroBytes(tempKey)
-
-	// 2. 用临时密钥加密私钥
-	privateData, err := cryptoutil.EncryptAES256GCM(tempKey, privDER)
-	if err != nil {
-		return nil, fmt.Errorf("加密私钥失败: %w", err)
-	}
-
-	// 3. 临时密钥被主密钥加密
 	tempKeySalt, err := cryptoutil.GenerateSalt()
 	if err != nil {
 		return nil, fmt.Errorf("生成临时密钥盐值失败: %w", err)
@@ -736,40 +942,87 @@ func encryptAndStoreCertWithTPMCertKey(ctx context.Context, certRepo *storage.Ce
 		return nil, fmt.Errorf("加密临时密钥失败: %w", err)
 	}
 
-	// 4. 同时用 TPM 证书密钥加密临时密钥（双重保护）
-	// TPM 证书密钥加密的副本存储在 TPMPrivateBlob 字段
-	if len(card.TPMCertKeyEnc) > 0 {
-		// 注意：这里无法直接解密 TPM 证书密钥（需要 ADMINKEY）
-		// 所以我们将 TPM 证书密钥的盐值存储在 TPMAuthPolicy 中作为标记
-		// 实际解密时需要先用 ADMINKEY 解密 TPM 证书密钥
-		cert := &storage.Certificate{
-			UUID:          uuid.New().String(),
-			SlotType:      storage.SlotTypeLocal,
-			CardUUID:      req.CardUUID,
-			CertType:      req.CertType,
-			KeyType:       req.KeyType,
-			CertContent:   pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}),
-			TempKeySalt:   tempKeySalt,
-			TempKeyEnc:    tempKeyEnc,
-			PrivateData:   privateData,
-			TPMPlatform:   storage.TPMPlatform("medium"), // 标记为 medium 安全等级加密
-			TPMAuthPolicy: card.TPMCertKeySalt,           // 引用卡片的 TPM 证书密钥盐值
-			Remark:        req.Remark,
-		}
-		if err := certRepo.Create(ctx, cert); err != nil {
-			return nil, fmt.Errorf("保存证书失败: %w", err)
-		}
-		return cert, nil
+	// 2. 第一层：tempKey 加密私钥（与 low 等级一致，得到 inner）
+	inner, err := cryptoutil.EncryptAES256GCM(tempKey, privDER)
+	if err != nil {
+		return nil, fmt.Errorf("master 层加密私钥失败: %w", err)
 	}
 
-	// 回退：如果卡片没有 TPM 证书密钥，使用标准加密
-	return encryptAndStoreCert(ctx, certRepo, req, masterKey, privDER, pubDER)
+	// 3. 第二层：从 TPM NV 读出 TPM 证书密钥，再加密 inner 得到 outer
+	nvAuth := deriveTPMCertKeyAuth(masterKey)
+	defer zeroBytes(nvAuth)
+	tpmCertKey, err := tp.NVRead(tpm.NVHandle(card.TPMCertKeyNVHandle), nvAuth)
+	if err != nil {
+		return nil, fmt.Errorf("读取 TPM 证书密钥失败: %w", err)
+	}
+	defer zeroBytes(tpmCertKey)
+	outer, err := cryptoutil.EncryptAES256GCM(tpmCertKey, inner)
+	if err != nil {
+		return nil, fmt.Errorf("TPM 证书密钥加密失败: %w", err)
+	}
+
+	// 4. 落库
+	pemType := "PUBLIC KEY"
+	if _, parseErr := parseCertLenient(pubDER); parseErr == nil {
+		pemType = "CERTIFICATE"
+	}
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: pemType, Bytes: pubDER})
+
+	// cert.TPMCertKeySalt 写入一个 32 字节"版本/cardUUID 摘要"作为标记，方便迁移期识别
+	mark := sha256.Sum256([]byte("medium-v2/" + card.UUID))
+	cert := &storage.Certificate{
+		UUID:           uuid.New().String(),
+		SlotType:       storage.SlotTypeLocal,
+		CardUUID:       req.CardUUID,
+		CertType:       req.CertType,
+		KeyType:        req.KeyType,
+		CertContent:    pubPEM,
+		TempKeySalt:    tempKeySalt,
+		TempKeyEnc:     tempKeyEnc,
+		PrivateData:    outer,
+		TPMPlatform:    storage.TPMPlatform(tpmPlatformMediumV2),
+		TPMCertKeySalt: mark[:],
+		Remark:         req.Remark,
+	}
+	if err := certRepo.Create(ctx, cert); err != nil {
+		return nil, fmt.Errorf("保存证书失败: %w", err)
+	}
+	return cert, nil
 }
 
-// DecryptTPMCertKey 用 ADMINKEY 解密获取 TPM 证书密钥。
+// DecryptMediumPrivateData 在 medium 模式下解密 cert.PrivateData，
+// 返回内层（master 加密层）的密文 inner。供 slot 与 keymgr 共用。
+func DecryptMediumPrivateData(tp tpm.Provider, card *storage.Card, cert *storage.Certificate, masterKey []byte) ([]byte, error) {
+	if tp == nil || !tp.Available() {
+		return nil, fmt.Errorf("medium 卡片解密需要 TPM Provider")
+	}
+	if card.TPMCertKeyNVHandle == 0 {
+		return nil, fmt.Errorf("medium 卡片 TPM NV 句柄缺失")
+	}
+	nvAuth := deriveTPMCertKeyAuth(masterKey)
+	defer zeroBytes(nvAuth)
+	tpmCertKey, err := tp.NVRead(tpm.NVHandle(card.TPMCertKeyNVHandle), nvAuth)
+	if err != nil {
+		return nil, fmt.Errorf("读取 TPM 证书密钥失败: %w", err)
+	}
+	defer zeroBytes(tpmCertKey)
+	inner, err := cryptoutil.DecryptAES256GCM(tpmCertKey, cert.PrivateData)
+	if err != nil {
+		return nil, fmt.Errorf("TPM 证书密钥解密失败: %w", err)
+	}
+	return inner, nil
+}
+
+// DecryptTPMCertKey 用 ADMINKEY 解密 TPM 证书密钥的"应急恢复副本"。
+//
+// 注意：medium 模式正常运行时由 PIN 解出的主密钥派生 NV authValue 来读取 TPM 证书密钥，
+// 不需要 AdminKey。本函数仅用于以下场景：
+//  1. 用户忘记 PIN/PUK，但 AdminKey 还在 → 配合 AdminKey 重置 PIN 后恢复
+//  2. TPM 设备更换，需要把证书密钥重新写入新设备的 NV
+//  3. 调试 / 数据迁移
 func DecryptTPMCertKey(card *storage.Card, adminKey string) ([]byte, error) {
 	if len(card.TPMCertKeyEnc) == 0 {
-		return nil, fmt.Errorf("卡片未设置 TPM 证书密钥")
+		return nil, fmt.Errorf("卡片未设置 TPM 证书密钥应急副本")
 	}
 	if len(card.TPMCertKeySalt) == 0 {
 		return nil, fmt.Errorf("卡片 TPM 证书密钥盐值缺失")

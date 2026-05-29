@@ -13,6 +13,7 @@ import (
 	"github.com/globaltrusts/client-card/internal/certprop"
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/internal/totp"
+	"github.com/globaltrusts/client-card/internal/tpm"
 	"github.com/globaltrusts/client-card/ui"
 )
 
@@ -36,6 +37,8 @@ type Server struct {
 	csrRepo     *storage.CSRRepo
 	caRepo      *storage.CARepo
 	pkiCertRepo *storage.PKICertRepo
+	// tpmProvider 用于 medium / high 安全等级的 NV 存储与 TPM 内部签名；可为 nil。
+	tpmProvider tpm.Provider
 	// ipcBroadcast 在卡片增删改后广播 slot_changed 事件；可为 nil。
 	ipcBroadcast func(reason string)
 	// certPropagator 证书传播器，将证书同步到操作系统证书存储。
@@ -458,6 +461,12 @@ func (s *Server) notifySlotChanged(reason string) {
 // 由 cmd/client-card/main.go 在启动时调用。
 func (s *Server) SetCertPropagator(p certprop.Propagator) {
 	s.certPropagator = p
+}
+
+// SetTPMProvider 注入 TPM Provider，供 medium/high 安全等级使用。
+// 主调用方为 cmd/client-card/main.go 启动阶段；可为 nil（此时 medium/high 创建会被拒绝）。
+func (s *Server) SetTPMProvider(p tpm.Provider) {
+	s.tpmProvider = p
 }
 
 // propagateCertAdd 在证书新增/导入后，异步将证书传播到系统存储。

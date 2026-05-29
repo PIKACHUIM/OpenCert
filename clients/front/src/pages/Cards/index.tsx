@@ -961,6 +961,9 @@ const Cards: React.FC = () => {
             { required: true, message: '请输入卡片 UUID' },
             { validator: (_, value) => value === exportCard?.uuid ? Promise.resolve() : Promise.reject('UUID 不匹配') },
           ]}>
+            <div style={{ marginBottom: 4, padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>
+              <Text copyable style={{ fontSize: 12, fontFamily: 'monospace' }}>{exportCard?.uuid}</Text>
+            </div>
             <Input placeholder={exportCard?.uuid} style={{ fontFamily: 'monospace', fontSize: 12 }} />
           </Form.Item>
           <Form.Item name="user_password" label="当前用户密码" rules={[{ required: true, message: '请输入用户密码' }]}>
@@ -994,6 +997,9 @@ const Cards: React.FC = () => {
               { required: true, message: '请输入卡片 UUID' },
               { validator: (_, value) => value === selectedCard?.uuid ? Promise.resolve() : Promise.reject('UUID 不匹配') },
             ]}>
+              <div style={{ marginBottom: 4, padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>
+                <Text copyable style={{ fontSize: 12, fontFamily: 'monospace' }}>{selectedCard.uuid}</Text>
+              </div>
               <Input placeholder={selectedCard?.uuid} style={{ fontFamily: 'monospace', fontSize: 12 }} />
             </Form.Item>
           )}
@@ -1031,6 +1037,9 @@ const Cards: React.FC = () => {
             { required: true, message: '请输入卡片 UUID' },
             { validator: (_, value) => value === deleteCard2?.uuid ? Promise.resolve() : Promise.reject('UUID 不匹配') },
           ]}>
+            <div style={{ marginBottom: 4, padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>
+              <Text copyable style={{ fontSize: 12, fontFamily: 'monospace' }}>{deleteCard2?.uuid}</Text>
+            </div>
             <Input placeholder={deleteCard2?.uuid} style={{ fontFamily: 'monospace', fontSize: 12 }} />
           </Form.Item>
           <Form.Item name="user_password" label="当前用户密码" rules={[{ required: true, message: '请输入用户密码' }]}>

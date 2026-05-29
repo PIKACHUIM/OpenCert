@@ -82,8 +82,23 @@ func main() {
 	// 初始化卡片管理器
 	manager := card.NewManager()
 
+	// 初始化 TPM Provider（失败时退化为软件 stub，保证 medium/high 仍可使用统一接口）
+	tpmProv, tpmErr := tpm.NewProvider()
+	if tpmErr != nil {
+		slog.Warn("TPM Provider 不可用，将退化为软件 stub", "error", tpmErr)
+		fallback, fbErr := tpm.NewSoftwareStub()
+		if fbErr != nil {
+			slog.Error("软件 stub 初始化失败，medium/high 安全等级将无法使用", "error", fbErr)
+		} else {
+			tpmProv = fallback
+		}
+	}
+	if tpmProv != nil {
+		slog.Info("TPM Provider 已就绪", "platform", tpmProv.PlatformName())
+	}
+
 	// 从数据库加载所有本地卡片，注册为 Slot
-	if err := loadLocalSlots(manager, db); err != nil {
+	if err := loadLocalSlots(manager, db, tpmProv); err != nil {
 		slog.Warn("加载本地 Slot 失败", "error", err)
 	}
 
@@ -102,6 +117,8 @@ func main() {
 	apiServer := api.NewServer(&cfg.API, manager, db)
 	// 注入 IPC 广播回调：卡片增删改后会通知 pkcs11-mock 重新枚举 slot
 	apiServer.SetIPCBroadcaster(ipcServer.BroadcastSlotChanged)
+	// 注入 TPM Provider，medium/high 安全等级需要
+	apiServer.SetTPMProvider(tpmProv)
 	// 注入证书传播器
 	propagator := certprop.New()
 	apiServer.SetCertPropagator(propagator)
@@ -138,7 +155,7 @@ func main() {
 }
 
 // loadLocalSlots 从数据库加载所有本地卡片，注册到 Manager。
-func loadLocalSlots(manager *card.Manager, db *storage.DB) error {
+func loadLocalSlots(manager *card.Manager, db *storage.DB, tpmProv tpm.Provider) error {
 	ctx := context.Background()
 	cardRepo := storage.NewCardRepo(db)
 	certRepo := storage.NewCertRepo(db)
@@ -148,19 +165,14 @@ func loadLocalSlots(manager *card.Manager, db *storage.DB) error {
 		return fmt.Errorf("查询卡片列表失败: %w", err)
 	}
 
-	// 初始化 TPM Provider（失败时降级，不影响本地 Slot）
-	tpmProv, tpmErr := tpm.NewProvider()
-	if tpmErr != nil {
-		slog.Warn("TPM2 不可用，TPM2 卡片将无法加载", "error", tpmErr)
-	}
-
 	var slotID pkcs11types.SlotID = 1
 	for _, c := range cards {
 		switch c.SlotType {
 		case storage.SlotTypeLocal:
-			slot := local.New(slotID, c, certRepo)
+			// 本地卡：medium/high 需要 TPM Provider；low 也可注入（无副作用）
+			slot := local.NewWithTPM(slotID, c, certRepo, cardRepo, tpmProv)
 			manager.RegisterSlot(slot)
-			slog.Info("已注册本地 Slot", "slot_id", slotID, "card", c.CardName)
+			slog.Info("已注册本地 Slot", "slot_id", slotID, "card", c.CardName, "level", c.SecurityLevel)
 		case storage.SlotTypeTPM2:
 			if tpmProv == nil {
 				slog.Warn("跳过 TPM2 卡片（TPM2 不可用）", "card", c.CardName)

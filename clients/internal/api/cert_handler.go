@@ -32,7 +32,7 @@ type certListItem struct {
 // handleListCerts GET /api/cards/{card_uuid}/certs
 func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 	cardUUID := r.PathValue("card_uuid")
-	certs, err := s.certRepo.ListByCard(r.Context(), cardUUID)
+	certs, err := s.certRepo.ListByCardPublic(r.Context(), cardUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询证书列表失败: "+err.Error())
 		return
@@ -95,7 +95,7 @@ func (s *Server) handleCreateCert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	certRepo := storage.NewCertRepo(s.db)
-	km := local.NewKeyManager(certRepo, s.cardRepo)
+	km := local.NewKeyManagerWithTPM(certRepo, s.cardRepo, s.tpmProvider)
 
 	cert, err := km.ImportCertificate(r.Context(), cardUUID, certDER, req.Remark)
 	if err != nil {
@@ -367,7 +367,7 @@ func (s *Server) handleImportCertWithKey(w http.ResponseWriter, r *http.Request)
 	}
 
 	// 导入证书（公钥部分）
-	km := local.NewKeyManager(s.certRepo, s.cardRepo)
+	km := local.NewKeyManagerWithTPM(s.certRepo, s.cardRepo, s.tpmProvider)
 
 	if privDER != nil {
 		// 有私钥：使用 ImportPrivateKey 加密存储
@@ -484,7 +484,7 @@ func (s *Server) handleKeyGen(w http.ResponseWriter, r *http.Request) {
 		certType = storage.CertTypeX509
 	}
 
-	km := local.NewKeyManager(s.certRepo, s.cardRepo)
+	km := local.NewKeyManagerWithTPM(s.certRepo, s.cardRepo, s.tpmProvider)
 	result, err := km.GenerateKeyPair(r.Context(), local.KeyGenRequest{
 		CardUUID: cardUUID,
 		CertType: certType,
