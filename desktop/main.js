@@ -14,7 +14,7 @@ let tray = null;
 // 配置
 const CONFIG = {
   // 前端页面地址（client-card 后端自带前端静态文件）
-  frontendURL: 'http://127.0.0.1:1026',
+  frontendURL: 'http://localhost:5175',
   // 窗口尺寸
   width: 1280,
   height: 800,

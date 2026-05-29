@@ -15,3 +15,5 @@ clients/data/
 .idea/CopilotChatHistory.xml
 .idea
 .codebuddy/plan
+desktop/dist
+desktop/node_modules
