@@ -169,6 +169,11 @@ func (db *DB) migrate() error {
 	// 卡片启用/禁用
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`)
 
+	// 2FA 字段迁移
+	_, _ = db.conn.Exec(`ALTER TABLE users ADD COLUMN two_fa_enabled INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.conn.Exec(`ALTER TABLE users ADD COLUMN two_fa_secret TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.conn.Exec(`ALTER TABLE users ADD COLUMN passwordless_enabled INTEGER NOT NULL DEFAULT 0`)
+
 	// 迁移旧 BLOB 数据为 base64 TEXT
 	db.migrateBlobToBase64()
 	return nil

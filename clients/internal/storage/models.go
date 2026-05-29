@@ -17,16 +17,20 @@ const (
 
 // User 是用户数据模型。
 type User struct {
-	UUID        string    `json:"uuid"`
-	UserType    UserType  `json:"user_type"`
-	Role        string    `json:"role"`            // admin / user / readonly
-	Username    string    `json:"username"`        // 登录用户名（唯一）
-	DisplayName string    `json:"display_name"`
-	Email       string    `json:"email"`
+	UUID         string    `json:"uuid"`
+	UserType     UserType  `json:"user_type"`
+	Role         string    `json:"role"`            // admin / user / readonly
+	Username     string    `json:"username"`        // 登录用户名（唯一）
+	DisplayName  string    `json:"display_name"`
+	Email        string    `json:"email"`
 	Enabled      bool      `json:"enabled"`
 	CloudURL     string    `json:"cloud_url"`
-	PasswordHash string    `json:"-"` // bcrypt 哈希，不序列化到 JSON
-	AuthToken    Base64Bytes `json:"-"` // 加密存储，不序列化到 JSON
+	PasswordHash string    `json:"-"`               // bcrypt 哈希，不序列化到 JSON
+	AuthToken    Base64Bytes `json:"-"`             // 加密存储，不序列化到 JSON
+	// 2FA (TOTP) 字段
+	TwoFAEnabled bool      `json:"two_fa_enabled"` // 是否已启用 2FA
+	TwoFASecret  string    `json:"-"`              // TOTP 密钥（Base32），不暴露给前端
+	PasswordlessEnabled bool `json:"passwordless_enabled"` // 是否启用免密码登录（仅 2FA 验证即可）
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

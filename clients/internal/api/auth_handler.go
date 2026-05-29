@@ -90,13 +90,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		TOTPCode string `json:"totp_code"` // 2FA 验证码（启用 2FA 时必填）
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
 		return
 	}
-	if req.Username == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "用户名和密码不能为空")
+	if req.Username == "" {
+		writeError(w, http.StatusBadRequest, "用户名不能为空")
 		return
 	}
 
@@ -105,10 +106,61 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "查询用户失败")
 		return
 	}
-	if user == nil || !verifyPassword(req.Password, user.PasswordHash) {
+	if user == nil {
 		writeError(w, http.StatusUnauthorized, "用户名或密码错误")
 		return
 	}
+
+	// 免密码登录模式：只验证 2FA，不验证密码
+	if user.PasswordlessEnabled && user.TwoFAEnabled {
+		if req.TOTPCode == "" {
+			// 返回特殊状态码告知前端需要 2FA 验证码
+			writeJSON(w, http.StatusPreconditionRequired, Response{
+				Code:    428,
+				Message: "需要 2FA 验证码（免密码模式）",
+				Data: map[string]interface{}{
+					"require_2fa":  true,
+					"passwordless": true,
+				},
+			})
+			return
+		}
+		if !s.verifyTOTP(user.TwoFASecret, req.TOTPCode) {
+			writeError(w, http.StatusUnauthorized, "2FA 验证码错误")
+			return
+		}
+	} else {
+		// 标准模式：必须验证密码
+		if req.Password == "" {
+			writeError(w, http.StatusBadRequest, "密码不能为空")
+			return
+		}
+		if !verifyPassword(req.Password, user.PasswordHash) {
+			writeError(w, http.StatusUnauthorized, "用户名或密码错误")
+			return
+		}
+
+		// 2FA 启用时还需验证 TOTP 码
+		if user.TwoFAEnabled {
+			if req.TOTPCode == "" {
+				// 密码正确，但需要 2FA
+				writeJSON(w, http.StatusPreconditionRequired, Response{
+					Code:    428,
+					Message: "需要 2FA 验证码",
+					Data: map[string]interface{}{
+						"require_2fa":  true,
+						"passwordless": false,
+					},
+				})
+				return
+			}
+			if !s.verifyTOTP(user.TwoFASecret, req.TOTPCode) {
+				writeError(w, http.StatusUnauthorized, "2FA 验证码错误")
+				return
+			}
+		}
+	}
+
 	if !user.Enabled {
 		writeError(w, http.StatusForbidden, "账号已被禁用")
 		return

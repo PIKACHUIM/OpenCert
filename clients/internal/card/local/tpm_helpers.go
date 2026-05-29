@@ -18,8 +18,10 @@ import (
 
 // 以下 magic 写入 cert.TPMPlatform，区分加密结构版本。
 const (
-	tpmPlatformMediumV2 = "medium-v2" // medium：master 加密 → TPM 证书密钥再加密
-	tpmPlatformHighV1   = "high-v1"   // high：tpm.WrappedKey，私钥永不出 TPM
+	tpmPlatformMediumV2     = "medium-v2"         // medium：master 加密 → TPM 证书密钥再加密
+	tpmPlatformHighV1       = "high-v1"           // high：tpm.WrappedKey，私钥永不出 TPM（芯片生成）
+	tpmPlatformHighImportV1 = "high-import-v1"    // high：TPM wrapping key 加密 AES key → AES 加密 privDER
+	tpmPlatformHighImportTPM = "high-import-tpm"  // high：私钥通过 TPM2_Import 导入芯片，签名在 TPM 内部完成
 )
 
 // deriveTPMCertKeyAuth 从主密钥派生"medium 模式 NV 授权值"。

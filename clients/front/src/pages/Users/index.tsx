@@ -89,8 +89,9 @@ const Users: React.FC = () => {
 
   const columns = [
     {
-      title: '显示名称',
-      dataIndex: 'display_name',
+      title: '用户名',
+      dataIndex: 'username',
+      width: 130,
       render: (v: string) => (
         <Space>
           <UserOutlined style={{ color: '#1677ff' }} />
@@ -99,21 +100,36 @@ const Users: React.FC = () => {
       ),
     },
     {
+      title: '显示名称',
+      dataIndex: 'display_name',
+      render: (v: string) => <Text style={{ color: darkMode ? '#c9d1d9' : undefined }}>{v || '-'}</Text>,
+    },
+    {
       title: '邮箱',
       dataIndex: 'email',
       render: (v: string) => <Text style={{ color: darkMode ? '#8b949e' : '#666' }}>{v || '-'}</Text>,
     },
     {
+      title: '角色',
+      dataIndex: 'role',
+      width: 100,
+      render: (v: string) => {
+        const colorMap: Record<string, string> = { admin: 'gold', user: 'blue', readonly: 'default' };
+        return <Tag color={colorMap[v] || 'blue'}>{v || 'user'}</Tag>;
+      },
+    },
+    {
       title: '类型',
       dataIndex: 'user_type',
-      width: 100,
+      width: 90,
       render: (v: string) => (
-        <Tag color={v === 'admin' ? 'gold' : 'blue'}>{v || 'user'}</Tag>
+        <Tag color={v === 'cloud' ? 'cyan' : 'purple'}>{v === 'cloud' ? '云端' : '本地'}</Tag>
       ),
     },
     {
       title: '云端地址',
       dataIndex: 'cloud_url',
+      ellipsis: true,
       render: (v: string) => (
         <Text style={{ fontSize: 12, color: darkMode ? '#8b949e' : '#999' }}>{v || '-'}</Text>
       ),
@@ -161,6 +177,19 @@ const Users: React.FC = () => {
     },
   ];
 
+  // 展开行渲染详细信息
+  const expandedRowRender = (record: User) => (
+    <div style={{ padding: '8px 16px', fontSize: 13, color: darkMode ? '#8b949e' : '#666' }}>
+      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        <div><Text type="secondary" style={{ width: 80, display: 'inline-block' }}>UUID:</Text> <Text copyable={{ text: record.uuid }} style={{ fontSize: 12, color: darkMode ? '#c9d1d9' : '#333' }}>{record.uuid}</Text></div>
+        <div><Text type="secondary" style={{ width: 80, display: 'inline-block' }}>用户名:</Text> <Text style={{ color: darkMode ? '#c9d1d9' : '#333' }}>{record.username}</Text></div>
+        {record.email && <div><Text type="secondary" style={{ width: 80, display: 'inline-block' }}>邮箱:</Text> <Text style={{ color: darkMode ? '#c9d1d9' : '#333' }}>{record.email}</Text></div>}
+        {record.cloud_url && <div><Text type="secondary" style={{ width: 80, display: 'inline-block' }}>云端地址:</Text> <Text copyable style={{ fontSize: 12, color: darkMode ? '#c9d1d9' : '#333' }}>{record.cloud_url}</Text></div>}
+        <div><Text type="secondary" style={{ width: 80, display: 'inline-block' }}>更新时间:</Text> <Text style={{ fontSize: 12, color: darkMode ? '#c9d1d9' : '#333' }}>{dayjs(record.updated_at).format('YYYY-MM-DD HH:mm:ss')}</Text></div>
+      </Space>
+    </div>
+  );
+
   return (
     <div>
       <PageHeader
@@ -185,6 +214,7 @@ const Users: React.FC = () => {
           columns={columns}
           rowKey="uuid"
           loading={loading}
+          expandable={{ expandedRowRender, expandRowByClick: true }}
           pagination={{
             current: page,
             total,
@@ -193,6 +223,7 @@ const Users: React.FC = () => {
             showTotal: (t) => `共 ${t} 条`,
           }}
           style={{ background: 'transparent' }}
+          scroll={{ x: 900 }}
         />
       </Card>
 

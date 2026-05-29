@@ -3,10 +3,14 @@
 export interface User {
   uuid: string;
   user_type: string;
+  role: string;
+  username: string;
   display_name: string;
   email: string;
   cloud_url?: string;
   enabled: boolean;
+  two_fa_enabled: boolean;
+  passwordless_enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -335,6 +339,7 @@ export interface CreateLocalCARequest {
 export interface LoginRequest {
   username: string;
   password: string;
+  totp_code?: string;
 }
 
 export interface CloudLoginRequest {

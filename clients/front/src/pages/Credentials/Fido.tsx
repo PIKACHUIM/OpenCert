@@ -106,7 +106,7 @@ const FidoPage: React.FC = () => {
       <Space wrap style={{ marginBottom: 16 }}>
         <span>{t('credentials.common.card')}:</span>
         <Select
-          style={{ width: 260 }}
+          style={{ width: 360 }}
           placeholder={t('credentials.common.selectCard')}
           value={cardUUID || undefined}
           onChange={setCardUUID}

@@ -23,7 +23,7 @@ const TOTPPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [addVisible, setAddVisible] = useState(false);
   const [form] = Form.useForm();
-  const timerRef = useRef<ReturnType<typeof setInterval>>();
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [cards, setCards] = useState<CardType[]>([]);
   const [selectedCardUUID, setSelectedCardUUID] = useState<string>('');
 
@@ -89,7 +89,7 @@ const TOTPPage: React.FC = () => {
         return { ...e, remaining };
       }));
     }, 1000);
-    return () => clearInterval(timerRef.current);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, []);
 
   useEffect(() => {
@@ -222,7 +222,7 @@ const TOTPPage: React.FC = () => {
                 size="small"
                 value={selectedCardUUID}
                 onChange={setSelectedCardUUID}
-                style={{ minWidth: 160 }}
+                style={{ minWidth: 360 }}
                 options={cards.map(c => ({ value: c.uuid, label: c.card_name }))}
                 placeholder="选择卡片"
               />
@@ -260,7 +260,7 @@ const TOTPPage: React.FC = () => {
           <Form.Item name="issuer" label="发行者" rules={[{ required: true, message: '请输入发行者名称' }]}>
             <Input placeholder="例如：GitHub、Google" prefix={<KeyOutlined />} />
           </Form.Item>
-          <Form.Item name="account" label="账户名" rules={[{ required: true, message: '请输入账户名' }]}>
+          <Form.Item name="account" label="账户名（可选）">
             <Input placeholder="例如：user@example.com" />
           </Form.Item>
           <Form.Item name="secret" label="密钥 (Base32)" rules={[{ required: true, message: '请输入 Base32 编码的密钥' }]}>
@@ -268,6 +268,9 @@ const TOTPPage: React.FC = () => {
           </Form.Item>
           <Form.Item name="uri" label="或粘贴 otpauth:// URI（可选）">
             <Input placeholder="otpauth://totp/..." prefix={<QrcodeOutlined />} />
+          </Form.Item>
+          <Form.Item name="card_password" label="卡片 PIN" rules={[{ required: true, message: '请输入卡片 PIN 以加密存储' }]}>
+            <Input.Password placeholder="卡片登录 PIN" />
           </Form.Item>
           <Row gutter={16}>
             <Col span={8}>

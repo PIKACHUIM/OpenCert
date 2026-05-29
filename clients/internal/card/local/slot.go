@@ -317,6 +317,11 @@ func (s *Slot) Sign(ctx context.Context, handle pkcs11types.ObjectHandle, mechan
 		return s.signWithTPM(cert, mechanism, data, masterKey)
 	}
 
+	// high-import-tpm 模式：私钥在 TPM 芯片内部，通过 go-tpm 签名
+	if string(cert.TPMPlatform) == tpmPlatformHighImportTPM {
+		return s.signWithTPM2Import(cert, mechanism, data, masterKey)
+	}
+
 	privKey, err := s.decryptPrivateKey(cert, masterKey)
 	if err != nil {
 		return nil, fmt.Errorf("解密私钥失败: %w", err)
@@ -485,6 +490,53 @@ func (s *Slot) signWithTPM(cert *storage.Certificate, mechanism pkcs11types.Mech
 		return nil, fmt.Errorf("TPM 签名失败: %w", err)
 	}
 	// PKCS#11 ECDSA 期望 raw r||s；TPM 返回 ASN.1。需要转换。
+	if scheme == tpm.SignSchemeECDSASHA256 || scheme == tpm.SignSchemeECDSASHA384 ||
+		scheme == tpm.SignSchemeECDSASHA512 {
+		raw, err := ecdsaASN1ToRaw(sig, wrapped.Alg)
+		if err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+	return sig, nil
+}
+
+// signWithTPM2Import 使用 go-tpm 真实导入的密钥在 TPM 内部完成签名（high-import-tpm 模式）。
+func (s *Slot) signWithTPM2Import(cert *storage.Certificate, mechanism pkcs11types.Mechanism, data []byte, masterKey []byte) ([]byte, error) {
+	wrapped, err := unmarshalWrappedKey(cert.TPMWrappedBlob)
+	if err != nil {
+		return nil, fmt.Errorf("反序列化 wrapped key 失败: %w", err)
+	}
+
+	// 初始化 TPM2 Import Provider
+	importProv, err := tpm.NewTPM2ImportProvider()
+	if err != nil {
+		return nil, fmt.Errorf("初始化 TPM2 Import Provider 失败: %w", err)
+	}
+
+	auth := deriveTPMHighKeyAuth(masterKey, cert.UUID)
+	defer zeroBytes(auth)
+
+	// 加载密钥到 TPM
+	h, err := importProv.LoadKeyTPM(wrapped, auth)
+	if err != nil {
+		return nil, fmt.Errorf("TPM2 LoadKey 失败: %w", err)
+	}
+	defer importProv.FlushHandleTPM(h)
+
+	// 转换 PKCS#11 mechanism 到 TPM SignScheme 并准备 digest
+	scheme, digest, err := mechanismToScheme(mechanism, data)
+	if err != nil {
+		return nil, err
+	}
+
+	// 在 TPM 内部签名
+	sig, err := importProv.SignTPM(h, digest, scheme)
+	if err != nil {
+		return nil, fmt.Errorf("TPM2 Sign 失败: %w", err)
+	}
+
+	// PKCS#11 ECDSA 期望 raw r||s；TPM 返回 ASN.1
 	if scheme == tpm.SignSchemeECDSASHA256 || scheme == tpm.SignSchemeECDSASHA384 ||
 		scheme == tpm.SignSchemeECDSASHA512 {
 		raw, err := ecdsaASN1ToRaw(sig, wrapped.Alg)
@@ -867,7 +919,9 @@ func matchAttr(cert *storage.Certificate, attr pkcs11types.Attribute) bool {
 			return cert.CertType == storage.CertTypeX509
 		case pkcs11types.CKO_PRIVATE_KEY:
 			// X509/SSH/GPG 的私钥映射为 CKO_PRIVATE_KEY
-			return len(cert.PrivateData) > 0 &&
+			// 有 PrivateData（加密存储）或有 TPMWrappedBlob（密钥在 TPM 内部）
+			hasPrivateKey := len(cert.PrivateData) > 0 || len(cert.TPMWrappedBlob) > 0
+			return hasPrivateKey &&
 				(cert.CertType == storage.CertTypeX509 ||
 					cert.CertType == storage.CertTypeSSH ||
 					cert.CertType == storage.CertTypeGPG)
@@ -938,7 +992,7 @@ func buildAttributes(cert *storage.Certificate, attrTypes []pkcs11types.Attribut
 		case pkcs11types.CKA_TOKEN:
 			attr.Value = []byte{1}
 		case pkcs11types.CKA_PRIVATE:
-			if len(cert.PrivateData) > 0 {
+			if len(cert.PrivateData) > 0 || len(cert.TPMWrappedBlob) > 0 {
 				attr.Value = []byte{1}
 			} else {
 				attr.Value = []byte{0}
@@ -948,13 +1002,13 @@ func buildAttributes(cert *storage.Certificate, attrTypes []pkcs11types.Attribut
 		case pkcs11types.CKA_EXTRACTABLE:
 			attr.Value = []byte{0}
 		case pkcs11types.CKA_SIGN:
-			if len(cert.PrivateData) > 0 {
+			if len(cert.PrivateData) > 0 || len(cert.TPMWrappedBlob) > 0 {
 				attr.Value = []byte{1}
 			} else {
 				attr.Value = []byte{0}
 			}
 		case pkcs11types.CKA_DECRYPT:
-			if len(cert.PrivateData) > 0 {
+			if len(cert.PrivateData) > 0 || len(cert.TPMWrappedBlob) > 0 {
 				attr.Value = []byte{1}
 			} else {
 				attr.Value = []byte{0}

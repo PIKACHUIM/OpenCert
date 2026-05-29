@@ -48,13 +48,14 @@ func (r *UserRepo) Create(ctx context.Context, u *User) error {
 // GetByUUID 根据 UUID 查询用户。
 func (r *UserRepo) GetByUUID(ctx context.Context, userUUID string) (*User, error) {
 	u := &User{}
-	var enabled int
+	var enabled, twoFAEnabled, passwordless int
 	err := r.db.QueryRowContext(ctx, `
-		SELECT uuid, user_type, role, username, display_name, email, enabled, cloud_url, password_hash, auth_token, created_at, updated_at
+		SELECT uuid, user_type, role, username, display_name, email, enabled, cloud_url, password_hash, auth_token,
+			two_fa_enabled, two_fa_secret, passwordless_enabled, created_at, updated_at
 		FROM users WHERE uuid = ?`, userUUID).
 		Scan(&u.UUID, &u.UserType, &u.Role, &u.Username, &u.DisplayName, &u.Email,
 			&enabled, &u.CloudURL, &u.PasswordHash, &u.AuthToken,
-			&u.CreatedAt, &u.UpdatedAt)
+			&twoFAEnabled, &u.TwoFASecret, &passwordless, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -62,19 +63,22 @@ func (r *UserRepo) GetByUUID(ctx context.Context, userUUID string) (*User, error
 		return nil, fmt.Errorf("查询用户失败: %w", err)
 	}
 	u.Enabled = enabled == 1
+	u.TwoFAEnabled = twoFAEnabled == 1
+	u.PasswordlessEnabled = passwordless == 1
 	return u, nil
 }
 
 // GetByUsername 根据用户名查询用户（含密码哈希）。
 func (r *UserRepo) GetByUsername(ctx context.Context, username string) (*User, error) {
 	u := &User{}
-	var enabled int
+	var enabled, twoFAEnabled, passwordless int
 	err := r.db.QueryRowContext(ctx, `
-		SELECT uuid, user_type, role, username, display_name, email, enabled, cloud_url, password_hash, auth_token, created_at, updated_at
+		SELECT uuid, user_type, role, username, display_name, email, enabled, cloud_url, password_hash, auth_token,
+			two_fa_enabled, two_fa_secret, passwordless_enabled, created_at, updated_at
 		FROM users WHERE username = ?`, username).
 		Scan(&u.UUID, &u.UserType, &u.Role, &u.Username, &u.DisplayName, &u.Email,
 			&enabled, &u.CloudURL, &u.PasswordHash, &u.AuthToken,
-			&u.CreatedAt, &u.UpdatedAt)
+			&twoFAEnabled, &u.TwoFASecret, &passwordless, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -82,19 +86,22 @@ func (r *UserRepo) GetByUsername(ctx context.Context, username string) (*User, e
 		return nil, fmt.Errorf("查询用户失败: %w", err)
 	}
 	u.Enabled = enabled == 1
+	u.TwoFAEnabled = twoFAEnabled == 1
+	u.PasswordlessEnabled = passwordless == 1
 	return u, nil
 }
 
 // GetByEmail 根据邮筱查询用户。
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*User, error) {
 	u := &User{}
-	var enabled int
+	var enabled, twoFAEnabled, passwordless int
 	err := r.db.QueryRowContext(ctx, `
-		SELECT uuid, user_type, role, username, display_name, email, enabled, cloud_url, password_hash, auth_token, created_at, updated_at
+		SELECT uuid, user_type, role, username, display_name, email, enabled, cloud_url, password_hash, auth_token,
+			two_fa_enabled, two_fa_secret, passwordless_enabled, created_at, updated_at
 		FROM users WHERE email = ?`, email).
 		Scan(&u.UUID, &u.UserType, &u.Role, &u.Username, &u.DisplayName, &u.Email,
 			&enabled, &u.CloudURL, &u.PasswordHash, &u.AuthToken,
-			&u.CreatedAt, &u.UpdatedAt)
+			&twoFAEnabled, &u.TwoFASecret, &passwordless, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -102,13 +109,16 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*User, error) 
 		return nil, fmt.Errorf("查询用户失败: %w", err)
 	}
 	u.Enabled = enabled == 1
+	u.TwoFAEnabled = twoFAEnabled == 1
+	u.PasswordlessEnabled = passwordless == 1
 	return u, nil
 }
 
 // List 列出所有用户（不含敏感字段）。
 func (r *UserRepo) List(ctx context.Context) ([]*User, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT uuid, user_type, role, username, display_name, email, enabled, cloud_url, created_at, updated_at
+		SELECT uuid, user_type, role, username, display_name, email, enabled, cloud_url,
+			two_fa_enabled, passwordless_enabled, created_at, updated_at
 		FROM users ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("查询用户列表失败: %w", err)
@@ -118,12 +128,14 @@ func (r *UserRepo) List(ctx context.Context) ([]*User, error) {
 	var users []*User
 	for rows.Next() {
 		u := &User{}
-		var enabled int
+		var enabled, twoFAEnabled, passwordless int
 		if err := rows.Scan(&u.UUID, &u.UserType, &u.Role, &u.Username, &u.DisplayName, &u.Email,
-			&enabled, &u.CloudURL, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			&enabled, &u.CloudURL, &twoFAEnabled, &passwordless, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("扫描用户数据失败: %w", err)
 		}
 		u.Enabled = enabled == 1
+		u.TwoFAEnabled = twoFAEnabled == 1
+		u.PasswordlessEnabled = passwordless == 1
 		users = append(users, u)
 	}
 	return users, rows.Err()
@@ -133,10 +145,13 @@ func (r *UserRepo) List(ctx context.Context) ([]*User, error) {
 func (r *UserRepo) Update(ctx context.Context, u *User) error {
 	u.UpdatedAt = time.Now()
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE users SET user_type=?, role=?, username=?, display_name=?, email=?, enabled=?, cloud_url=?, password_hash=?, auth_token=?, updated_at=?
+		UPDATE users SET user_type=?, role=?, username=?, display_name=?, email=?, enabled=?, cloud_url=?,
+			password_hash=?, auth_token=?, two_fa_enabled=?, two_fa_secret=?, passwordless_enabled=?, updated_at=?
 		WHERE uuid=?`,
 		string(u.UserType), u.Role, u.Username, u.DisplayName, u.Email, boolToInt(u.Enabled),
-		u.CloudURL, u.PasswordHash, u.AuthToken, u.UpdatedAt, u.UUID,
+		u.CloudURL, u.PasswordHash, u.AuthToken,
+		boolToInt(u.TwoFAEnabled), u.TwoFASecret, boolToInt(u.PasswordlessEnabled),
+		u.UpdatedAt, u.UUID,
 	)
 	if err != nil {
 		return fmt.Errorf("更新用户失败: %w", err)

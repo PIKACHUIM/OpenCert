@@ -740,6 +740,65 @@ func importPrivateKeyWithTPMWrapping(ctx context.Context, certRepo *storage.Cert
 	return cert, nil
 }
 
+// importPrivateKeyWithTPM2Import 使用 go-tpm 将私钥真正导入 TPM 芯片内部。
+//
+// 与 importPrivateKeyWithTPMWrapping（high-import-v1）的区别：
+//   - high-import-v1：私钥被 TPM 保护的 AES key 加密，签名时解密到内存中用 Go 签名
+//   - high-import-tpm：私钥通过 TPM2_Import 导入芯片，签名在 TPM 内部完成，私钥永不暴露
+//
+// 流程：
+//  1. 调用 tpm.NewTPM2ImportProvider().ImportKeyToTPM(privDER, auth)
+//  2. 将返回的 WrappedKey（SRK 包装）存储到 cert.TPMWrappedBlob
+//  3. cert.TPMPlatform = "high-import-tpm"
+//  4. cert.PrivateData 为空（私钥不在数据库中）
+func importPrivateKeyWithTPM2Import(ctx context.Context, certRepo *storage.CertRepo, req KeyGenRequest, masterKey []byte, card *storage.Card, privDER, pubDER []byte) (*storage.Certificate, error) {
+	certUUID := uuid.New().String()
+	auth := deriveTPMHighKeyAuth(masterKey, certUUID)
+	defer zeroBytes(auth)
+
+	// 初始化 TPM2 Import Provider
+	importProv, err := tpm.NewTPM2ImportProvider()
+	if err != nil {
+		return nil, fmt.Errorf("初始化 TPM2 Import Provider 失败: %w", err)
+	}
+
+	// 执行 TPM2_Import
+	wrapped, _, err := importProv.ImportKeyToTPM(privDER, auth)
+	if err != nil {
+		return nil, fmt.Errorf("TPM2_Import 失败: %w", err)
+	}
+
+	// 序列化 wrapped key
+	wrappedJSON, err := marshalWrappedKey(wrapped)
+	if err != nil {
+		return nil, err
+	}
+
+	// 存储证书记录（PrivateData 为空——私钥在 TPM 内部）
+	pemType := "PUBLIC KEY"
+	if _, parseErr := parseCertLenient(pubDER); parseErr == nil {
+		pemType = "CERTIFICATE"
+	}
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: pemType, Bytes: pubDER})
+
+	cert := &storage.Certificate{
+		UUID:           certUUID,
+		SlotType:       storage.SlotTypeLocal,
+		CardUUID:       req.CardUUID,
+		CertType:       req.CertType,
+		KeyType:        req.KeyType,
+		CertContent:    pubPEM,
+		PrivateData:    nil,             // 私钥在 TPM 内部，不存储密文
+		TPMWrappedBlob: wrappedJSON,     // SRK 包装的导入密钥 blob
+		TPMPlatform:    storage.TPMPlatform(tpmPlatformHighImportTPM),
+		Remark:         req.Remark,
+	}
+	if err := certRepo.Create(ctx, cert); err != nil {
+		return nil, fmt.Errorf("保存证书失败: %w", err)
+	}
+	return cert, nil
+}
+
 // getOrCreateWrappingKey 获取卡片的 TPM 保护密钥；如果不存在则在 TPM 芯片内创建一个。
 // 保护密钥以"内部证书"形式存储（CertType=internal, KeyType=wrapping-key）。
 func getOrCreateWrappingKey(ctx context.Context, certRepo *storage.CertRepo, tp tpm.Provider, masterKey []byte, card *storage.Card) (*tpm.WrappedKey, error) {

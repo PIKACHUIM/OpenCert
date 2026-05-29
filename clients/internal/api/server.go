@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	config "github.com/globaltrusts/client-card/configs"
 	"github.com/globaltrusts/client-card/internal/api/middleware"
 	"github.com/globaltrusts/client-card/internal/card"
+	"github.com/globaltrusts/client-card/internal/card/local"
 	"github.com/globaltrusts/client-card/internal/certprop"
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/internal/totp"
@@ -124,6 +127,13 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/users/{uuid}", s.handleGetUser)
 	s.mux.HandleFunc("PUT /api/users/{uuid}", s.handleUpdateUser)
 	s.mux.HandleFunc("DELETE /api/users/{uuid}", s.handleDeleteUser)
+
+	// ---- 2FA (TOTP) ----
+	s.mux.HandleFunc("POST /api/users/{uuid}/2fa/enable", s.handleEnable2FA)
+	s.mux.HandleFunc("POST /api/users/{uuid}/2fa/verify", s.handleVerify2FA)
+	s.mux.HandleFunc("POST /api/users/{uuid}/2fa/disable", s.handleDisable2FA)
+	s.mux.HandleFunc("POST /api/users/{uuid}/2fa/passwordless", s.handleTogglePasswordless)
+	s.mux.HandleFunc("GET /api/users/{uuid}/2fa/status", s.handle2FAStatus)
 
 	// ---- 卡片管理 ----
 	s.mux.HandleFunc("GET /api/cards", s.handleListCards)
@@ -470,13 +480,22 @@ func (s *Server) SetTPMProvider(p tpm.Provider) {
 }
 
 // propagateCertAdd 在证书新增/导入后，异步将证书传播到系统存储。
+// 当 certUUID 来自 pki_certs 表时，需要映射到 certificates 表中的密钥 UUID，
+// 否则 KSP 的 resolveContainer 会找不到私钥。
 func (s *Server) propagateCertAdd(certPEM, certUUID, cardUUID, commonName, keyType string, hasKey bool) {
 	if s.certPropagator == nil {
 		return
 	}
+	// 如果有 cardUUID 且有私钥，尝试用公钥匹配找到 certificates 表中的密钥 UUID
+	containerUUID := certUUID
+	if cardUUID != "" && hasKey {
+		if keyCertUUID := s.findKeyCertUUIDByPEM(cardUUID, certPEM); keyCertUUID != "" {
+			containerUUID = keyCertUUID
+		}
+	}
 	go func() {
 		err := s.certPropagator.Add(context.Background(), certprop.CertInfo{
-			UUID:       certUUID,
+			UUID:       containerUUID,
 			CardUUID:   cardUUID,
 			CommonName: commonName,
 			CertPEM:    certPEM,
@@ -484,9 +503,39 @@ func (s *Server) propagateCertAdd(certPEM, certUUID, cardUUID, commonName, keyTy
 			KeyType:    keyType,
 		})
 		if err != nil {
-			slog.Warn("证书传播到系统存储失败", "uuid", certUUID, "error", err)
+			slog.Warn("证书传播到系统存储失败", "uuid", containerUUID, "error", err)
 		}
 	}()
+}
+
+// findKeyCertUUIDByPEM 通过 PEM 证书的公钥，在 certificates 表中找到对应密钥记录的 UUID。
+func (s *Server) findKeyCertUUIDByPEM(cardUUID, certPEM string) string {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return ""
+	}
+	x509Cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	pkiPubDER, err := x509.MarshalPKIXPublicKey(x509Cert.PublicKey)
+	if err != nil {
+		return ""
+	}
+	certs, err := s.certRepo.ListByCard(context.Background(), cardUUID)
+	if err != nil {
+		return ""
+	}
+	for _, c := range certs {
+		if len(c.CertContent) == 0 {
+			continue
+		}
+		certPubDER := local.ExtractPublicKeyDER(c.CertContent)
+		if len(certPubDER) > 0 && string(certPubDER) == string(pkiPubDER) {
+			return c.UUID
+		}
+	}
+	return ""
 }
 
 // propagateCertRemove 在证书删除后，异步从系统存储中移除。

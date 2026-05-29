@@ -1,16 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Table, Button, Space, Tag, Typography, Modal, Form, Input, Select,
+  Table, Button, Space, Tag, Typography, Modal, Form, Input, Select, Tabs,
   Popconfirm, message, Tooltip, Card, Row, Col, Divider,
-  Drawer, Descriptions,
+  Drawer, Descriptions, List, Empty,
 } from 'antd';
 import {
   DeleteOutlined, ReloadOutlined, BankOutlined,
   ImportOutlined, DownloadOutlined, StopOutlined, EyeOutlined,
-  CopyOutlined,
+  CopyOutlined, SafetyCertificateOutlined, CreditCardOutlined,
 } from '@ant-design/icons';
 import PageHeader from '../../components/PageHeader';
-import { getLocalCAs, importLocalCA, revokeLocalCA, deleteLocalCA, exportLocalCA, getCards } from '../../api';
+import { getLocalCAs, importLocalCA, revokeLocalCA, deleteLocalCA, exportLocalCA, getCards, getPKICerts, getCerts } from '../../api';
 import type { LocalCA, ImportCARequest, Card as CardType } from '../../types';
 import { useAppStore } from '../../store/appStore';
 import dayjs from 'dayjs';
@@ -47,6 +47,14 @@ const LocalCAPage: React.FC = () => {
   const [viewOpen, setViewOpen] = useState(false);
   const [viewRecord, setViewRecord] = useState<LocalCA | null>(null);
 
+  // 导入 Tab 切换
+  const [importTab, setImportTab] = useState<'pem' | 'existing'>('pem');
+  // 从已有证书选择
+  interface ExistingCert { uuid: string; cn: string; certPEM: string; source: string; hasKey: boolean; cardUUID?: string; cardName?: string; notAfter?: string; }
+  const [existingCerts, setExistingCerts] = useState<ExistingCert[]>([]);
+  const [selectedExistingCert, setSelectedExistingCert] = useState<ExistingCert | null>(null);
+  const [loadingExisting, setLoadingExisting] = useState(false);
+
   const load = async (p = page) => {
     setLoading(true);
     try {
@@ -73,6 +81,80 @@ const LocalCAPage: React.FC = () => {
       load();
     } catch (e: any) { if (e.message) message.error(e.message); }
     finally { setImporting(false); }
+  };
+
+  // 从已有证书导入为 CA
+  const handleImportFromCert = async () => {
+    if (!selectedExistingCert) {
+      message.warning('请先选择一个证书');
+      return;
+    }
+    try {
+      setImporting(true);
+      await importLocalCA({
+        cert_pem: selectedExistingCert.certPEM,
+        card_uuid: selectedExistingCert.cardUUID,
+      } as ImportCARequest);
+      message.success('CA 已从已有证书导入');
+      setImportOpen(false);
+      setSelectedExistingCert(null);
+      setExistingCerts([]);
+      setImportTab('pem');
+      load();
+    } catch (e: any) { if (e.message) message.error(e.message); }
+    finally { setImporting(false); }
+  };
+
+  // 加载 PKI 证书列表（证书签发管理中的）
+  const loadPKICerts = async () => {
+    setLoadingExisting(true);
+    try {
+      const res = await getPKICerts({ page: 1, page_size: 100 });
+      const items = (res?.items || [])
+        .filter((c: any) => c.cert_pem && !c.revoked)
+        .map((c: any) => ({
+          uuid: c.uuid,
+          cn: c.common_name || '未知',
+          certPEM: c.cert_pem,
+          source: 'PKI 证书',
+          hasKey: c.has_private_key,
+          cardUUID: c.card_uuid,
+          cardName: c.card_uuid ? getCardName(c.card_uuid) || undefined : undefined,
+          notAfter: c.not_after,
+        }));
+      setExistingCerts(items);
+      if (items.length === 0) message.info('没有可用的 PKI 证书');
+    } catch (e: any) { message.error(e.message || '加载失败'); }
+    finally { setLoadingExisting(false); }
+  };
+
+  // 加载智能卡证书列表
+  const loadCardCerts = async () => {
+    setLoadingExisting(true);
+    try {
+      const allCerts: ExistingCert[] = [];
+      for (const card of cards) {
+        try {
+          const res = await getCerts(card.uuid);
+          const items = (res || [])
+            .filter((c: any) => c.cert_type === 'x509' && c.cert_content)
+            .map((c: any) => ({
+              uuid: c.uuid,
+              cn: c.remark || c.uuid.slice(0, 8),
+              certPEM: typeof c.cert_content === 'string' ? c.cert_content : '',
+              source: `智能卡`,
+              hasKey: !!(c.private_data || c.tpm_wrapped_blob),
+              cardUUID: card.uuid,
+              cardName: card.card_name,
+              notAfter: undefined,
+            }));
+          allCerts.push(...items);
+        } catch { /* skip */ }
+      }
+      setExistingCerts(allCerts);
+      if (allCerts.length === 0) message.info('没有可用的智能卡证书');
+    } catch (e: any) { message.error(e.message || '加载失败'); }
+    finally { setLoadingExisting(false); }
   };
 
   /** 获取卡片名称 */
@@ -292,26 +374,89 @@ const LocalCAPage: React.FC = () => {
 
       {/* 导入 CA 弹窗 */}
       <Modal title={<Space><ImportOutlined />导入 CA 证书</Space>} open={importOpen}
-        onOk={handleImport} onCancel={() => { setImportOpen(false); importForm.resetFields(); }}
-        okText="导入" cancelText="取消" confirmLoading={importing} width={600}>
-        <Form form={importForm} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item name="cert_pem" label="CA 证书（PEM 格式）" rules={[{ required: true }]}>
-            <TextArea rows={6} placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
-              style={{ fontFamily: 'monospace', fontSize: 12 }} />
-          </Form.Item>
-          <Form.Item name="key_pem" label="CA 私钥（PEM 格式，可选）">
-            <TextArea rows={5} placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;（有私钥才能用此 CA 签发证书）"
-              style={{ fontFamily: 'monospace', fontSize: 12 }} />
-          </Form.Item>
-          <Form.Item name="chain_pem" label="证书链（PEM 格式，可选）">
-            <TextArea rows={4} placeholder="中间 CA 证书链（可选）"
-              style={{ fontFamily: 'monospace', fontSize: 12 }} />
-          </Form.Item>
-          <Form.Item name="card_uuid" label="私钥存储智能卡（可选）">
-            <Select allowClear placeholder="若私钥需存储到智能卡，请选择"
-              options={cards.map((c) => ({ value: c.uuid, label: `${c.card_name} (${c.slot_type})` }))} />
-          </Form.Item>
-        </Form>
+        onOk={importTab === 'pem' ? handleImport : handleImportFromCert}
+        onCancel={() => { setImportOpen(false); importForm.resetFields(); setImportTab('pem'); setExistingCerts([]); }}
+        okText="导入" cancelText="取消" confirmLoading={importing} width={640}>
+        <Tabs activeKey={importTab} onChange={(k) => setImportTab(k as any)} items={[
+          {
+            key: 'pem',
+            label: '粘贴 PEM',
+            children: (
+              <Form form={importForm} layout="vertical" style={{ marginTop: 8 }}>
+                <Form.Item name="cert_pem" label="CA 证书（PEM 格式）" rules={[{ required: true }]}>
+                  <TextArea rows={6} placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                    style={{ fontFamily: 'monospace', fontSize: 12 }} />
+                </Form.Item>
+                <Form.Item name="key_pem" label="CA 私钥（PEM 格式，可选）">
+                  <TextArea rows={5} placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;（有私钥才能用此 CA 签发证书）"
+                    style={{ fontFamily: 'monospace', fontSize: 12 }} />
+                </Form.Item>
+                <Form.Item name="chain_pem" label="证书链（PEM 格式，可选）">
+                  <TextArea rows={4} placeholder="中间 CA 证书链（可选）"
+                    style={{ fontFamily: 'monospace', fontSize: 12 }} />
+                </Form.Item>
+                <Form.Item name="card_uuid" label="私钥存储智能卡（可选）">
+                  <Select allowClear placeholder="若私钥需存储到智能卡，请选择"
+                    options={cards.map((c) => ({ value: c.uuid, label: `${c.card_name} (${c.slot_type})` }))} />
+                </Form.Item>
+              </Form>
+            ),
+          },
+          {
+            key: 'existing',
+            label: '从已有证书选择',
+            children: (
+              <div style={{ marginTop: 8 }}>
+                <Space style={{ marginBottom: 12 }}>
+                  <Button size="small" icon={<SafetyCertificateOutlined />}
+                    onClick={loadPKICerts} loading={loadingExisting}>
+                    加载 PKI 证书
+                  </Button>
+                  <Button size="small" icon={<CreditCardOutlined />}
+                    onClick={loadCardCerts} loading={loadingExisting}>
+                    加载智能卡证书
+                  </Button>
+                </Space>
+                {existingCerts.length === 0 ? (
+                  <Empty description="点击上方按钮加载可选的 CA 证书" style={{ margin: '24px 0' }} />
+                ) : (
+                  <List
+                    size="small"
+                    dataSource={existingCerts}
+                    style={{ maxHeight: 300, overflow: 'auto' }}
+                    renderItem={(item) => (
+                      <List.Item
+                        onClick={() => setSelectedExistingCert(item)}
+                        style={{
+                          cursor: 'pointer', borderRadius: 6, padding: '8px 12px',
+                          background: selectedExistingCert?.uuid === item.uuid
+                            ? (darkMode ? 'rgba(22,119,255,0.15)' : 'rgba(22,119,255,0.06)')
+                            : undefined,
+                          border: selectedExistingCert?.uuid === item.uuid
+                            ? '1px solid rgba(22,119,255,0.4)'
+                            : '1px solid transparent',
+                        }}
+                      >
+                        <List.Item.Meta
+                          avatar={<BankOutlined style={{ color: '#1677ff', fontSize: 18 }} />}
+                          title={<Text style={{ color: darkMode ? '#c9d1d9' : '#333' }}>{item.cn}</Text>}
+                          description={
+                            <Space size={8} style={{ fontSize: 11 }}>
+                              <Tag color="blue">{item.source}</Tag>
+                              {item.hasKey && <Tag color="green">含私钥</Tag>}
+                              {item.cardName && <Tag color="purple">{item.cardName}</Tag>}
+                              <Text type="secondary">{item.notAfter ? `有效期至 ${dayjs(item.notAfter).format('YYYY-MM-DD')}` : ''}</Text>
+                            </Space>
+                          }
+                        />
+                      </List.Item>
+                    )}
+                  />
+                )}
+              </div>
+            ),
+          },
+        ]} />
       </Modal>
     </div>
   );

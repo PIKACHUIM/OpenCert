@@ -72,6 +72,33 @@ type CertDetail struct {
 	IsSelfSigned      bool     `json:"is_self_signed"`
 }
 
+// ExtractPublicKeyDER 从 CertContent（可能是 PEM 证书或 PEM 公钥）中提取 PKIX 格式的公钥 DER。
+// 用于匹配 PKI 证书对应的密钥记录。
+func ExtractPublicKeyDER(certContent []byte) []byte {
+	block, _ := pem.Decode(certContent)
+	if block == nil {
+		return nil
+	}
+	switch block.Type {
+	case "CERTIFICATE":
+		cert, err := parseCertLenient(block.Bytes)
+		if err != nil {
+			return nil
+		}
+		pubDER, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+		if err != nil {
+			return nil
+		}
+		return pubDER
+	case "PUBLIC KEY":
+		// 已经是 PKIX DER
+		if _, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+			return block.Bytes
+		}
+	}
+	return nil
+}
+
 // ParseCertLenient 宽松解析 X.509 证书（导出版本）。
 // Go 1.22+ 对 Certificate Policies 扩展的解析更严格，某些合法证书会报
 // "x509: invalid certificate policies" 错误。此函数在标准解析失败时，
