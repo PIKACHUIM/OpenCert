@@ -102,6 +102,64 @@ func (s *Server) handleCreateCredential(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: cert})
 }
 
+// handleGetCredentialSecret POST /api/cards/{card_uuid}/credentials/{cert_uuid}/secret
+//
+// 请求体（JSON）：
+//
+//	{ "card_password": "<string>" }
+//
+// 响应（JSON）：
+//
+//	{ "secret_data": "<base64>" }  // 解密后的原始 SecretData（base64 编码）
+func (s *Server) handleGetCredentialSecret(w http.ResponseWriter, r *http.Request) {
+	cardUUID := r.PathValue("card_uuid")
+	certUUID := r.PathValue("cert_uuid")
+
+	var req struct {
+		CardPassword string `json:"card_password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
+		return
+	}
+	if req.CardPassword == "" {
+		writeError(w, http.StatusBadRequest, "card_password 不能为空")
+		return
+	}
+
+	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+
+	slot := local.New(0, card, s.certRepo)
+	if err := slot.Login(r.Context(), 1, req.CardPassword); err != nil {
+		writeError(w, http.StatusUnauthorized, "卡片密码错误")
+		return
+	}
+	defer slot.Logout(r.Context())
+
+	masterKey := slot.MasterKey()
+	if masterKey == nil {
+		writeError(w, http.StatusInternalServerError, "获取主密钥失败")
+		return
+	}
+
+	km := local.NewKeyManagerWithTPM(s.certRepo, s.cardRepo, s.tpmProvider)
+	secretData, err := km.ExportCredential(r.Context(), certUUID, masterKey, card)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "解密凭据失败: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Response{
+		Code:    0,
+		Message: "ok",
+		Data:    map[string]string{"secret_data": base64.StdEncoding.EncodeToString(secretData)},
+	})
+}
+
 // decodeBase64Optional 允许空字符串返回 nil；非空必须合法 base64。
 func decodeBase64Optional(s string) ([]byte, error) {
 	if s == "" {

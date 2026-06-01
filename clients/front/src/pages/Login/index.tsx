@@ -35,7 +35,6 @@ const LoginPage: React.FC = () => {
   const location = useLocation();
   const accounts = useAuthStore((s) => s.accounts);
   const addAccount = useAuthStore((s) => s.addAccount);
-  const setActive = useAuthStore((s) => s.setActive);
   const removeAccount = useAuthStore((s) => s.removeAccount);
   const { darkMode } = useAppStore();
 
@@ -87,7 +86,8 @@ const LoginPage: React.FC = () => {
       }
       setNeed2FA(false);
       setTotpCode('');
-      addAccount(auth, { userType: 'local' });
+      // 勾选了记住密码则把密码存入账号记录，用于进程重启后静默重新登录
+      addAccount(auth, { userType: 'local', savedPassword: rememberLocal ? values.password : undefined });
       message.success(`欢迎 ${auth.username}`);
       navigate(addMode ? -1 as any : from, { replace: !addMode });
     } catch (e: any) {
@@ -161,10 +161,41 @@ const LoginPage: React.FC = () => {
     }
   };
 
-  // 选择已有账号
-  const handlePickAccount = (uuid: string) => {
-    setActive(uuid);
-    navigate(from, { replace: true });
+  // 选择已有账号：用保存的密码重新登录（进程重启后 token 已失效，需重新获取）
+  const handlePickAccount = async (uuid: string) => {
+    const account = accounts.find((a) => a.user_uuid === uuid);
+    if (!account) return;
+
+    // 有保存的密码则静默重新登录，拿到新 token
+    if (account.saved_password) {
+      setLoading(true);
+      try {
+        const auth = await login({ username: account.username, password: account.saved_password });
+        addAccount(auth, { userType: account.user_type as 'local', savedPassword: account.saved_password });
+        message.success(`欢迎回来，${account.display_name}`);
+        navigate(from, { replace: true });
+      } catch {
+        message.error('自动登录失败，请手动输入密码');
+        setTab('local');
+        localForm.setFieldsValue({ username: account.username });
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      // 没有保存密码，切到本地登录 Tab 并预填用户名
+      setTab('local');
+      localForm.setFieldsValue({ username: account.username });
+      message.info('请输入密码登录');
+    }
+  };
+
+  // 删除账号后，若账号列表为空则切换到本地登录 Tab
+  const handleRemoveAccount = (uuid: string) => {
+    removeAccount(uuid);
+    // 删除后账号数量 -1，若只剩 1 个（即删完后为 0）则切换 Tab
+    if (accounts.length <= 1) {
+      setTab('local');
+    }
   };
 
   const bg = darkMode ? '#0d1117' : '#f0f2f5';
@@ -232,9 +263,16 @@ const LoginPage: React.FC = () => {
                         <Popconfirm
                           key="del"
                           title="从本地移除该账号？"
-                          onConfirm={() => removeAccount(a.user_uuid)}
+                          onConfirm={(e) => { e?.stopPropagation(); handleRemoveAccount(a.user_uuid); }}
+                          onCancel={(e) => e?.stopPropagation()}
                         >
-                          <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+                          <Button
+                            type="text"
+                            size="small"
+                            danger
+                            icon={<DeleteOutlined />}
+                            onClick={(e) => e.stopPropagation()}
+                          />
                         </Popconfirm>,
                       ]}
                       onClick={() => handlePickAccount(a.user_uuid)}
@@ -268,8 +306,8 @@ const LoginPage: React.FC = () => {
                 />
               ),
             }] : []),
-            // 没有账号 或 添加模式 时才显示本地登录和云端登录
-            ...(accounts.length === 0 || addMode ? [
+            // 本地登录和云端登录始终显示
+            ...[
             {
               key: 'local',
               label: (<Space size={4}><UserOutlined />本地登录</Space>),
@@ -352,7 +390,7 @@ const LoginPage: React.FC = () => {
                 </Form>
               ),
             },
-            ] : []),
+            ],
           ]}
         />
 
@@ -361,10 +399,10 @@ const LoginPage: React.FC = () => {
             <Button
               type="link"
               size="small"
-              onClick={() => { setTab('local'); navigate('.', { state: { addMode: true }, replace: true }); }}
+              onClick={() => setTab('local')}
               style={{ fontSize: 12, color: darkMode ? '#6e7681' : '#999' }}
             >
-              + 添加新账号（本地/云端）
+              + 使用其他账号登录
             </Button>
           ) : (
             <Text style={{ fontSize: 12, color: darkMode ? '#6e7681' : '#bbb' }}>

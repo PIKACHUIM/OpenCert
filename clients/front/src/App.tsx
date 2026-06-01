@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { ConfigProvider, theme, Spin } from 'antd';
+import { ConfigProvider, theme, Spin, App as AntdApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { useAppStore } from './store/appStore';
 import MainLayout from './layouts/MainLayout';
@@ -62,6 +62,7 @@ const App: React.FC = () => {
         },
       }}
     >
+      <AntdApp>
       <ErrorBoundary>
         <BrowserRouter>
           <Routes>
@@ -94,6 +95,7 @@ const App: React.FC = () => {
           </Routes>
         </BrowserRouter>
       </ErrorBoundary>
+      </AntdApp>
     </ConfigProvider>
   );
 };

@@ -5,12 +5,12 @@ import {
 } from 'antd';
 import {
   KeyOutlined, UserOutlined, FileTextOutlined, CreditCardOutlined,
-  LockOutlined, DeleteOutlined, PlusOutlined,
+  LockOutlined, DeleteOutlined, PlusOutlined, EyeOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../../components/PageHeader';
 import {
-  getCards, getCerts, deleteCert, createCredential, type CredentialPayload,
+  getCards, getCerts, deleteCert, createCredential, getCredentialSecret, type CredentialPayload,
 } from '../../api';
 import type { Card, Certificate } from '../../types';
 
@@ -57,8 +57,60 @@ const CardPicker: React.FC<{
   );
 };
 
+// 将 base64 解码为字符串（UTF-8 安全）
+const fromB64 = (s: string): string => {
+  try {
+    return decodeURIComponent(escape(atob(s)));
+  } catch {
+    return s;
+  }
+};
+
+// 根据 cert_type 将解密后的 JSON 渲染为可读内容
+const renderSecretContent = (certType: CredType, secretJson: string) => {
+  try {
+    const obj = JSON.parse(secretJson);
+    if (certType === 'login') {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {obj.password !== undefined && <div><strong>密码：</strong><Typography.Text copyable code>{obj.password}</Typography.Text></div>}
+        </div>
+      );
+    }
+    if (certType === 'note') {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {obj.title && <div><strong>标题：</strong>{obj.title}</div>}
+          {obj.content && <div><strong>内容：</strong><pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{obj.content}</pre></div>}
+        </div>
+      );
+    }
+    if (certType === 'payment') {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {obj.card_number && <div><strong>卡号：</strong><Typography.Text copyable code>{obj.card_number}</Typography.Text></div>}
+          {obj.expiry && <div><strong>有效期：</strong>{obj.expiry}</div>}
+          {obj.cvv && <div><strong>CVV：</strong><Typography.Text copyable code>{obj.cvv}</Typography.Text></div>}
+        </div>
+      );
+    }
+    if (certType === 'text') {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {obj.label && <div><strong>标签：</strong>{obj.label}</div>}
+          {obj.secret && <div><strong>内容：</strong><Typography.Text copyable code>{obj.secret}</Typography.Text></div>}
+        </div>
+      );
+    }
+    // 其他类型直接展示 JSON
+    return <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{JSON.stringify(obj, null, 2)}</pre>;
+  } catch {
+    return <Typography.Text copyable>{secretJson}</Typography.Text>;
+  }
+};
+
 /**
- * 通用列表 + 删除：5 类凭据共用，按 cert_type 过滤。
+ * 通用列表 + 删除 + 查看：5 类凭据共用，按 cert_type 过滤。
  */
 const CredentialList: React.FC<{
   certs: Certificate[];
@@ -67,49 +119,112 @@ const CredentialList: React.FC<{
   onChanged: () => void;
 }> = ({ certs, cardUUID, certType, onChanged }) => {
   const { t } = useTranslation();
+  const [viewModal, setViewModal] = useState<{ open: boolean; cert: Certificate | null }>({ open: false, cert: null });
+  const [pinInput, setPinInput] = useState('');
+  const [secretContent, setSecretContent] = useState<string | null>(null);
+  const [viewLoading, setViewLoading] = useState(false);
+
   const data = useMemo(
     () => certs.filter((c) => c.cert_type === certType),
     [certs, certType],
   );
 
+  const handleView = (row: Certificate) => {
+    setViewModal({ open: true, cert: row });
+    setPinInput('');
+    setSecretContent(null);
+  };
+
+  const handleDecrypt = async () => {
+    if (!viewModal.cert || !pinInput) { message.warning('请输入卡片密码'); return; }
+    setViewLoading(true);
+    try {
+      const b64 = await getCredentialSecret(cardUUID, viewModal.cert.uuid, pinInput);
+      setSecretContent(fromB64(b64));
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || e?.message || '解密失败');
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
   const columns = [
-    { title: 'UUID', dataIndex: 'uuid', key: 'uuid', width: 280, ellipsis: true },
-    { title: t('credentials.common.type'), dataIndex: 'key_type', key: 'key_type', width: 140 },
+    { title: 'UUID', dataIndex: 'uuid', key: 'uuid', width: 240, ellipsis: true },
+    { title: t('credentials.common.type'), dataIndex: 'key_type', key: 'key_type', width: 120 },
     { title: t('credentials.common.remark'), dataIndex: 'remark', key: 'remark' },
-    { title: t('credentials.common.createdAt'), dataIndex: 'created_at', key: 'created_at', width: 200 },
+    { title: t('credentials.common.createdAt'), dataIndex: 'created_at', key: 'created_at', width: 180 },
     {
       title: t('credentials.common.actions'),
       key: 'actions',
-      width: 120,
+      width: 160,
       render: (_: unknown, row: Certificate) => (
-        <Popconfirm
-          title={t('credentials.common.deleteConfirm')}
-          onConfirm={async () => {
-            try {
-              await deleteCert(cardUUID, row.uuid);
-              message.success('OK');
-              onChanged();
-            } catch (e: any) {
-              message.error(e?.message || 'failed');
-            }
-          }}
-        >
-          <Button danger size="small" icon={<DeleteOutlined />}>
-            {t('credentials.common.delete')}
+        <Space size="small">
+          <Button size="small" icon={<EyeOutlined />} onClick={() => handleView(row)}>
+            查看
           </Button>
-        </Popconfirm>
+          <Popconfirm
+            title={t('credentials.common.deleteConfirm')}
+            onConfirm={async () => {
+              try {
+                await deleteCert(cardUUID, row.uuid);
+                message.success('OK');
+                onChanged();
+              } catch (e: any) {
+                message.error(e?.message || 'failed');
+              }
+            }}
+          >
+            <Button danger size="small" icon={<DeleteOutlined />}>
+              {t('credentials.common.delete')}
+            </Button>
+          </Popconfirm>
+        </Space>
       ),
     },
   ];
 
   return (
-    <Table
-      rowKey="uuid"
-      size="small"
-      pagination={{ pageSize: 10 }}
-      dataSource={data}
-      columns={columns as any}
-    />
+    <>
+      <Table
+        rowKey="uuid"
+        size="small"
+        pagination={{ pageSize: 10 }}
+        dataSource={data}
+        columns={columns as any}
+      />
+
+      {/* 查看凭据弹窗 */}
+      <Modal
+        title="查看凭据内容"
+        open={viewModal.open}
+        onCancel={() => { setViewModal({ open: false, cert: null }); setSecretContent(null); setPinInput(''); }}
+        footer={null}
+        width={480}
+        destroyOnHidden
+      >
+        {!secretContent ? (
+          <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+            <Alert type="warning" showIcon title="需要输入卡片密码才能查看私密内容" />
+            <Input.Password
+              prefix={<LockOutlined />}
+              placeholder="请输入卡片密码"
+              value={pinInput}
+              onChange={(e) => setPinInput(e.target.value)}
+              onPressEnter={handleDecrypt}
+              autoComplete="current-password"
+            />
+            <Button type="primary" loading={viewLoading} onClick={handleDecrypt} block>
+              解密查看
+            </Button>
+          </Space>
+        ) : (
+          <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+            {renderSecretContent(certType, secretContent)}
+            <Button onClick={() => setSecretContent(null)} block>重新输入密码</Button>
+          </Space>
+        )}
+      </Modal>
+    </>
   );
 };
 
@@ -119,10 +234,12 @@ const LoginForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: (
   const { t } = useTranslation();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
+  // 优先使用表单内输入的密码，其次使用外部传入的密码
   return (
-    <Form form={form} layout="vertical" onFinish={async (v) => {
+    <Form form={form} layout="vertical" initialValues={{ _card_password: cardPassword }} onFinish={async (v) => {
       if (!cardUUID) { message.warning(t('credentials.common.noCard')); return; }
-      if (!cardPassword) { message.warning(t('credentials.common.cardPassword')); return; }
+      const pwd = v._card_password || cardPassword;
+      if (!pwd) { message.warning(t('credentials.common.cardPassword')); return; }
       setLoading(true);
       try {
         const meta = JSON.stringify({ site: v.site, username: v.username, url: v.url });
@@ -132,7 +249,7 @@ const LoginForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: (
           key_type: 'login-v1',
           public_meta: toB64(meta),
           secret_data: toB64(secret),
-          card_password: cardPassword,
+          card_password: pwd,
           remark: v.remark,
         };
         await createCredential(cardUUID, payload);
@@ -145,7 +262,7 @@ const LoginForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: (
         setLoading(false);
       }
     }}>
-      <Alert type="info" showIcon message={t('credentials.login.tip')} style={{ marginBottom: 12 }} />
+      <Alert type="info" showIcon title={t('credentials.login.tip')} style={{ marginBottom: 12 }} />
       <Form.Item name="site" label={t('credentials.login.site')} rules={[{ required: true }]}>
         <Input placeholder={t('credentials.login.sitePh')} />
       </Form.Item>
@@ -153,13 +270,16 @@ const LoginForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: (
         <Input prefix={<UserOutlined />} />
       </Form.Item>
       <Form.Item name="password" label={t('credentials.login.password')} rules={[{ required: true }]}>
-        <Input.Password />
+        <Input.Password autoComplete="new-password" />
       </Form.Item>
       <Form.Item name="url" label={t('credentials.login.url')}>
         <Input />
       </Form.Item>
       <Form.Item name="remark" label={t('credentials.common.remark')}>
         <Input />
+      </Form.Item>
+      <Form.Item name="_card_password" label={t('credentials.common.cardPassword')} rules={[{ required: true, message: '请输入卡片密码' }]}>
+        <Input.Password prefix={<LockOutlined />} placeholder={t('credentials.common.cardPassword')} autoComplete="current-password" />
       </Form.Item>
       <Button type="primary" htmlType="submit" loading={loading}>{t('credentials.common.create')}</Button>
     </Form>
@@ -171,9 +291,10 @@ const NoteForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   return (
-    <Form form={form} layout="vertical" onFinish={async (v) => {
+    <Form form={form} layout="vertical" initialValues={{ _card_password: cardPassword }} onFinish={async (v) => {
       if (!cardUUID) { message.warning(t('credentials.common.noCard')); return; }
-      if (!cardPassword) { message.warning(t('credentials.common.cardPassword')); return; }
+      const pwd = v._card_password || cardPassword;
+      if (!pwd) { message.warning(t('credentials.common.cardPassword')); return; }
       setLoading(true);
       try {
         const meta = JSON.stringify({ title: v.title });
@@ -181,7 +302,7 @@ const NoteForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
         await createCredential(cardUUID, {
           cert_type: 'note', key_type: 'note-v1',
           public_meta: toB64(meta), secret_data: toB64(secret),
-          card_password: cardPassword, remark: v.remark,
+          card_password: pwd, remark: v.remark,
         });
         message.success(t('credentials.common.createSuccess'));
         form.resetFields();
@@ -192,7 +313,7 @@ const NoteForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
         setLoading(false);
       }
     }}>
-      <Alert type="info" showIcon message={t('credentials.note.tip')} style={{ marginBottom: 12 }} />
+      <Alert type="info" showIcon title={t('credentials.note.tip')} style={{ marginBottom: 12 }} />
       <Form.Item name="title" label={t('credentials.note.noteTitle')} rules={[{ required: true }]}>
         <Input />
       </Form.Item>
@@ -201,6 +322,9 @@ const NoteForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
       </Form.Item>
       <Form.Item name="remark" label={t('credentials.common.remark')}>
         <Input />
+      </Form.Item>
+      <Form.Item name="_card_password" label={t('credentials.common.cardPassword')} rules={[{ required: true, message: '请输入卡片密码' }]}>
+        <Input.Password prefix={<LockOutlined />} placeholder={t('credentials.common.cardPassword')} autoComplete="current-password" />
       </Form.Item>
       <Button type="primary" htmlType="submit" loading={loading}>{t('credentials.common.create')}</Button>
     </Form>
@@ -212,9 +336,10 @@ const PaymentForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated:
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   return (
-    <Form form={form} layout="vertical" onFinish={async (v) => {
+    <Form form={form} layout="vertical" initialValues={{ _card_password: cardPassword }} onFinish={async (v) => {
       if (!cardUUID) { message.warning(t('credentials.common.noCard')); return; }
-      if (!cardPassword) { message.warning(t('credentials.common.cardPassword')); return; }
+      const pwd = v._card_password || cardPassword;
+      if (!pwd) { message.warning(t('credentials.common.cardPassword')); return; }
       setLoading(true);
       try {
         const meta = JSON.stringify({ cardholder: v.cardholder, bank: v.bank, last4: (v.card_number || '').slice(-4) });
@@ -222,7 +347,7 @@ const PaymentForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated:
         await createCredential(cardUUID, {
           cert_type: 'payment', key_type: 'card-v1',
           public_meta: toB64(meta), secret_data: toB64(secret),
-          card_password: cardPassword, remark: v.remark,
+          card_password: pwd, remark: v.remark,
         });
         message.success(t('credentials.common.createSuccess'));
         form.resetFields();
@@ -233,7 +358,7 @@ const PaymentForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated:
         setLoading(false);
       }
     }}>
-      <Alert type="info" showIcon message={t('credentials.payment.tip')} style={{ marginBottom: 12 }} />
+      <Alert type="info" showIcon title={t('credentials.payment.tip')} style={{ marginBottom: 12 }} />
       <Form.Item name="cardholder" label={t('credentials.payment.cardholder')} rules={[{ required: true }]}>
         <Input />
       </Form.Item>
@@ -245,7 +370,7 @@ const PaymentForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated:
           <Input placeholder="MM/YY" maxLength={5} />
         </Form.Item>
         <Form.Item name="cvv" label={t('credentials.payment.cvv')} rules={[{ required: true }]}>
-          <Input.Password maxLength={4} />
+          <Input.Password maxLength={4} autoComplete="new-password" />
         </Form.Item>
       </Space>
       <Form.Item name="bank" label={t('credentials.payment.bank')}>
@@ -253,6 +378,9 @@ const PaymentForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated:
       </Form.Item>
       <Form.Item name="remark" label={t('credentials.common.remark')}>
         <Input />
+      </Form.Item>
+      <Form.Item name="_card_password" label={t('credentials.common.cardPassword')} rules={[{ required: true, message: '请输入卡片密码' }]}>
+        <Input.Password prefix={<LockOutlined />} placeholder={t('credentials.common.cardPassword')} autoComplete="current-password" />
       </Form.Item>
       <Button type="primary" htmlType="submit" loading={loading}>{t('credentials.common.create')}</Button>
     </Form>
@@ -264,9 +392,10 @@ const TextForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   return (
-    <Form form={form} layout="vertical" onFinish={async (v) => {
+    <Form form={form} layout="vertical" initialValues={{ _card_password: cardPassword }} onFinish={async (v) => {
       if (!cardUUID) { message.warning(t('credentials.common.noCard')); return; }
-      if (!cardPassword) { message.warning(t('credentials.common.cardPassword')); return; }
+      const pwd = v._card_password || cardPassword;
+      if (!pwd) { message.warning(t('credentials.common.cardPassword')); return; }
       setLoading(true);
       try {
         const meta = JSON.stringify({ label: v.label });
@@ -274,7 +403,7 @@ const TextForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
         await createCredential(cardUUID, {
           cert_type: 'text', key_type: 'text-v1',
           public_meta: toB64(meta), secret_data: toB64(secret),
-          card_password: cardPassword, remark: v.remark,
+          card_password: pwd, remark: v.remark,
         });
         message.success(t('credentials.common.createSuccess'));
         form.resetFields();
@@ -285,7 +414,7 @@ const TextForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
         setLoading(false);
       }
     }}>
-      <Alert type="info" showIcon message={t('credentials.text.tip')} style={{ marginBottom: 12 }} />
+      <Alert type="info" showIcon title={t('credentials.text.tip')} style={{ marginBottom: 12 }} />
       <Form.Item name="label" label={t('credentials.text.label')} rules={[{ required: true }]}>
         <Input />
       </Form.Item>
@@ -294,6 +423,9 @@ const TextForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
       </Form.Item>
       <Form.Item name="remark" label={t('credentials.common.remark')}>
         <Input />
+      </Form.Item>
+      <Form.Item name="_card_password" label={t('credentials.common.cardPassword')} rules={[{ required: true, message: '请输入卡片密码' }]}>
+        <Input.Password prefix={<LockOutlined />} placeholder={t('credentials.common.cardPassword')} autoComplete="current-password" />
       </Form.Item>
       <Button type="primary" htmlType="submit" loading={loading}>{t('credentials.common.create')}</Button>
     </Form>
@@ -341,7 +473,7 @@ const CredentialsPage: React.FC = () => {
   useEffect(() => { loadCerts(); }, [cardUUID]);
 
   const renderTabContent = (kind: CredType, FormComp: React.FC<any>) => (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+<Space orientation="vertical" size="middle" style={{ width: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => { setActiveTab(kind); setCreateModalOpen(true); }}>
           {t('credentials.common.create')}
@@ -385,7 +517,7 @@ const CredentialsPage: React.FC = () => {
         onCancel={() => setCreateModalOpen(false)}
         footer={null}
         width={560}
-        destroyOnClose
+        destroyOnHidden
       >
         {activeTab === 'login' && <LoginForm cardUUID={cardUUID} cardPassword={cardPassword} onCreated={() => { loadCerts(); setCreateModalOpen(false); }} />}
         {activeTab === 'note' && <NoteForm cardUUID={cardUUID} cardPassword={cardPassword} onCreated={() => { loadCerts(); setCreateModalOpen(false); }} />}

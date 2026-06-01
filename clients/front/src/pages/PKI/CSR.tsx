@@ -169,7 +169,7 @@ const CSRPage: React.FC = () => {
       title: '密钥',
       width: 140,
       render: (_: any, r: CSRRecord) => (
-        <Space direction="vertical" size={0}>
+<Space orientation="vertical" size={0}>
           <Tag color="blue">{r.key_type?.toUpperCase()}</Tag>
           <Space size={4} style={{ marginTop: 2 }}>
             <Tag color={r.key_storage === 'smartcard' ? 'purple' : 'green'} style={{ fontSize: 11 }}>

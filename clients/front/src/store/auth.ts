@@ -21,9 +21,11 @@ interface AuthState {
   isAuthenticated: () => boolean;
 
   // ---- mutations ----
-  addAccount: (acc: AuthToken, opts?: { userType?: 'local' | 'cloud'; cloudUrl?: string; cloudUser?: string; expiresAt?: string }) => void;
+  addAccount: (acc: AuthToken, opts?: { userType?: 'local' | 'cloud'; cloudUrl?: string; cloudUser?: string; expiresAt?: string; savedPassword?: string }) => void;
   removeAccount: (uuid: string) => void;
   setActive: (uuid: string | null) => void;
+  /** 退出当前账号：只清 token/activeUUID，保留账号记录（下次可快速重新登录） */
+  deactivate: (uuid: string) => void;
   clearAll: () => void;
   /** 更新活动账号的 token（刷新场景） */
   setActiveToken: (token: string) => void;
@@ -110,6 +112,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       display_name: display,
       added_at: now,
       last_active_at: now,
+      saved_password: opts?.savedPassword,
     };
     set((s) => {
       const others = s.accounts.filter((a) => a.user_uuid !== next.user_uuid);
@@ -153,6 +156,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       localStorage.setItem(LS_ACTIVE, uuid);
       localStorage.setItem('auth_token', acc.token);
       return { activeUUID: uuid };
+    });
+  },
+
+  deactivate: (uuid) => {
+    set((s) => {
+      if (s.activeUUID !== uuid) return {};
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem(LS_ACTIVE);
+      return { activeUUID: null };
     });
   },
 

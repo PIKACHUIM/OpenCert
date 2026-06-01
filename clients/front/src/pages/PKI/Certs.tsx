@@ -271,7 +271,7 @@ const CertsPage: React.FC = () => {
       title: '密钥',
       width: 110,
       render: (_: any, r: PKICert) => (
-        <Space direction="vertical" size={0}>
+<Space orientation="vertical" size={0}>
           <Tag color="blue" style={{ margin: 0 }}>{r.key_type?.toUpperCase()}</Tag>
           <Text style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#999' }}>
             {r.key_storage === 'smartcard' ? '智能卡' : '数据库'} | {r.has_private_key ? '有私钥' : '无私钥'}
@@ -450,7 +450,7 @@ const CertsPage: React.FC = () => {
                 <>
                   <Alert
                     type="warning" showIcon
-                    message={isSmartcard
+                    title={isSmartcard
                       ? '自签名模式：私钥存储在智能卡上，需要输入卡片密码解密私钥'
                       : '自签名模式：使用 CSR 中存储的私钥进行自签名'
                     }
@@ -559,7 +559,7 @@ const CertsPage: React.FC = () => {
 
           {importMode === 'cert_only' && (
             <>
-              <Alert type="info" showIcon message="系统将自动匹配数据库或智能卡中已有的私钥并关联到此证书" style={{ marginBottom: 12 }} />
+<Alert type="info" showIcon title="系统将自动匹配数据库或智能卡中已有的私钥并关联到此证书" style={{ marginBottom: 12 }} />
               <Form.Item name="cert_pem" label="证书（PEM 格式）" rules={[{ required: true }]}>
                 <TextArea rows={8} placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
                   style={{ fontFamily: 'monospace', fontSize: 12 }} />
@@ -594,7 +594,7 @@ const CertsPage: React.FC = () => {
 
           {importMode === 'key_only' && (
             <>
-              <Alert type="warning" showIcon message="仅导入私钥，证书可在未来导入时自动关联" style={{ marginBottom: 12 }} />
+<Alert type="warning" showIcon title="仅导入私钥，证书可在未来导入时自动关联" style={{ marginBottom: 12 }} />
               <Form.Item name="key_pem" label="私钥（PEM 格式）" rules={[{ required: true }]}>
                 <TextArea rows={8} placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
                   style={{ fontFamily: 'monospace', fontSize: 12 }} />

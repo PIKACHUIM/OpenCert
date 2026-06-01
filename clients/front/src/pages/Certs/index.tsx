@@ -164,7 +164,7 @@ const CertsPage: React.FC = () => {
       cancelText: '取消',
       content: (
         <div style={{ marginTop: 12 }}>
-          <Alert message={`确定要删除证书 ${cert.uuid.slice(0, 8)}... 吗？此操作不可恢复。`} type="error" showIcon style={{ marginBottom: 12 }} />
+<Alert title={`确定要删除证书 ${cert.uuid.slice(0, 8)}... 吗？此操作不可恢复。`} type="error" showIcon style={{ marginBottom: 12 }} />
           <div style={{ marginBottom: 8 }}>
             <Text style={{ fontSize: 12 }}>请输入证书 UUID 以确认：</Text>
             <div style={{ marginTop: 4, marginBottom: 4, padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>

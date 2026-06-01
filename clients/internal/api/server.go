@@ -155,6 +155,16 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/cards/{card_uuid}/certs/{uuid}/export", s.handleExportCertKey)
 	s.mux.HandleFunc("GET /api/cards/{card_uuid}/certs/{uuid}/detail", s.handleCertDetail)
 	s.mux.HandleFunc("POST /api/cards/{card_uuid}/credentials", s.handleCreateCredential)
+	s.mux.HandleFunc("POST /api/cards/{card_uuid}/credentials/{cert_uuid}/secret", s.handleGetCredentialSecret)
+
+	// ---- FIDO2/WebAuthn 凭据管理 ----
+	s.mux.HandleFunc("GET /api/cards/{card_uuid}/fido", s.handleListFIDO)
+	s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido", s.handleCreateFIDO)
+	s.mux.HandleFunc("GET /api/cards/{card_uuid}/fido/{uuid}", s.handleGetFIDO)
+	s.mux.HandleFunc("DELETE /api/cards/{card_uuid}/fido/{uuid}", s.handleDeleteFIDO)
+	s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido/{uuid}/secret", s.handleGetFIDOSecret)
+	s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido/{uuid}/counter", s.handleIncrFIDOCounter)
+	s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido/{uuid}/pubkey", s.handleExportFIDOPublicKey)
 
 	// ---- 密钥操作 ----
 	s.mux.HandleFunc("POST /api/cards/{card_uuid}/keygen", s.handleKeyGen)

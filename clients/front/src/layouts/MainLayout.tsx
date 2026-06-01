@@ -28,6 +28,7 @@ const MainLayout: React.FC = () => {
   const activeUUID = useAuthStore((s) => s.activeUUID);
   const setActive = useAuthStore((s) => s.setActive);
   const removeAccount = useAuthStore((s) => s.removeAccount);
+  const deactivate = useAuthStore((s) => s.deactivate);
   const clearAll = useAuthStore((s) => s.clearAll);
   const active = accounts.find((a) => a.user_uuid === activeUUID) || null;
 
@@ -81,14 +82,11 @@ const MainLayout: React.FC = () => {
     },
   ];
 
-  // 退出：仅登出当前活动账号；若还有其它账号则切到第一个，否则回到登录页
+  // 退出：只清除当前 token/activeUUID，保留账号记录（下次可在"已有账号"Tab 快速重新登录）
   const handleLogout = async () => {
     try { await apiLogout(); } catch { /* ignore */ }
-    if (activeUUID) removeAccount(activeUUID);
-    const remain = useAuthStore.getState().accounts;
-    if (remain.length === 0) {
-      navigate('/login', { replace: true });
-    }
+    if (activeUUID) deactivate(activeUUID);
+    navigate('/login', { replace: true });
   };
 
   // 全部登出：清所有账号并返回登录页

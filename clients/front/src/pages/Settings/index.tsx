@@ -197,7 +197,7 @@ const Settings: React.FC = () => {
         headStyle={{ borderBottom: darkMode ? '1px solid #21262d' : undefined }}
       >
         <Alert
-          message={connected ? t('layout.connected', { version: serverVersion }) : t('settings.notConnected')}
+          title={connected ? t('layout.connected', { version: serverVersion }) : t('settings.notConnected')}
           type={connected ? 'success' : 'warning'} showIcon style={{ marginBottom: 16 }}
         />
         <Form layout="vertical">
@@ -213,7 +213,7 @@ const Settings: React.FC = () => {
 
       {/* 关于 */}
       <Card title={t('settings.about')} style={cardStyle} headStyle={{ borderBottom: darkMode ? '1px solid #21262d' : undefined }}>
-        <Space direction="vertical" style={{ width: '100%' }}>
+<Space orientation="vertical" style={{ width: '100%' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <Text style={{ color: darkMode ? '#8b949e' : '#666' }}>{t('settings.frontVersion')}</Text>
             <Tag color="blue">v1.0.0</Tag>

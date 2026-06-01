@@ -6,7 +6,7 @@ import {
   UserOutlined, LockOutlined, SafetyCertificateOutlined, CloudOutlined,
   LinkOutlined, MailOutlined, IdcardOutlined,
 } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
 import { register, cloudLogin } from '../../api';
 import { useAuthStore } from '../../store/auth';
 import { useAppStore } from '../../store/appStore';
@@ -16,7 +16,13 @@ const { Title, Text, Paragraph } = Typography;
 const WelcomePage: React.FC = () => {
   const navigate = useNavigate();
   const addAccount = useAuthStore((s) => s.addAccount);
+  const accounts = useAuthStore((s) => s.accounts);
   const { darkMode } = useAppStore();
+
+  // 已有账号时不应显示首次运行向导，重定向到登录页
+  if (accounts.length > 0) {
+    return <Navigate to="/login" replace />;
+  }
   const [mode, setMode] = useState<'choose' | 'register' | 'cloud'>('choose');
   const [loading, setLoading] = useState(false);
   const [regForm] = Form.useForm();

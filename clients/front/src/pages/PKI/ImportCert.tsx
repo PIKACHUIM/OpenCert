@@ -80,7 +80,7 @@ const ImportCertPage: React.FC = () => {
         >
           {(Object.keys(modeLabels) as ImportCertMode[]).map((k) => (
             <Radio.Button key={k} value={k} style={{ height: 'auto', padding: '8px 16px', lineHeight: 1.4 }}>
-              <Space direction="vertical" size={2} align="center">
+<Space orientation="vertical" size={2} align="center">
                 <Space size={4}>{modeLabels[k].icon}<span>{modeLabels[k].label}</span></Space>
                 <Text style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#999' }}>{modeLabels[k].desc}</Text>
               </Space>
@@ -151,7 +151,7 @@ const ImportCertPage: React.FC = () => {
             style={{ marginTop: 16 }}
             message={result.key_matched ? '已自动匹配到私钥' : '导入成功（未匹配到私钥）'}
             description={
-              <Space direction="vertical" size={4}>
+<Space orientation="vertical" size={4}>
                 {result.matched_source && <Text>匹配来源：<Tag color="blue">{result.matched_source}</Tag></Text>}
                 {result.cert?.common_name && <Text>CN：{result.cert.common_name}</Text>}
                 {result.cert?.uuid && <Text>UUID：<Text copyable style={{ fontSize: 12 }}>{result.cert.uuid}</Text></Text>}

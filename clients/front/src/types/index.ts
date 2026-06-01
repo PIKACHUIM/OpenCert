@@ -371,6 +371,8 @@ export interface AccountSession extends AuthToken {
   added_at: string;
   /** 最近一次活动时间（用于过期判断） */
   last_active_at: string;
+  /** 已保存的密码（勾选"记住密码"时存储，用于进程重启后静默重新登录） */
+  saved_password?: string;
 }
 
 /** 客户端 Settings（与后端 ClientConfig 对齐） */

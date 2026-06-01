@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Card as ACard, Select, Form, Input, Button, Table, Popconfirm,
-  message, Space, Typography, Alert, Modal, Tag,
+  message, Space, Typography, Alert, Modal, Tag, Tooltip,
 } from 'antd';
 import {
-  KeyOutlined, LockOutlined, DeleteOutlined, PlusOutlined,
+  KeyOutlined, LockOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../../components/PageHeader';
@@ -16,6 +16,17 @@ import type { Card, Certificate } from '../../types';
 const { Text } = Typography;
 
 const toB64 = (s: string): string => btoa(unescape(encodeURIComponent(s)));
+
+/** 生成随机 base64url 字符串（n 字节） */
+const randomBase64url = (n: number): string => {
+  const arr = new Uint8Array(n);
+  crypto.getRandomValues(arr);
+  return btoa(String.fromCharCode(...arr))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+};
+
+/** 生成 UUID v4 */
+const randomUUID = (): string => crypto.randomUUID();
 
 const FidoPage: React.FC = () => {
   const { t } = useTranslation();
@@ -140,7 +151,7 @@ const FidoPage: React.FC = () => {
         onCancel={() => setCreateModalOpen(false)}
         footer={null}
         width={560}
-        destroyOnClose
+        destroyOnHidden
       >
         <FidoForm
           cardUUID={cardUUID}
@@ -182,7 +193,7 @@ const FidoForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
         setLoading(false);
       }
     }}>
-      <Alert type="info" showIcon message={t('credentials.fido.tip')} style={{ marginBottom: 12 }} />
+<Alert type="info" showIcon title={t('credentials.fido.tip')} style={{ marginBottom: 12 }} />
       <Form.Item name="rp_id" label={t('credentials.fido.rpId')} rules={[{ required: true }]}>
         <Input placeholder={t('credentials.fido.rpIdPh')} />
       </Form.Item>
@@ -190,10 +201,30 @@ const FidoForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
         <Input />
       </Form.Item>
       <Form.Item name="user_handle" label={t('credentials.fido.userHandle')}>
-        <Input />
+        <Space.Compact style={{ width: '100%' }}>
+          <Form.Item name="user_handle" noStyle>
+            <Input placeholder="留空则随机生成" />
+          </Form.Item>
+          <Tooltip title="随机生成 User Handle">
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={() => form.setFieldValue('user_handle', randomBase64url(16))}
+            />
+          </Tooltip>
+        </Space.Compact>
       </Form.Item>
       <Form.Item name="credential_id" label={t('credentials.fido.credentialId')} rules={[{ required: true }]}>
-        <Input />
+        <Space.Compact style={{ width: '100%' }}>
+          <Form.Item name="credential_id" noStyle>
+            <Input placeholder="Credential ID" />
+          </Form.Item>
+          <Tooltip title="随机生成 Credential ID">
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={() => form.setFieldValue('credential_id', randomUUID())}
+            />
+          </Tooltip>
+        </Space.Compact>
       </Form.Item>
       <Form.Item name="private_key_pem" label={t('credentials.fido.privateKeyPem')}>
         <Input.TextArea rows={4} placeholder="-----BEGIN PRIVATE KEY-----..." />

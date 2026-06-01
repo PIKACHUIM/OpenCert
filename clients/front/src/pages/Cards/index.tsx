@@ -358,7 +358,7 @@ const Cards: React.FC = () => {
       render: (_: any, record: CardType) => {
         const cfg = securityLevelConfig[record.security_level] || securityLevelConfig.low;
         return (
-          <Space direction="vertical" size={2}>
+<Space orientation="vertical" size={2}>
             <Tag color={slotColor(record.slot_type)}>{slotLabel(record.slot_type)}</Tag>
             <Tooltip title={cfg.desc}>
               <Tag color={cfg.color}>安全性: {cfg.label}</Tag>

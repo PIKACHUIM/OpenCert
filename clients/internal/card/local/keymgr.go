@@ -582,14 +582,16 @@ func (m *KeyManager) ImportCredential(ctx context.Context, req CredentialRequest
 		}
 
 		final := inner
-		// 3. medium / high：从 TPM NV 读出证书密钥再加密一层
-		if secLevel == storage.SecurityLevelMedium || secLevel == storage.SecurityLevelHigh {
-			if m.tpmProvider == nil || !m.tpmProvider.Available() {
-				return nil, fmt.Errorf("%s 卡片需要 TPM Provider", secLevel)
-			}
-			if card.TPMCertKeyNVHandle == 0 {
-				return nil, fmt.Errorf("%s 卡片 TPM NV 句柄缺失", secLevel)
-			}
+		// 3. medium / high：从 TPM NV 读出证书密钥再加密一层。
+		// 对于 high 等级卡片，若 TPMCertKeyNVHandle 未初始化（旧版本卡片或 TPM 不可用时创建），
+		// 则降级为 low 等级（仅 master 加密），避免因历史数据问题导致凭据无法写入。
+		useTPMLayer := (secLevel == storage.SecurityLevelMedium || secLevel == storage.SecurityLevelHigh) &&
+			m.tpmProvider != nil && m.tpmProvider.Available() &&
+			card != nil && card.TPMCertKeyNVHandle != 0
+		if secLevel == storage.SecurityLevelMedium && (m.tpmProvider == nil || !m.tpmProvider.Available()) {
+			return nil, fmt.Errorf("medium 卡片需要 TPM Provider")
+		}
+		if useTPMLayer {
 			nvAuth := deriveTPMCertKeyAuth(masterKey)
 			defer zeroBytes(nvAuth)
 			tpmCertKey, err := m.tpmProvider.NVRead(tpm.NVHandle(card.TPMCertKeyNVHandle), nvAuth)
@@ -1187,4 +1189,68 @@ func zeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+// ExportCredential 解密并返回安全凭据的私密内容（SecretData）。
+// 解密流程与 ImportCredential 加密流程完全对称：
+//  1. 若存在 TPM 层（TPMPlatform == tpmPlatformMediumV2），先用 TPM NV 密钥解外层
+//  2. 用 HMAC(masterKey, TempKeySalt) 解密 TempKeyEnc 得到 tempKey
+//  3. 用 tempKey 解密 PrivateData 得到原始 SecretData
+func (m *KeyManager) ExportCredential(ctx context.Context, certUUID string, masterKey []byte, card *storage.Card) ([]byte, error) {
+	cert, err := m.certRepo.GetByUUID(ctx, certUUID)
+	if err != nil {
+		return nil, fmt.Errorf("查询凭据失败: %w", err)
+	}
+	if cert == nil {
+		return nil, fmt.Errorf("凭据不存在: %s", certUUID)
+	}
+	if len(cert.PrivateData) == 0 {
+		// 无私密内容，直接返回公开元数据
+		return cert.CertContent, nil
+	}
+	if len(masterKey) == 0 {
+		return nil, fmt.Errorf("解密需要主密钥")
+	}
+
+	encrypted := cert.PrivateData
+
+	// 1. 若有 TPM 层，先解外层
+	if string(cert.TPMPlatform) == tpmPlatformMediumV2 {
+		if m.tpmProvider == nil || !m.tpmProvider.Available() {
+			return nil, fmt.Errorf("凭据需要 TPM Provider 解密")
+		}
+		if card == nil || card.TPMCertKeyNVHandle == 0 {
+			return nil, fmt.Errorf("凭据需要 TPM NV 句柄")
+		}
+		nvAuth := deriveTPMCertKeyAuth(masterKey)
+		defer zeroBytes(nvAuth)
+		tpmCertKey, err := m.tpmProvider.NVRead(tpm.NVHandle(card.TPMCertKeyNVHandle), nvAuth)
+		if err != nil {
+			return nil, fmt.Errorf("读取 TPM 证书密钥失败: %w", err)
+		}
+		defer zeroBytes(tpmCertKey)
+		inner, err := cryptoutil.DecryptAES256GCM(tpmCertKey, encrypted)
+		if err != nil {
+			return nil, fmt.Errorf("TPM 层解密失败: %w", err)
+		}
+		encrypted = inner
+	}
+
+	// 2. 用 HMAC(masterKey, TempKeySalt) 解密 TempKeyEnc → tempKey
+	if len(cert.TempKeySalt) == 0 || len(cert.TempKeyEnc) == 0 {
+		return nil, fmt.Errorf("凭据缺少密钥元数据")
+	}
+	tempKeyAESKey := cryptoutil.HMACSHA256(masterKey, cert.TempKeySalt)
+	tempKey, err := cryptoutil.DecryptAES256GCM(tempKeyAESKey, cert.TempKeyEnc)
+	if err != nil {
+		return nil, fmt.Errorf("解密临时密钥失败（密码错误？）: %w", err)
+	}
+	defer zeroBytes(tempKey)
+
+	// 3. 用 tempKey 解密私密数据
+	secretData, err := cryptoutil.DecryptAES256GCM(tempKey, encrypted)
+	if err != nil {
+		return nil, fmt.Errorf("解密私密内容失败: %w", err)
+	}
+	return secretData, nil
 }

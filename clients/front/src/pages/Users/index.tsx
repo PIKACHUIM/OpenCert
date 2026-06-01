@@ -180,7 +180,7 @@ const Users: React.FC = () => {
   // 展开行渲染详细信息
   const expandedRowRender = (record: User) => (
     <div style={{ padding: '8px 16px', fontSize: 13, color: darkMode ? '#8b949e' : '#666' }}>
-      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+<Space orientation="vertical" size={4} style={{ width: '100%' }}>
         <div><Text type="secondary" style={{ width: 80, display: 'inline-block' }}>UUID:</Text> <Text copyable={{ text: record.uuid }} style={{ fontSize: 12, color: darkMode ? '#c9d1d9' : '#333' }}>{record.uuid}</Text></div>
         <div><Text type="secondary" style={{ width: 80, display: 'inline-block' }}>用户名:</Text> <Text style={{ color: darkMode ? '#c9d1d9' : '#333' }}>{record.username}</Text></div>
         {record.email && <div><Text type="secondary" style={{ width: 80, display: 'inline-block' }}>邮箱:</Text> <Text style={{ color: darkMode ? '#c9d1d9' : '#333' }}>{record.email}</Text></div>}

@@ -40,24 +40,21 @@ http.interceptors.response.use(
     return res;
   },
   (err) => {
-    // 401 未授权：区分 Token 过期与业务验证失败
+    // 401 未授权：清除失效 token 并跳转登录页
+    // 注意：APP 重启后 session 丢失的情况由 PrivateRoute 在更早时机处理（静默重新登录）
     if (err.response?.status === 401) {
       const msg = err.response?.data?.message || '';
-      // 仅当 Token/Authorization 相关的 401 才清除登录态并跳转
-      const isTokenExpired = /Token|Authorization|登录已过期|未登录/.test(msg);
-      if (isTokenExpired) {
+      // 避免对登录接口本身的 401 触发跳转（密码错误等业务失败）
+      const isAuthEndpoint = err.config?.url?.includes('/api/auth/');
+      // TOTP/凭据等需要卡片密码的接口，密码错误返回 401 不应跳转登录页
+      const isCardPinEndpoint = err.config?.url?.includes('/totp/') || err.config?.url?.includes('/credentials');
+      if (!isAuthEndpoint && !isCardPinEndpoint) {
         localStorage.removeItem('auth_token');
-        localStorage.removeItem('auth_user_uuid');
-        localStorage.removeItem('auth_username');
-        localStorage.removeItem('auth_role');
-        // 避免在登录页重复跳转
         if (!window.location.pathname.startsWith('/login')) {
           window.location.href = '/login';
         }
-        return Promise.reject(new Error('登录已过期，请重新登录'));
       }
-      // 业务验证失败（如密码错误、AdminKey 错误等），仅提示错误
-      return Promise.reject(new Error(msg || '身份验证失败'));
+      return Promise.reject(new Error(msg || '登录已过期，请重新登录'));
     }
     const msg = err.response?.data?.message || err.message || '请求失败';
     return Promise.reject(new Error(msg));
@@ -174,6 +171,11 @@ export interface CredentialPayload {
 export const createCredential = (cardUUID: string, data: CredentialPayload) =>
   http.post<Certificate>(`/api/cards/${cardUUID}/credentials`, data).then((r) => r.data);
 
+// 查看凭据私密内容（需要卡片密码解密）
+export const getCredentialSecret = (cardUUID: string, certUUID: string, cardPassword: string) =>
+  http.post<{ secret_data: string }>(`/api/cards/${cardUUID}/credentials/${certUUID}/secret`, { card_password: cardPassword })
+    .then((r) => r.data.secret_data);
+
 // ---- 日志查询 ----
 export const getLogs = (params?: {
   card_uuid?: string;
@@ -194,8 +196,8 @@ export const getTOTPList = (cardUUID: string) =>
     return Array.isArray(data) ? data : [];
   });
 
-export const getTOTPCode = (uuid: string) =>
-  http.get<TOTPCodeResponse>(`/api/totp/${uuid}/code`).then((r) => r.data);
+export const getTOTPCode = (uuid: string, cardPassword: string) =>
+  http.get<TOTPCodeResponse>(`/api/totp/${uuid}/code`, { params: { card_password: cardPassword } }).then((r) => r.data);
 
 export const createTOTP = (data: CreateTOTPRequest) =>
   http.post<TOTPEntry>(`/api/cards/${data.card_uuid}/totp`, data).then((r) => r.data);
