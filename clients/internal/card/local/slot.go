@@ -158,6 +158,22 @@ func (s *Slot) Mechanisms() []pkcs11types.MechanismType {
 
 // Login 验证卡片密码，解密主密鑰。
 // pin 是用户输入的密码（用户密码或卡片密码）。
+
+// MasterKey 返回已解密的卡片主密钥（仅登录后有效）。
+// 供 FIDO2 等需要直接访问主密钥的模块使用。
+func (s *Slot) MasterKey() []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.loggedIn || len(s.masterKey) == 0 {
+		return nil
+	}
+	cp := make([]byte, len(s.masterKey))
+	copy(cp, s.masterKey)
+	return cp
+}
+
+// Login 验证卡片密码，解密主密鑰。
+// pin 是用户输入的密码（用户密码或卡片密码）。
 func (s *Slot) Login(ctx context.Context, userType pkcs11types.UserType, pin string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

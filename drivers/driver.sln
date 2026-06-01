@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OpenCertKSP", "codes\ksp\Op
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OpenCertCSP", "codes\csp\OpenCertCSP.vcxproj", "{B2C3D4E5-2345-6789-ABCD-EF0123456789}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OpenCertFIDO", "codes\fido\OpenCertFIDO.vcxproj", "{C3D4E5F6-3456-789A-BCDE-F01234567890}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Release|Win32 = Release|Win32
@@ -21,5 +23,9 @@ Global
 		{B2C3D4E5-2345-6789-ABCD-EF0123456789}.Release|Win32.Build.0 = Release|Win32
 		{B2C3D4E5-2345-6789-ABCD-EF0123456789}.Release|x64.ActiveCfg = Release|x64
 		{B2C3D4E5-2345-6789-ABCD-EF0123456789}.Release|x64.Build.0 = Release|x64
+		{C3D4E5F6-3456-789A-BCDE-F01234567890}.Release|Win32.ActiveCfg = Release|Win32
+		{C3D4E5F6-3456-789A-BCDE-F01234567890}.Release|Win32.Build.0 = Release|Win32
+		{C3D4E5F6-3456-789A-BCDE-F01234567890}.Release|x64.ActiveCfg = Release|x64
+		{C3D4E5F6-3456-789A-BCDE-F01234567890}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 EndGlobal

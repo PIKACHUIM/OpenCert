@@ -269,19 +269,22 @@ const CertsPage: React.FC = () => {
     },
     {
       title: '密钥',
-      width: 110,
+      width: 240,
       render: (_: any, r: PKICert) => (
-<Space orientation="vertical" size={0}>
+        <Space size={4} wrap>
           <Tag color="blue" style={{ margin: 0 }}>{r.key_type?.toUpperCase()}</Tag>
-          <Text style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#999' }}>
-            {r.key_storage === 'smartcard' ? '智能卡' : '数据库'} | {r.has_private_key ? '有私钥' : '无私钥'}
-          </Text>
+          <Tag color={r.key_storage === 'smartcard' ? 'purple' : 'default'} style={{ margin: 0 }}>
+            {r.key_storage === 'smartcard' ? '智能卡' : '数据库'}
+          </Tag>
+          <Tag color={r.has_private_key ? 'green' : 'default'} style={{ margin: 0 }}>
+            {r.has_private_key ? '有私钥' : '无私钥'}
+          </Tag>
         </Space>
       ),
     },
     {
       title: '有效期',
-      width: 190,
+      width: 200,
       render: (_: any, r: PKICert) => {
         const expired = dayjs(r.not_after).isBefore(dayjs());
         return (

@@ -60,7 +60,7 @@ if not exist "%BUILD_DIR%\OpenCertCSP_x86.dll" (
 
 :: Step 3: 注册 KSP
 echo.
-echo [3/3] Registering KSP...
+echo [3/4] Registering KSP...
 
 if exist "%SCRIPT_DIR%registers_ksp.ps1" (
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%registers_ksp.ps1" -KspName "%KSP_NAME%" -KspDll "%KSP_DLL%"
@@ -76,6 +76,35 @@ if exist "%SCRIPT_DIR%registers_ksp.ps1" (
     reg add "!REG_KSP!\UM" /v "Image" /t REG_SZ /d "%KSP_DLL%" /f >nul 2>&1
 )
 echo       [DONE] KSP registered: %KSP_NAME%
+
+:: Step 4: 部署并注册 FIDO2 CCID DLL
+echo.
+echo [4/4] Deploying and registering FIDO2 CCID...
+
+if not exist "%BUILD_DIR%\OpenCertFIDO_x64.dll" (
+    echo       [WARN] build\OpenCertFIDO_x64.dll not found, skipping FIDO2
+) else (
+    copy /Y "%BUILD_DIR%\OpenCertFIDO_x64.dll" "%SystemRoot%\System32\OpenCertFIDO.dll" >nul 2>&1
+    echo       [DONE] %SystemRoot%\System32\OpenCertFIDO.dll ^(x64^)
+)
+
+if not exist "%BUILD_DIR%\OpenCertFIDO_x86.dll" (
+    echo       [WARN] build\OpenCertFIDO_x86.dll not found
+) else (
+    copy /Y "%BUILD_DIR%\OpenCertFIDO_x86.dll" "%SystemRoot%\SysWOW64\OpenCertFIDO.dll" >nul 2>&1
+    echo       [DONE] %SystemRoot%\SysWOW64\OpenCertFIDO.dll ^(x86^)
+)
+
+if exist "%SCRIPT_DIR%register_fido.ps1" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%register_fido.ps1"
+    if %errorlevel% neq 0 (
+        echo       [WARN] FIDO2 registration failed
+    ) else (
+        echo       [DONE] FIDO2 CCID registered
+    )
+) else (
+    echo       [WARN] register_fido.ps1 not found, skipping FIDO2 registration
+)
 
 :: 验证
 echo.

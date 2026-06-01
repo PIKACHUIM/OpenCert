@@ -6,17 +6,40 @@ import (
 	"log/slog"
 
 	"github.com/globaltrusts/client-card/internal/card"
+	"github.com/globaltrusts/client-card/internal/fido"
+	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/pkg/pkcs11types"
 )
 
-// Handler 注册所有 PKCS#11 命令处理函数到 IPC Server。
+// PKCSHandler 处理所有 PKCS#11 和扩展 IPC 命令。
 type PKCSHandler struct {
-	manager *card.Manager
+	manager  *card.Manager
+	// FIDO2 CCID 扩展字段
+	fidoStore *fido.Store
+	cardRepo  *storage.CardRepo
+	certRepo  *storage.CertRepo
+}
+
+// PKCSHandlerOptions 是 PKCSHandler 的可选配置。
+type PKCSHandlerOptions struct {
+	FIDOStore *fido.Store
+	CardRepo  *storage.CardRepo
+	CertRepo  *storage.CertRepo
 }
 
 // NewPKCSHandler 创建 PKCS#11 命令处理器。
 func NewPKCSHandler(manager *card.Manager) *PKCSHandler {
 	return &PKCSHandler{manager: manager}
+}
+
+// NewPKCSHandlerWithOptions 创建带扩展选项的 PKCS#11 命令处理器。
+func NewPKCSHandlerWithOptions(manager *card.Manager, opts PKCSHandlerOptions) *PKCSHandler {
+	return &PKCSHandler{
+		manager:   manager,
+		fidoStore: opts.FIDOStore,
+		cardRepo:  opts.CardRepo,
+		certRepo:  opts.CertRepo,
+	}
 }
 
 // Register 将所有命令处理函数注册到 server。
@@ -53,6 +76,10 @@ func (h *PKCSHandler) Register(s *Server) {
 
 	// 流式 Digest / Verify 与 Random 一族
 	h.RegisterDigestVerifyRandom(s)
+	// KSP 专用命令
+	h.RegisterKSPHandlers(s)
+	// FIDO2 CCID 专用命令
+	h.RegisterFIDOHandlers(s)
 }
 
 // ---- GetSlotList ----

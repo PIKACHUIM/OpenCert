@@ -103,6 +103,36 @@ const (
 	// 请求: {"card_uuid":"xxx","pin":"1234"}
 	// 响应: {} (成功时 rv=0，失败时 rv=CKR_PIN_INCORRECT 等)
 	CmdKSPLogin CmdCode = 0x0204
+
+	// ---- FIDO2 CCID 专用命令（0x0300 系列）----
+	// 这些命令供 Windows FIDO2 CCID 虚拟智能卡 DLL 使用。
+	// DLL 将浏览器的 CTAP2 CBOR 请求透传给 Go 后端处理，
+	// 私钥存储在 OpenCert 智能卡（本地/TPM/云端）。
+
+	// CmdFIDOGetInfo 获取认证器信息（authenticatorGetInfo）。
+	// 请求: {} (无参数)
+	// 响应: {"cbor_info":"base64..."} CBOR 编码的 GetInfo 响应
+	CmdFIDOGetInfo CmdCode = 0x0300
+
+	// CmdFIDOMakeCredential 创建 FIDO2 凭据（authenticatorMakeCredential）。
+	// 请求: {"cbor_req":"base64..."} CBOR 编码的 MakeCredential 请求
+	// 响应: {"cbor_resp":"base64..."} CBOR 编码的 attestationObject
+	CmdFIDOMakeCredential CmdCode = 0x0301
+
+	// CmdFIDOGetAssertion 获取断言（authenticatorGetAssertion）。
+	// 请求: {"cbor_req":"base64..."} CBOR 编码的 GetAssertion 请求
+	// 响应: {"cbor_resp":"base64..."} CBOR 编码的 assertionObject
+	CmdFIDOGetAssertion CmdCode = 0x0302
+
+	// CmdFIDOCancel 取消当前 FIDO2 操作。
+	// 请求: {} (无参数)
+	// 响应: {} (rv=0 表示成功取消)
+	CmdFIDOCancel CmdCode = 0x0303
+
+	// CmdFIDOLogin 为 FIDO2 操作执行 PIN 登录。
+	// 请求: {"card_uuid":"xxx","pin":"1234"}
+	// 响应: {} (成功时 rv=0)
+	CmdFIDOLogin CmdCode = 0x0304
 )
 
 // 协议版本号。

@@ -74,7 +74,7 @@ const FidoPage: React.FC = () => {
     { title: 'UUID', dataIndex: 'uuid', key: 'uuid', width: 280, ellipsis: true },
     { title: t('credentials.common.type'), dataIndex: 'key_type', key: 'key_type', width: 140 },
     { title: t('credentials.common.remark'), dataIndex: 'remark', key: 'remark' },
-    { title: t('credentials.common.createdAt'), dataIndex: 'created_at', key: 'created_at', width: 200 },
+{ title: t('credentials.common.createdAt'), dataIndex: 'created_at', key: 'created_at', width: 300 },
     {
       title: t('credentials.common.actions'),
       key: 'actions',
@@ -105,33 +105,36 @@ const FidoPage: React.FC = () => {
       <PageHeader
         icon={<KeyOutlined />}
         title={t('credentials.fido.pageTitle')}
-        tags={<Tag color="green">FIDO2/WebAuthn</Tag>}
+        tags={
+          <Space size={8}>
+            <Tag color="green">FIDO2/WebAuthn</Tag>
+            <Select
+              size="small"
+              style={{ width: 260 }}
+              placeholder={t('credentials.common.selectCard')}
+              value={cardUUID || undefined}
+              onChange={setCardUUID}
+              options={cards.map((c) => ({ label: c.card_name, value: c.uuid }))}
+            />
+          </Space>
+        }
         extra={
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)} size="small">
-            {t('credentials.common.create')}
-          </Button>
+          <Space size={8}>
+            <Input.Password
+              prefix={<LockOutlined />}
+              placeholder={t('credentials.common.cardPassword')}
+              size="small"
+              style={{ width: 200 }}
+              value={cardPassword}
+              onChange={(e) => setCardPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)} size="small">
+              {t('credentials.common.create')}
+            </Button>
+          </Space>
         }
       />
-
-      {/* 卡片选择 + 密码 */}
-      <Space wrap style={{ marginBottom: 16 }}>
-        <span>{t('credentials.common.card')}:</span>
-        <Select
-          style={{ width: 360 }}
-          placeholder={t('credentials.common.selectCard')}
-          value={cardUUID || undefined}
-          onChange={setCardUUID}
-          options={cards.map((c) => ({ label: c.card_name, value: c.uuid }))}
-        />
-        <Input.Password
-          prefix={<LockOutlined />}
-          placeholder={t('credentials.common.cardPassword')}
-          style={{ width: 220 }}
-          value={cardPassword}
-          onChange={(e) => setCardPassword(e.target.value)}
-          autoComplete="new-password"
-        />
-      </Space>
 
       {/* 列表 */}
       <ACard size="small" loading={loading}>

@@ -6,7 +6,7 @@ import {
 import {
   PlusOutlined, DeleteOutlined, CopyOutlined, ClockCircleOutlined,
   ReloadOutlined, QrcodeOutlined, KeyOutlined, UploadOutlined,
-  EyeOutlined, EyeInvisibleOutlined, LockOutlined,
+  EyeOutlined, LockOutlined,
 } from '@ant-design/icons';
 import jsQR from 'jsqr';
 import PageHeader from '../../components/PageHeader';
@@ -329,6 +329,19 @@ const TOTPPage: React.FC = () => {
 
   const columns = [
     {
+      title: 'UUID',
+      dataIndex: 'uuid',
+      width: 400,
+      ellipsis: true,
+      render: (v: string) => (
+        <Tooltip title={v}>
+          <Text copyable={{ text: v }}>
+            {v}
+          </Text>
+        </Tooltip>
+      ),
+    },
+    {
       title: '发行者',
       dataIndex: 'issuer',
       width: 160,
@@ -429,25 +442,23 @@ const TOTPPage: React.FC = () => {
         tags={
           <Space size={8}>
             <Tag color="blue">{entries.length} 个条目</Tag>
-            {cards.length > 0 && (
-              <Select
-                size="small"
-                value={selectedCardUUID}
-                onChange={(v) => { setSelectedCardUUID(v); }}
-                style={{ minWidth: 260 }}
-                options={cards.map(c => ({ value: c.uuid, label: c.card_name }))}
-                placeholder="选择卡片"
-              />
-            )}
+            <Select
+              size="small"
+              style={{ width: 260 }}
+              placeholder="选择卡片"
+              value={selectedCardUUID || undefined}
+              onChange={(v) => { setSelectedCardUUID(v); }}
+              options={cards.map(c => ({ value: c.uuid, label: c.card_name }))}
+            />
+          </Space>
+        }
+        extra={
+          <Space size={8}>
             {isUnlocked && (
               <Tag color="green" icon={<LockOutlined />} style={{ cursor: 'pointer' }} onClick={handleLock}>
                 已解锁 · 点击锁定
               </Tag>
             )}
-          </Space>
-        }
-        extra={
-          <>
             {!isUnlocked ? (
               <Button icon={<EyeOutlined />} onClick={handleReveal} size="small" type="primary" ghost>
                 输入 PIN 查看验证码
@@ -460,7 +471,7 @@ const TOTPPage: React.FC = () => {
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddVisible(true)} size="small">
               添加 TOTP
             </Button>
-          </>
+          </Space>
         }
       />
       <Card>

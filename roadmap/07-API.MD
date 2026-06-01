@@ -256,6 +256,110 @@ GET /api/slots
 }
 ```
 
+### 2.10 FIDO2/WebAuthn 凭据管理
+
+> 将 OpenCert 智能卡作为 FIDO2 软件认证器，凭据加密存储在卡片主密钥保护下。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/cards/{card_uuid}/fido` | 列出 FIDO 凭据（不含私密数据） |
+| POST | `/api/cards/{card_uuid}/fido` | 创建 FIDO 凭据 |
+| GET | `/api/cards/{card_uuid}/fido/{uuid}` | 获取单条凭据详情 |
+| DELETE | `/api/cards/{card_uuid}/fido/{uuid}` | 删除凭据 |
+| POST | `/api/cards/{card_uuid}/fido/{uuid}/secret` | 解密查看私密数据（私钥/key handle） |
+| POST | `/api/cards/{card_uuid}/fido/{uuid}/counter` | 递增签名计数器（防重放） |
+| POST | `/api/cards/{card_uuid}/fido/{uuid}/pubkey` | 导出公钥（用于 RP 注册） |
+
+**POST /api/cards/{card_uuid}/fido 请求体**:
+```json
+{
+  "rp_id":             "example.com",
+  "rp_name":           "Example Corp",
+  "user_name":         "alice@example.com",
+  "user_display_name": "Alice",
+  "user_handle":       "base64url-encoded-handle",
+  "credential_id":     "550e8400-e29b-41d4-a716-446655440000",
+  "algorithm":         "ES256",
+  "transports":        ["internal"],
+  "private_key_pem":   "-----BEGIN PRIVATE KEY-----...",
+  "public_key_der":    "base64-encoded-der",
+  "aaguid":            "base64url-aaguid",
+  "card_password":     "card_pin",
+  "remark":            "备注"
+}
+```
+
+> - `algorithm`：签名算法，默认 `ES256`（ECDSA P-256），也支持 `RS256`、`EdDSA`
+> - `private_key_pem`、`key_handle`、`public_key_der` 均为可选，有私密数据时 `card_password` 必填
+> - `user_handle` 留空则由前端随机生成（16 字节 base64url）
+
+**GET /api/cards/{card_uuid}/fido 响应**:
+```json
+{
+  "data": [
+    {
+      "uuid": "cert-uuid",
+      "card_uuid": "card-uuid",
+      "key_type": "fido2",
+      "remark": "备注",
+      "created_at": "2026-06-01T10:00:00Z",
+      "updated_at": "2026-06-01T10:00:00Z",
+      "meta": {
+        "rp_id": "example.com",
+        "rp_name": "Example Corp",
+        "user_name": "alice@example.com",
+        "user_display_name": "Alice",
+        "user_handle": "base64url-handle",
+        "credential_id": "550e8400-...",
+        "algorithm": "ES256",
+        "counter": 5,
+        "transports": ["internal"],
+        "backup_eligible": false,
+        "backup_state": false
+      }
+    }
+  ]
+}
+```
+
+**POST /api/cards/{card_uuid}/fido/{uuid}/secret 请求体**:
+```json
+{ "card_password": "card_pin" }
+```
+
+**响应**:
+```json
+{
+  "data": {
+    "private_key_pem": "-----BEGIN PRIVATE KEY-----...",
+    "key_handle":      "base64url-key-handle",
+    "public_key_der":  "base64-encoded-der",
+    "aaguid":          "base64url-aaguid"
+  }
+}
+```
+
+**POST /api/cards/{card_uuid}/fido/{uuid}/counter 响应**:
+```json
+{ "data": { "counter": 6 } }
+```
+
+**POST /api/cards/{card_uuid}/fido/{uuid}/pubkey 请求体**:
+```json
+{ "card_password": "card_pin" }
+```
+
+**响应**:
+```json
+{
+  "data": {
+    "public_key_der": "base64-encoded-der",
+    "algorithm":      "ES256",
+    "credential_id":  "550e8400-..."
+  }
+}
+```
+
 ---
 
 ## 三、OpenCert Platform API（端口 :1027）

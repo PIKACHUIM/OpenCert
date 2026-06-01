@@ -4,7 +4,7 @@ import {
   message, Space, Typography, Alert, Modal,
 } from 'antd';
 import {
-  KeyOutlined, UserOutlined, FileTextOutlined, CreditCardOutlined,
+  UserOutlined, FileTextOutlined, CreditCardOutlined,
   LockOutlined, DeleteOutlined, PlusOutlined, EyeOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -27,42 +27,23 @@ type CredType = 'login' | 'note' | 'payment' | 'text';
 /**
  * 共享的"卡片选择 + 卡片密码"区域。
  */
-const CardPicker: React.FC<{
-  cards: Card[];
-  cardUUID: string;
-  onCardChange: (uuid: string) => void;
-  cardPassword: string;
-  onPasswordChange: (v: string) => void;
-}> = ({ cards, cardUUID, onCardChange, cardPassword, onPasswordChange }) => {
-  const { t } = useTranslation();
-  return (
-    <Space wrap style={{ marginBottom: 16 }}>
-      <span>{t('credentials.common.card')}:</span>
-      <Select
-        style={{ width: 360 }}
-        placeholder={t('credentials.common.selectCard')}
-        value={cardUUID || undefined}
-        onChange={onCardChange}
-        options={cards.map((c) => ({ label: c.card_name, value: c.uuid }))}
-      />
-      <Input.Password
-        prefix={<LockOutlined />}
-        placeholder={t('credentials.common.cardPassword')}
-        style={{ width: 220 }}
-        value={cardPassword}
-        onChange={(e) => onPasswordChange(e.target.value)}
-        autoComplete="new-password"
-      />
-    </Space>
-  );
-};
-
 // 将 base64 解码为字符串（UTF-8 安全）
 const fromB64 = (s: string): string => {
   try {
     return decodeURIComponent(escape(atob(s)));
   } catch {
     return s;
+  }
+};
+
+// 解析 public_meta（cert_content 字段，base64 编码的 JSON）
+const parseMeta = (certContent: Uint8Array | string | null | undefined): Record<string, string> => {
+  try {
+    if (!certContent) return {};
+    const raw = typeof certContent === 'string' ? certContent : String.fromCharCode(...certContent);
+    return JSON.parse(fromB64(raw));
+  } catch {
+    return {};
   }
 };
 
@@ -148,11 +129,31 @@ const CredentialList: React.FC<{
     }
   };
 
+  // 根据 certType 决定展示哪些公开字段列
+  const metaColumns = useMemo(() => {
+    if (certType === 'login') return [
+      { title: '网站', key: 'site', ellipsis: true, render: (_: unknown, row: Certificate) => parseMeta(row.cert_content as any)?.site || '-' },
+      { title: '用户名', key: 'username', width: 140, ellipsis: true, render: (_: unknown, row: Certificate) => parseMeta(row.cert_content as any)?.username || '-' },
+    ];
+    if (certType === 'note') return [
+      { title: '标题', key: 'title', ellipsis: true, render: (_: unknown, row: Certificate) => parseMeta(row.cert_content as any)?.title || '-' },
+    ];
+    if (certType === 'payment') return [
+      { title: '持卡人', key: 'cardholder', width: 120, render: (_: unknown, row: Certificate) => parseMeta(row.cert_content as any)?.cardholder || '-' },
+      { title: '银行', key: 'bank', width: 100, render: (_: unknown, row: Certificate) => parseMeta(row.cert_content as any)?.bank || '-' },
+      { title: '尾号', key: 'last4', width: 80, render: (_: unknown, row: Certificate) => parseMeta(row.cert_content as any)?.last4 || '-' },
+    ];
+    if (certType === 'text') return [
+      { title: '标签', key: 'label', ellipsis: true, render: (_: unknown, row: Certificate) => parseMeta(row.cert_content as any)?.label || '-' },
+    ];
+    return [];
+  }, [certType]);
+
   const columns = [
-    { title: 'UUID', dataIndex: 'uuid', key: 'uuid', width: 240, ellipsis: true },
-    { title: t('credentials.common.type'), dataIndex: 'key_type', key: 'key_type', width: 120 },
-    { title: t('credentials.common.remark'), dataIndex: 'remark', key: 'remark' },
-    { title: t('credentials.common.createdAt'), dataIndex: 'created_at', key: 'created_at', width: 180 },
+    { title: 'UUID', dataIndex: 'uuid', key: 'uuid', width: 400, ellipsis: true },
+    ...metaColumns,
+    { title: t('credentials.common.remark'), dataIndex: 'remark', key: 'remark', ellipsis: true },
+    { title: t('credentials.common.createdAt'), dataIndex: 'created_at', key: 'created_at', width: 300 },
     {
       title: t('credentials.common.actions'),
       key: 'actions',
@@ -202,6 +203,23 @@ const CredentialList: React.FC<{
         width={480}
         destroyOnHidden
       >
+        {/* 公开信息区域（无需密码） */}
+        {viewModal.cert && (() => {
+          const meta = parseMeta(viewModal.cert.cert_content as any);
+          const metaItems = Object.entries(meta).filter(([, v]) => v);
+          if (metaItems.length === 0) return null;
+          return (
+            <div style={{ marginBottom: 16, padding: '12px 16px', background: '#f5f5f5', borderRadius: 6 }}>
+              <div style={{ fontWeight: 600, marginBottom: 8, color: '#666' }}>公开信息</div>
+              {metaItems.map(([k, v]) => (
+                <div key={k} style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+                  <Text type="secondary" style={{ minWidth: 60 }}>{k}：</Text>
+                  <Text copyable>{v}</Text>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
         {!secretContent ? (
           <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
             <Alert type="warning" showIcon title="需要输入卡片密码才能查看私密内容" />
@@ -472,17 +490,10 @@ const CredentialsPage: React.FC = () => {
   useEffect(() => { loadCards(); }, []);
   useEffect(() => { loadCerts(); }, [cardUUID]);
 
-  const renderTabContent = (kind: CredType, FormComp: React.FC<any>) => (
-<Space orientation="vertical" size="middle" style={{ width: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => { setActiveTab(kind); setCreateModalOpen(true); }}>
-          {t('credentials.common.create')}
-        </Button>
-      </div>
-      <ACard size="small" loading={loading}>
-        <CredentialList certs={certs} cardUUID={cardUUID} certType={kind} onChanged={loadCerts} />
-      </ACard>
-    </Space>
+  const renderTabContent = (kind: CredType) => (
+    <ACard size="small" loading={loading}>
+      <CredentialList certs={certs} cardUUID={cardUUID} certType={kind} onChanged={loadCerts} />
+    </ACard>
   );
 
   return (
@@ -490,23 +501,45 @@ const CredentialsPage: React.FC = () => {
       <PageHeader
         icon={<LockOutlined />}
         title={t('credentials.title')}
-        tags={<Tag color="blue">本地加密存储</Tag>}
-      />
-
-      <CardPicker
-        cards={cards}
-        cardUUID={cardUUID}
-        onCardChange={setCardUUID}
-        cardPassword={cardPassword}
-        onPasswordChange={setCardPassword}
+        tags={
+          <Space size={8}>
+            <Tag color="blue">本地加密存储</Tag>
+            <Select
+              size="small"
+              style={{ width: 260 }}
+              placeholder={t('credentials.common.selectCard')}
+              value={cardUUID || undefined}
+              onChange={setCardUUID}
+              options={cards.map((c) => ({ label: c.card_name, value: c.uuid }))}
+            />
+          </Space>
+        }
+        extra={
+          <Space size={8}>
+            <Input.Password
+              prefix={<LockOutlined />}
+              placeholder={t('credentials.common.cardPassword')}
+              size="small"
+              style={{ width: 200 }}
+              value={cardPassword}
+              onChange={(e) => setCardPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)} size="small">
+              {t('credentials.common.create')}
+            </Button>
+          </Space>
+        }
       />
 
       <Tabs
+        activeKey={activeTab}
+        onChange={(k) => setActiveTab(k as CredType)}
         items={[
-          { key: 'login', label: <span><UserOutlined /> {t('credentials.tabs.login')}</span>, children: renderTabContent('login', LoginForm) },
-          { key: 'note', label: <span><FileTextOutlined /> {t('credentials.tabs.note')}</span>, children: renderTabContent('note', NoteForm) },
-          { key: 'payment', label: <span><CreditCardOutlined /> {t('credentials.tabs.payment')}</span>, children: renderTabContent('payment', PaymentForm) },
-          { key: 'text', label: <span><FileTextOutlined /> {t('credentials.tabs.text')}</span>, children: renderTabContent('text', TextForm) },
+          { key: 'login', label: <span><UserOutlined /> {t('credentials.tabs.login')}</span>, children: renderTabContent('login') },
+          { key: 'note', label: <span><FileTextOutlined /> {t('credentials.tabs.note')}</span>, children: renderTabContent('note') },
+          { key: 'payment', label: <span><CreditCardOutlined /> {t('credentials.tabs.payment')}</span>, children: renderTabContent('payment') },
+          { key: 'text', label: <span><FileTextOutlined /> {t('credentials.tabs.text')}</span>, children: renderTabContent('text') },
         ]}
       />
 

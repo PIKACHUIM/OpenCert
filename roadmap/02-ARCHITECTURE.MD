@@ -1,7 +1,7 @@
 # OpenCert Manager — 系统架构设计
 
-> 文档版本：v2.0.0
-> 最后更新：2026-04-17
+> 文档版本：v2.2.0
+> 最后更新：2026-06-01
 
 ---
 
@@ -69,6 +69,17 @@ mindmap
         浏览器
         SSH客户端
         GPG Agent
+    FIDO驱动 OpenCertFIDO
+      CCID虚拟智能卡
+        PC/SC 注册
+        Windows SCardSvr
+      WebAuthn认证
+        注册 MakeCredential
+        认证 GetAssertion
+        签名计数器防重放
+      IPC通信
+        Named Pipe转发
+        凭据存储在OpenCert
 ```
 
 ---
@@ -89,6 +100,11 @@ graph LR
         IPC_C[IPC 客户端]
     end
 
+    subgraph fido-dll ["OpenCertFIDO (C DLL)"]
+        FIDO_SC[CCID 虚拟智能卡接口]
+        FIDO_IPC[IPC 客户端]
+    end
+
     subgraph client-card ["client-card (Go :1026)"]
         IPC_S[IPC 服务端]
         MGR[Slot/Session 管理器]
@@ -107,9 +123,16 @@ graph LR
         HSM[(HSM 硬件<br/>可选)]
     end
 
+    subgraph 第三方应用
+        Browser2[Chrome / Edge<br/>WebAuthn]
+    end
+
     Firefox & SSH & GPG & CSP -->|系统调用| P11
+    Browser2 -->|PC/SC SCardSvr| FIDO_SC
     P11 --> IPC_C
+    FIDO_SC --> FIDO_IPC
     IPC_C <-->|Named Pipe / Unix Socket<br/>帧协议 PK11+Cmd+Len+JSON| IPC_S
+    FIDO_IPC <-->|Named Pipe / Unix Socket<br/>帧协议 FIDO+Cmd+Len+JSON| IPC_S
     IPC_S --> MGR
     MGR --> LOCAL
     MGR --> TPM2
@@ -304,10 +327,14 @@ PKCS11Driver/
 │   │   │   ├── tpm2/                 # TPM2 Slot 实现
 │   │   │   └── cloud/                # Cloud Slot 实现
 │   │   ├── crypto/                   # 加密工具（AES/HMAC/bcrypt）
+│   │   ├── fido/                     # FIDO2/WebAuthn 驱动层
+│   │   │   ├── fido.go               # 数据结构（Meta/Secret/Entry）
+│   │   │   └── store.go              # 凭据存储（复用 certificates 表）
 │   │   ├── ipc/                      # IPC 服务（Named Pipe/Unix Socket）
 │   │   ├── storage/                  # SQLite 存储层
 │   │   ├── tpm/                      # TPM 抽象接口与平台实现
 │   │   └── api/                      # REST API Handler
+│   │       └── fido_handler.go       # FIDO API Handler
 │   ├── pkg/pkcs11types/              # PKCS#11 常量和类型
 │   ├── ui/dist/                      # 前端构建产物（embed.FS）
 │   └── test/                         # 测试文件
@@ -326,10 +353,17 @@ PKCS11Driver/
 │       ├── revoke/                   # CRL/OCSP 服务
 │       ├── ct/                       # CT 日志
 │       └── storage/                  # PostgreSQL 存储层
-├── drivers/                          # pkcs11-mock PKCS#11 驱动
-│   ├── src/                          # C 源代码
-│   ├── include/                      # PKCS#11 头文件
-│   └── CMakeLists.txt                # CMake 构建
+├── drivers/                          # C 驱动层
+│   ├── codes/
+│   │   ├── csp/codes/                # PKCS#11 CSP 驱动（pkcs11-mock）
+│   │   ├── ksp/codes/                # Windows KSP 驱动
+│   │   └── fido/codes/               # FIDO2/WebAuthn CCID 驱动
+│   │       ├── opencert_fido.c       # FIDO 主逻辑（MakeCredential/GetAssertion）
+│   │       ├── opencert_fido.h       # 头文件
+│   │       └── OpenCertFIDO.def      # DLL 导出定义
+│   ├── build/                        # 编译输出（DLL）
+│   ├── builds.bat                    # 一键构建（CSP+KSP+FIDO, x64+x86）
+│   └── setup/                        # 安装脚本（注册表+系统目录）
 ├── front/                            # 前端源代码
 │   ├── src/
 │   │   ├── pages/                    # 页面组件
