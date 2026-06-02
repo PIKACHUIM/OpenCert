@@ -17,22 +17,22 @@ const (
 
 // User 是用户数据模型。
 type User struct {
-	UUID         string    `json:"uuid"`
-	UserType     UserType  `json:"user_type"`
-	Role         string    `json:"role"`            // admin / user / readonly
-	Username     string    `json:"username"`        // 登录用户名（唯一）
-	DisplayName  string    `json:"display_name"`
-	Email        string    `json:"email"`
-	Enabled      bool      `json:"enabled"`
-	CloudURL     string    `json:"cloud_url"`
-	PasswordHash string    `json:"-"`               // bcrypt 哈希，不序列化到 JSON
-	AuthToken    Base64Bytes `json:"-"`             // 加密存储，不序列化到 JSON
+	UUID         string      `json:"uuid"`
+	UserType     UserType    `json:"user_type"`
+	Role         string      `json:"role"`     // admin / user / readonly
+	Username     string      `json:"username"` // 登录用户名（唯一）
+	DisplayName  string      `json:"display_name"`
+	Email        string      `json:"email"`
+	Enabled      bool        `json:"enabled"`
+	CloudURL     string      `json:"cloud_url"`
+	PasswordHash string      `json:"-"` // bcrypt 哈希，不序列化到 JSON
+	AuthToken    Base64Bytes `json:"-"` // 加密存储，不序列化到 JSON
 	// 2FA (TOTP) 字段
-	TwoFAEnabled bool      `json:"two_fa_enabled"` // 是否已启用 2FA
-	TwoFASecret  string    `json:"-"`              // TOTP 密钥（Base32），不暴露给前端
-	PasswordlessEnabled bool `json:"passwordless_enabled"` // 是否启用免密码登录（仅 2FA 验证即可）
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	TwoFAEnabled        bool      `json:"two_fa_enabled"`       // 是否已启用 2FA
+	TwoFASecret         string    `json:"-"`                    // TOTP 密钥（Base32），不暴露给前端
+	PasswordlessEnabled bool      `json:"passwordless_enabled"` // 是否启用免密码登录（仅 2FA 验证即可）
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // ---- 卡片模型 ----
@@ -113,7 +113,7 @@ const (
 	CertTypeSSH     CertType = "ssh"
 	CertTypeGPG     CertType = "gpg"
 	CertTypeTOTP    CertType = "totp"
-	CertTypeFIDO    CertType = "fido"
+	CertTypeFIDO    CertType = "fido-umdf"
 	CertTypeLogin   CertType = "login"
 	CertTypeText    CertType = "text"
 	CertTypeNote    CertType = "note"
@@ -215,79 +215,79 @@ type KeyStorage string
 
 const (
 	KeyStorageDatabase  KeyStorage = "database"  // 私钥存储在本地数据库
-	KeyStorageSmartcard KeyStorage = "smartcard"  // 私钥在智能卡上生成，不可导出
-	KeyStorageImported  KeyStorage = "imported"   // 外部导入，来源不明
+	KeyStorageSmartcard KeyStorage = "smartcard" // 私钥在智能卡上生成，不可导出
+	KeyStorageImported  KeyStorage = "imported"  // 外部导入，来源不明
 )
 
 // CSRRecord 是 CSR 请求记录。
 type CSRRecord struct {
-	UUID          string     `json:"uuid"`
-	CommonName    string     `json:"common_name"`
-	Organization  string     `json:"organization"`
-	OrgUnit       string     `json:"org_unit"`
-	Country       string     `json:"country"`
-	State         string     `json:"state"`
-	Locality      string     `json:"locality"`
-	Email         string     `json:"email"`
-	KeyType       string     `json:"key_type"`
-	KeyStorage    KeyStorage `json:"key_storage"`
-	CardUUID      string     `json:"card_uuid"`      // KeyStorage=smartcard 时有效
-	SANDN         string     `json:"san_dns"`        // 逗号分隔
-	SANIP         string     `json:"san_ip"`
-	SANEmail      string     `json:"san_email"`
-	SANURI        string     `json:"san_uri"`
-	KeyUsage      string     `json:"key_usage"`      // JSON 数组序列化
-	ExtKeyUsage   string     `json:"ext_key_usage"`  // JSON 数组序列化
-	ExtraSubject  string     `json:"extra_subject"`  // JSON 对象，额外 DN 字段
-	CSRPEM        string     `json:"csr_pem"`
-	HasPrivateKey bool       `json:"has_private_key"`
-	PrivateKeyEnc Base64Bytes `json:"-"`              // AES256 加密的私钥（database 模式）
-	Remark        string     `json:"remark"`
-	CreatedAt     time.Time  `json:"created_at"`
+	UUID          string      `json:"uuid"`
+	CommonName    string      `json:"common_name"`
+	Organization  string      `json:"organization"`
+	OrgUnit       string      `json:"org_unit"`
+	Country       string      `json:"country"`
+	State         string      `json:"state"`
+	Locality      string      `json:"locality"`
+	Email         string      `json:"email"`
+	KeyType       string      `json:"key_type"`
+	KeyStorage    KeyStorage  `json:"key_storage"`
+	CardUUID      string      `json:"card_uuid"` // KeyStorage=smartcard 时有效
+	SANDN         string      `json:"san_dns"`   // 逗号分隔
+	SANIP         string      `json:"san_ip"`
+	SANEmail      string      `json:"san_email"`
+	SANURI        string      `json:"san_uri"`
+	KeyUsage      string      `json:"key_usage"`     // JSON 数组序列化
+	ExtKeyUsage   string      `json:"ext_key_usage"` // JSON 数组序列化
+	ExtraSubject  string      `json:"extra_subject"` // JSON 对象，额外 DN 字段
+	CSRPEM        string      `json:"csr_pem"`
+	HasPrivateKey bool        `json:"has_private_key"`
+	PrivateKeyEnc Base64Bytes `json:"-"` // AES256 加密的私钥（database 模式）
+	Remark        string      `json:"remark"`
+	CreatedAt     time.Time   `json:"created_at"`
 }
 
 // LocalCA 是本地 CA 机构记录。
 type LocalCA struct {
-	UUID         string    `json:"uuid"`
-	Name         string    `json:"name"`
-	CommonName   string    `json:"common_name"`
-	Organization string    `json:"organization"`
-	Country      string    `json:"country"`
-	KeyType      string    `json:"key_type"`
-	CertPEM      string    `json:"cert_pem"`
-	ChainPEM     string    `json:"chain_pem"`      // 证书链（可选）
-	HasPrivKey   bool      `json:"has_priv_key"`   // 是否有私钥（有才能签发）
-	PrivKeyEnc   Base64Bytes `json:"-"`              // AES256 加密的私钥
-	CardUUID     string    `json:"card_uuid"`      // 私钥存储在智能卡时有效
-	NotBefore    time.Time `json:"not_before"`
-	NotAfter     time.Time `json:"not_after"`
-	IssuedCount  int       `json:"issued_count"`
-	Revoked      bool      `json:"revoked"`
-	CreatedAt    time.Time `json:"created_at"`
+	UUID         string      `json:"uuid"`
+	Name         string      `json:"name"`
+	CommonName   string      `json:"common_name"`
+	Organization string      `json:"organization"`
+	Country      string      `json:"country"`
+	KeyType      string      `json:"key_type"`
+	CertPEM      string      `json:"cert_pem"`
+	ChainPEM     string      `json:"chain_pem"`    // 证书链（可选）
+	HasPrivKey   bool        `json:"has_priv_key"` // 是否有私钥（有才能签发）
+	PrivKeyEnc   Base64Bytes `json:"-"`            // AES256 加密的私钥
+	CardUUID     string      `json:"card_uuid"`    // 私钥存储在智能卡时有效
+	NotBefore    time.Time   `json:"not_before"`
+	NotAfter     time.Time   `json:"not_after"`
+	IssuedCount  int         `json:"issued_count"`
+	Revoked      bool        `json:"revoked"`
+	CreatedAt    time.Time   `json:"created_at"`
 }
 
 // PKICert 是 PKI 证书记录。
 type PKICert struct {
-	UUID          string     `json:"uuid"`
-	CommonName    string     `json:"common_name"`
-	SerialNumber  string     `json:"serial_number"`
-	CAUUID        string     `json:"ca_uuid"`
-	CAName        string     `json:"ca_name"`
-	CSRUUID       string     `json:"csr_uuid"`
-	KeyType       string     `json:"key_type"`
-	KeyStorage    KeyStorage `json:"key_storage"`
-	CardUUID      string     `json:"card_uuid"`
-	CertPEM       string     `json:"cert_pem"`
-	HasPrivateKey bool       `json:"has_private_key"`
-	PrivateKeyEnc Base64Bytes `json:"-"`             // AES256 加密的私钥
-	NotBefore     time.Time  `json:"not_before"`
-	NotAfter      time.Time  `json:"not_after"`
-	KeyUsage      string     `json:"key_usage"`     // JSON 数组序列化
-	ExtKeyUsage   string     `json:"ext_key_usage"` // JSON 数组序列化
-	SANDN         string     `json:"san_dns"`
-	SANIP         string     `json:"san_ip"`
-	SANEmail      string     `json:"san_email"`
-	Revoked       bool       `json:"revoked"`
-	Remark        string     `json:"remark"`
-	CreatedAt     time.Time  `json:"created_at"`
+	UUID          string      `json:"uuid"`
+	CommonName    string      `json:"common_name"`
+	SerialNumber  string      `json:"serial_number"`
+	CAUUID        string      `json:"ca_uuid"`
+	CAName        string      `json:"ca_name"`
+	CSRUUID       string      `json:"csr_uuid"`
+	KeyType       string      `json:"key_type"`
+	KeyStorage    KeyStorage  `json:"key_storage"`
+	CardUUID      string      `json:"card_uuid"`
+	CertPEM       string      `json:"cert_pem"`
+	HasPrivateKey bool        `json:"has_private_key"`
+	PrivateKeyEnc Base64Bytes `json:"-"` // AES256 加密的私钥
+	NotBefore     time.Time   `json:"not_before"`
+	NotAfter      time.Time   `json:"not_after"`
+	KeyUsage      string      `json:"key_usage"`     // JSON 数组序列化
+	ExtKeyUsage   string      `json:"ext_key_usage"` // JSON 数组序列化
+	SANDN         string      `json:"san_dns"`
+	SANIP         string      `json:"san_ip"`
+	SANEmail      string      `json:"san_email"`
+	Revoked       bool        `json:"revoked"`
+	Remark        string      `json:"remark"`
+	CreatedAt     time.Time   `json:"created_at"`
 }

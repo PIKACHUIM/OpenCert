@@ -104,7 +104,7 @@ const FidoPage: React.FC = () => {
     <div>
       <PageHeader
         icon={<KeyOutlined />}
-        title={t('credentials.fido.pageTitle')}
+        title={t('credentials.fido-umdf.pageTitle')}
         tags={
           <Space size={8}>
             <Tag color="green">FIDO2/WebAuthn</Tag>
@@ -149,7 +149,7 @@ const FidoPage: React.FC = () => {
 
       {/* 新增模态框 */}
       <Modal
-        title={t('credentials.fido.pageTitle')}
+        title={t('credentials.fido-umdf.pageTitle')}
         open={createModalOpen}
         onCancel={() => setCreateModalOpen(false)}
         footer={null}
@@ -196,14 +196,14 @@ const FidoForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
         setLoading(false);
       }
     }}>
-<Alert type="info" showIcon title={t('credentials.fido.tip')} style={{ marginBottom: 12 }} />
-      <Form.Item name="rp_id" label={t('credentials.fido.rpId')} rules={[{ required: true }]}>
-        <Input placeholder={t('credentials.fido.rpIdPh')} />
+<Alert type="info" showIcon title={t('credentials.fido-umdf.tip')} style={{ marginBottom: 12 }} />
+      <Form.Item name="rp_id" label={t('credentials.fido-umdf.rpId')} rules={[{ required: true }]}>
+        <Input placeholder={t('credentials.fido-umdf.rpIdPh')} />
       </Form.Item>
-      <Form.Item name="user_name" label={t('credentials.fido.userName')} rules={[{ required: true }]}>
+      <Form.Item name="user_name" label={t('credentials.fido-umdf.userName')} rules={[{ required: true }]}>
         <Input />
       </Form.Item>
-      <Form.Item name="user_handle" label={t('credentials.fido.userHandle')}>
+      <Form.Item name="user_handle" label={t('credentials.fido-umdf.userHandle')}>
         <Space.Compact style={{ width: '100%' }}>
           <Form.Item name="user_handle" noStyle>
             <Input placeholder="留空则随机生成" />
@@ -216,7 +216,7 @@ const FidoForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
           </Tooltip>
         </Space.Compact>
       </Form.Item>
-      <Form.Item name="credential_id" label={t('credentials.fido.credentialId')} rules={[{ required: true }]}>
+      <Form.Item name="credential_id" label={t('credentials.fido-umdf.credentialId')} rules={[{ required: true }]}>
         <Space.Compact style={{ width: '100%' }}>
           <Form.Item name="credential_id" noStyle>
             <Input placeholder="Credential ID" />
@@ -229,7 +229,7 @@ const FidoForm: React.FC<{ cardUUID: string; cardPassword: string; onCreated: ()
           </Tooltip>
         </Space.Compact>
       </Form.Item>
-      <Form.Item name="private_key_pem" label={t('credentials.fido.privateKeyPem')}>
+      <Form.Item name="private_key_pem" label={t('credentials.fido-umdf.privateKeyPem')}>
         <Input.TextArea rows={4} placeholder="-----BEGIN PRIVATE KEY-----..." />
       </Form.Item>
       <Form.Item name="remark" label={t('credentials.common.remark')}>

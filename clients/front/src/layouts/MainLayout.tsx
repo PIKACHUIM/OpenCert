@@ -66,7 +66,7 @@ const MainLayout: React.FC = () => {
       icon: <KeyOutlined />,
       label: t('nav.groupSecurity'),
       children: [
-        { key: '/credentials/fido', icon: <KeyOutlined />, label: t('nav.fidoManage') },
+        { key: '/credentials/fido-umdf', icon: <KeyOutlined />, label: t('nav.fidoManage') },
         { key: '/totp', icon: <ClockCircleOutlined />, label: t('nav.totpManage') },
         { key: '/credentials', icon: <LockOutlined />, label: t('nav.credentialsManage') },
       ],

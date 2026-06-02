@@ -2,12 +2,12 @@
 //
 // 路由：
 //
-//	GET    /api/cards/{card_uuid}/fido          - 列出 FIDO 凭据
-//	POST   /api/cards/{card_uuid}/fido          - 创建 FIDO 凭据
-//	GET    /api/cards/{card_uuid}/fido/{uuid}   - 获取单条 FIDO 凭据
-//	DELETE /api/cards/{card_uuid}/fido/{uuid}   - 删除 FIDO 凭据
-//	POST   /api/cards/{card_uuid}/fido/{uuid}/secret  - 解密查看私密数据
-//	POST   /api/cards/{card_uuid}/fido/{uuid}/counter - 递增签名计数器
+//	GET    /api/cards/{card_uuid}/fido-umdf          - 列出 FIDO 凭据
+//	POST   /api/cards/{card_uuid}/fido-umdf          - 创建 FIDO 凭据
+//	GET    /api/cards/{card_uuid}/fido-umdf/{uuid}   - 获取单条 FIDO 凭据
+//	DELETE /api/cards/{card_uuid}/fido-umdf/{uuid}   - 删除 FIDO 凭据
+//	POST   /api/cards/{card_uuid}/fido-umdf/{uuid}/secret  - 解密查看私密数据
+//	POST   /api/cards/{card_uuid}/fido-umdf/{uuid}/counter - 递增签名计数器
 package api
 
 import (
@@ -21,7 +21,7 @@ import (
 
 // ---- FIDO 凭据 Handler ----
 
-// handleListFIDO GET /api/cards/{card_uuid}/fido
+// handleListFIDO GET /api/cards/{card_uuid}/fido-umdf
 // 列出指定卡片下的所有 FIDO 凭据（不含私密数据）。
 func (s *Server) handleListFIDO(w http.ResponseWriter, r *http.Request) {
 	cardUUID := r.PathValue("card_uuid")
@@ -39,7 +39,7 @@ func (s *Server) handleListFIDO(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, entries)
 }
 
-// handleCreateFIDO POST /api/cards/{card_uuid}/fido
+// handleCreateFIDO POST /api/cards/{card_uuid}/fido-umdf
 //
 // 请求体（JSON）：
 //
@@ -154,7 +154,7 @@ func (s *Server) handleCreateFIDO(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: entry})
 }
 
-// handleGetFIDO GET /api/cards/{card_uuid}/fido/{uuid}
+// handleGetFIDO GET /api/cards/{card_uuid}/fido-umdf/{uuid}
 // 获取单条 FIDO 凭据（不含私密数据）。
 func (s *Server) handleGetFIDO(w http.ResponseWriter, r *http.Request) {
 	certUUID := r.PathValue("uuid")
@@ -172,7 +172,7 @@ func (s *Server) handleGetFIDO(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, entry)
 }
 
-// handleDeleteFIDO DELETE /api/cards/{card_uuid}/fido/{uuid}
+// handleDeleteFIDO DELETE /api/cards/{card_uuid}/fido-umdf/{uuid}
 // 删除 FIDO 凭据。
 func (s *Server) handleDeleteFIDO(w http.ResponseWriter, r *http.Request) {
 	certUUID := r.PathValue("uuid")
@@ -188,7 +188,7 @@ func (s *Server) handleDeleteFIDO(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, nil)
 }
 
-// handleGetFIDOSecret POST /api/cards/{card_uuid}/fido/{uuid}/secret
+// handleGetFIDOSecret POST /api/cards/{card_uuid}/fido-umdf/{uuid}/secret
 //
 // 解密并返回 FIDO 凭据的私密数据（私钥 PEM、key handle 等）。
 //
@@ -249,7 +249,7 @@ func (s *Server) handleGetFIDOSecret(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, secret)
 }
 
-// handleIncrFIDOCounter POST /api/cards/{card_uuid}/fido/{uuid}/counter
+// handleIncrFIDOCounter POST /api/cards/{card_uuid}/fido-umdf/{uuid}/counter
 //
 // 递增 FIDO 签名计数器（防重放攻击）。
 // 每次使用 FIDO 凭据完成认证后应调用此接口。
@@ -271,7 +271,7 @@ func (s *Server) handleIncrFIDOCounter(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, map[string]uint32{"counter": counter})
 }
 
-// handleExportFIDOPublicKey GET /api/cards/{card_uuid}/fido/{uuid}/pubkey
+// handleExportFIDOPublicKey GET /api/cards/{card_uuid}/fido-umdf/{uuid}/pubkey
 //
 // 导出 FIDO 凭据的公钥（base64 编码的 DER 格式）。
 // 用于在依赖方（RP）注册时提交公钥。

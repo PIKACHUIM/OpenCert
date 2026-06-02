@@ -151,13 +151,13 @@ type Secret struct {
 
 ```go
 // ---- FIDO2/WebAuthn 凭据管理 ----
-s.mux.HandleFunc("GET /api/cards/{card_uuid}/fido", s.handleListFIDO)
-s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido", s.handleCreateFIDO)
-s.mux.HandleFunc("GET /api/cards/{card_uuid}/fido/{uuid}", s.handleGetFIDO)
-s.mux.HandleFunc("DELETE /api/cards/{card_uuid}/fido/{uuid}", s.handleDeleteFIDO)
-s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido/{uuid}/secret", s.handleGetFIDOSecret)
-s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido/{uuid}/counter", s.handleIncrFIDOCounter)
-s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido/{uuid}/pubkey", s.handleExportFIDOPublicKey)
+s.mux.HandleFunc("GET /api/cards/{card_uuid}/fido-umdf", s.handleListFIDO)
+s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido-umdf", s.handleCreateFIDO)
+s.mux.HandleFunc("GET /api/cards/{card_uuid}/fido-umdf/{uuid}", s.handleGetFIDO)
+s.mux.HandleFunc("DELETE /api/cards/{card_uuid}/fido-umdf/{uuid}", s.handleDeleteFIDO)
+s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido-umdf/{uuid}/secret", s.handleGetFIDOSecret)
+s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido-umdf/{uuid}/counter", s.handleIncrFIDOCounter)
+s.mux.HandleFunc("POST /api/cards/{card_uuid}/fido-umdf/{uuid}/pubkey", s.handleExportFIDOPublicKey)
 ```
 
 ---

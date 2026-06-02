@@ -159,7 +159,7 @@ func (r *CertRepo) Delete(ctx context.Context, certUUID string) error {
 // CertStats 是每张卡片的证书类型统计。
 type CertStats struct {
 	X509  int `json:"x509"`
-	FIDO  int `json:"fido"`
+	FIDO  int `json:"fido-umdf"`
 	TOTP  int `json:"totp"`
 	Creds int `json:"creds"` // login/note/payment/text 等安全凭据
 }

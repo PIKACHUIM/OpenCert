@@ -1,6 +1,6 @@
-// Package fido 提供 FIDO2/WebAuthn 凭据的存储与管理逻辑。
+// Package fido-umdf 提供 FIDO2/WebAuthn 凭据的存储与管理逻辑。
 //
-// FIDO 凭据复用 storage.Certificate 表（cert_type = "fido"）：
+// FIDO 凭据复用 storage.Certificate 表（cert_type = "fido-umdf"）：
 //   - CertContent（公开）：存储 JSON 格式的公开元数据（RP ID、用户名、Credential ID 等）
 //   - PrivateData（加密）：存储 JSON 格式的私密数据（私钥 PEM、key handle 等）
 //
@@ -61,7 +61,7 @@ type Entry struct {
 	UUID      string    `json:"uuid"`
 	CardUUID  string    `json:"card_uuid"`
 	Meta      Meta      `json:"meta"`
-	KeyType   string    `json:"key_type"`   // 如 "fido2"
+	KeyType   string    `json:"key_type"` // 如 "fido2"
 	Remark    string    `json:"remark"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

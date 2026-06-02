@@ -67,7 +67,7 @@ export default function DatabasePage() {
             ['uuid', 'TEXT PK', '证书唯一标识'],
             ['slot_type', 'TEXT', 'local / tpm2 / cloud'],
             ['card_uuid', 'TEXT FK', '所属卡片'],
-            ['cert_type', 'TEXT', 'x509/ssh/gpg/totp/fido/login/note/payment/text'],
+            ['cert_type', 'TEXT', 'x509/ssh/gpg/totp/fido-umdf/login/note/payment/text'],
             ['key_type', 'TEXT', 'rsa2048/ec256/ed25519/...'],
             ['cert_content', 'BLOB', '公开部分（公钥 DER / 证书 DER）'],
             ['temp_key_salt', 'BLOB', '32 字节随机盐值'],

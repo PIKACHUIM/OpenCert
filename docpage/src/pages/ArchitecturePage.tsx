@@ -173,7 +173,7 @@ export default function ArchitecturePage() {
             ['cert_uuid', 'uuid', '全局唯一标识'],
             ['slot_type', 'enum', 'local / tpmv2 / cloud'],
             ['card_uuid', 'uuid', '所属卡片'],
-            ['cert_type', 'enum', 'x509 / ssh / gpg / totp / fido / login / secret / note / payment'],
+            ['cert_type', 'enum', 'x509 / ssh / gpg / totp / fido-umdf / login / secret / note / payment'],
             ['key_type', 'string', '密钥类型（RSA2048、EC256 等）'],
             ['cert_content', 'blob', '证书公开部分（PEM/公钥）'],
             ['temp_key_salt', 'blob', '临时密钥的 salt'],

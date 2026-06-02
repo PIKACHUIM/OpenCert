@@ -1,4 +1,4 @@
-// Package fido - store.go 提供 FIDO 凭据的存储层，复用 storage.Certificate 表。
+// Package fido-umdf - store.go 提供 FIDO 凭据的存储层，复用 storage.Certificate 表。
 package fido
 
 import (
@@ -10,7 +10,7 @@ import (
 )
 
 // Store 管理 FIDO 凭据的持久化存储。
-// 复用 storage.Certificate 表（cert_type = "fido"），不引入新表。
+// 复用 storage.Certificate 表（cert_type = "fido-umdf"），不引入新表。
 type Store struct {
 	certRepo *storage.CertRepo
 	cardRepo *storage.CardRepo

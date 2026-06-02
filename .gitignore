@@ -17,3 +17,4 @@ clients/data/
 .codebuddy/plan
 desktop/dist
 desktop/node_modules
+drivers/build/fido-int

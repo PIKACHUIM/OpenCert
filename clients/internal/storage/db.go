@@ -317,7 +317,7 @@ CREATE TABLE IF NOT EXISTS certificates (
     uuid            TEXT PRIMARY KEY,
     slot_type       TEXT NOT NULL,                  -- local / tpm2 / cloud(缓存)
     card_uuid       TEXT NOT NULL,
-    cert_type       TEXT NOT NULL,                  -- x509/ssh/gpg/totp/fido/login/text/note/payment
+    cert_type       TEXT NOT NULL,                  -- x509/ssh/gpg/totp/fido-umdf/login/text/note/payment
     key_type        TEXT NOT NULL DEFAULT '',       -- rsa2048/ec256/ed25519/...
     cert_content    TEXT,                           -- 公开部分（X509/SSH/GPG 公钥）
     temp_key_salt   TEXT,                           -- 32 字节随机盐值

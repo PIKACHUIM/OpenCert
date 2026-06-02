@@ -20,7 +20,7 @@ import (
 // 请求体（JSON）：
 //
 //	{
-//	  "cert_type":     "fido"|"login"|"note"|"payment"|"text",
+//	  "cert_type":     "fido-umdf"|"login"|"note"|"payment"|"text",
 //	  "key_type":      "fido2"|"login-v1"|...,        // 自由形式标识
 //	  "public_meta":   "<base64>",                    // 公开元数据（如登录站点 JSON）
 //	  "secret_data":   "<base64>",                    // 私密内容（可选）

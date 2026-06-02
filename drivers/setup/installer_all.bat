@@ -60,7 +60,7 @@ if not exist "%BUILD_DIR%\OpenCertCSP_x86.dll" (
 
 :: Step 3: 注册 KSP
 echo.
-echo [3/4] Registering KSP...
+echo [3/5] Registering KSP...
 
 if exist "%SCRIPT_DIR%registers_ksp.ps1" (
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%registers_ksp.ps1" -KspName "%KSP_NAME%" -KspDll "%KSP_DLL%"
@@ -79,7 +79,7 @@ echo       [DONE] KSP registered: %KSP_NAME%
 
 :: Step 4: 部署并注册 FIDO2 CCID DLL
 echo.
-echo [4/4] Deploying and registering FIDO2 CCID...
+echo [4/5] Deploying and registering FIDO2 CCID...
 
 if not exist "%BUILD_DIR%\OpenCertFIDO_x64.dll" (
     echo       [WARN] build\OpenCertFIDO_x64.dll not found, skipping FIDO2
@@ -106,6 +106,51 @@ if exist "%SCRIPT_DIR%register_fido.ps1" (
     echo       [WARN] register_fido.ps1 not found, skipping FIDO2 registration
 )
 
+:: Step 5: 安装 UMDF FIDO2 驱动（SmartCardReader 虚拟设备）
+echo.
+echo [5/5] Installing UMDF FIDO2 Driver...
+
+set "UMDF_INF=%BUILD_DIR%\OpenCertFIDODriver.inf"
+set "UMDF_PS1=%SCRIPT_DIR%..\codes\fido-umdf\scripts\create_device_node.ps1"
+
+if not exist "%UMDF_INF%" (
+    echo       [WARN] build\OpenCertFIDODriver.inf not found, skipping UMDF driver
+    goto :verify
+)
+
+:: 移除旧设备节点（忽略失败，设备可能不存在）
+echo       Removing old device node...
+pnputil /remove-device "ROOT\OPENCERTFIDO\0000" >nul 2>&1
+
+:: 查找并删除旧驱动包（oem*.inf 中匹配 OpenCertFIDODriver 的）
+echo       Removing old driver package...
+for /f "tokens=2 delims=: " %%N in ('pnputil /enum-drivers 2^>nul ^| findstr /i "OpenCertFIDODriver"') do (
+    pnputil /delete-driver %%N /uninstall /force >nul 2>&1
+)
+
+:: 安装新驱动包
+echo       Installing driver package...
+pnputil /add-driver "%UMDF_INF%" /install
+if %errorlevel% neq 0 (
+    echo       [WARN] pnputil /add-driver failed
+    goto :verify
+)
+echo       [DONE] Driver package installed
+
+:: 创建设备节点
+if not exist "%UMDF_PS1%" (
+    echo       [WARN] create_device_node.ps1 not found, skipping device node creation
+    goto :verify
+)
+echo       Creating device node...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%UMDF_PS1%" -InfFile "%UMDF_INF%"
+if %errorlevel% neq 0 (
+    echo       [WARN] Device node creation failed
+) else (
+    echo       [DONE] UMDF FIDO2 driver installed
+)
+
+:verify
 :: 验证
 echo.
 echo   Verifying KSP...

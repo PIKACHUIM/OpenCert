@@ -4,16 +4,18 @@
 // 转发给 Go 后端处理。私钥存储在 OpenCert 智能卡（本地/TPM/云端）。
 //
 // 数据流：
-//   浏览器 WebAuthn
-//     → Windows webauthn.dll
-//     → Windows CCID 驱动
-//     → OpenCertFIDO.dll（CTAP2/CCID）
-//     → IPC Named Pipe（本文件处理）
-//     → fido.Store（本地SQLite / TPM / 云端）
+//
+//	浏览器 WebAuthn
+//	  → Windows webauthn.dll
+//	  → Windows CCID 驱动
+//	  → OpenCertFIDO.dll（CTAP2/CCID）
+//	  → IPC Named Pipe（本文件处理）
+//	  → fido-umdf.Store（本地SQLite / TPM / 云端）
 //
 // CTAP2 协议：
-//   MakeCredential: 生成密钥对，私钥加密存入 fido.Store，返回 attestationObject
-//   GetAssertion:   从 fido.Store 取出私钥，签名 clientDataHash，返回 assertionObject
+//
+//	MakeCredential: 生成密钥对，私钥加密存入 fido-umdf.Store，返回 attestationObject
+//	GetAssertion:   从 fido-umdf.Store 取出私钥，签名 clientDataHash，返回 assertionObject
 package ipc
 
 import (
@@ -77,15 +79,15 @@ type fidoLoginReq struct {
 //	0x07: options {rk: bool, uv: bool}
 //	0x08: pinUvAuthParam (optional)
 type ctap2MakeCredentialReq struct {
-	ClientDataHash []byte
-	RPID           string
-	RPName         string
-	UserID         []byte
-	UserName       string
+	ClientDataHash  []byte
+	RPID            string
+	RPName          string
+	UserID          []byte
+	UserName        string
 	UserDisplayName string
-	Algorithm      int    // -7 = ES256, -257 = RS256
-	RequireRK      bool   // resident key
-	RequireUV      bool   // user verification
+	Algorithm       int  // -7 = ES256, -257 = RS256
+	RequireRK       bool // resident key
+	RequireUV       bool // user verification
 }
 
 // ctap2GetAssertionReq 是 authenticatorGetAssertion 的 CBOR 请求结构。
@@ -156,10 +158,10 @@ func (h *PKCSHandler) handleFIDOMakeCredential(ctx context.Context, req *Frame) 
 	tokenInfo := slot.TokenInfo()
 	cardUUID := tokenInfo.SerialNumber
 
-	// 获取 fido.Store（通过 manager 的存储层）
+	// 获取 fido-umdf.Store（通过 manager 的存储层）
 	fidoStore := h.getFIDOStore()
 	if fidoStore == nil {
-		slog.Error("FIDO MakeCredential: fido.Store 未初始化")
+		slog.Error("FIDO MakeCredential: fido-umdf.Store 未初始化")
 		return nil, ctap2ErrToRV(0x7F) // CTAP1_ERR_OTHER
 	}
 
@@ -233,7 +235,7 @@ func (h *PKCSHandler) handleFIDOMakeCredential(ctx context.Context, req *Frame) 
 		mcReq.RPID,
 		credIDBytes,
 		&privKey.PublicKey,
-		0, // counter = 0 for new credential
+		0,    // counter = 0 for new credential
 		true, // AT flag: attested credential data
 	)
 	if err != nil {
@@ -812,14 +814,26 @@ func (b *cborBuilder) writeHead(major byte, val uint64) {
 	}
 }
 
-func (b *cborBuilder) writeUint(v uint64)        { b.writeHead(0x00, v) }
-func (b *cborBuilder) writeNegInt(v int)          { b.writeHead(0x20, uint64(-1-v)) }
-func (b *cborBuilder) writeBytes(v []byte)        { b.writeHead(0x40, uint64(len(v))); b.data = append(b.data, v...) }
-func (b *cborBuilder) writeText(v string)         { b.writeHead(0x60, uint64(len(v))); b.data = append(b.data, v...) }
-func (b *cborBuilder) writeArrayHeader(n int)     { b.writeHead(0x80, uint64(n)) }
-func (b *cborBuilder) writeMapHeader(n int)       { b.writeHead(0xA0, uint64(n)) }
-func (b *cborBuilder) writeBool(v bool)           { if v { b.data = append(b.data, 0xF5) } else { b.data = append(b.data, 0xF4) } }
-func (b *cborBuilder) bytes() []byte              { return b.data }
+func (b *cborBuilder) writeUint(v uint64) { b.writeHead(0x00, v) }
+func (b *cborBuilder) writeNegInt(v int)  { b.writeHead(0x20, uint64(-1-v)) }
+func (b *cborBuilder) writeBytes(v []byte) {
+	b.writeHead(0x40, uint64(len(v)))
+	b.data = append(b.data, v...)
+}
+func (b *cborBuilder) writeText(v string) {
+	b.writeHead(0x60, uint64(len(v)))
+	b.data = append(b.data, v...)
+}
+func (b *cborBuilder) writeArrayHeader(n int) { b.writeHead(0x80, uint64(n)) }
+func (b *cborBuilder) writeMapHeader(n int)   { b.writeHead(0xA0, uint64(n)) }
+func (b *cborBuilder) writeBool(v bool) {
+	if v {
+		b.data = append(b.data, 0xF5)
+	} else {
+		b.data = append(b.data, 0xF4)
+	}
+}
+func (b *cborBuilder) bytes() []byte { return b.data }
 
 // ================================================================
 // 辅助：CBOR 解码（最小化）
