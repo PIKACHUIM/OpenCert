@@ -465,8 +465,8 @@ const CredentialsPage: React.FC = () => {
     try {
       const data = await getCards();
       const list = Array.isArray(data) ? data : (data as any)?.items || [];
-      // 仅本地卡片支持安全凭据
-      const local = list.filter((c: Card) => c.slot_type === 'local');
+      // 仅本地卡片且启用了安全凭据功能的卡片
+      const local = list.filter((c: Card) => c.slot_type === 'local' && c.credential_enabled);
       setCards(local);
       if (local.length > 0 && !cardUUID) setCardUUID(local[0].uuid);
     } catch {

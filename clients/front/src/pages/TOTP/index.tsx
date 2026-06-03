@@ -121,7 +121,8 @@ const TOTPPage: React.FC = () => {
 
   useEffect(() => {
     getCards({ page: 1, page_size: 100 }).then(r => {
-      const list = Array.isArray(r?.items) ? r.items : [];
+      const all = Array.isArray(r?.items) ? r.items : [];
+      const list = all.filter((c: CardType) => c.totp_enabled);
       setCards(list);
       if (list.length > 0 && !selectedCardUUID) {
         setSelectedCardUUID(list[0].uuid);
@@ -438,7 +439,7 @@ const TOTPPage: React.FC = () => {
     <div>
       <PageHeader
         icon={<ClockCircleOutlined />}
-        title="TOTP 验证器"
+        title="TOTP验证管理"
         tags={
           <Space size={8}>
             <Tag color="blue">{entries.length} 个条目</Tag>

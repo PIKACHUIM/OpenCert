@@ -169,6 +169,13 @@ func (db *DB) migrate() error {
 	// 卡片启用/禁用
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`)
 
+	// 功能开关字段（默认关闭）
+	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN fido_enabled INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN credential_enabled INTEGER NOT NULL DEFAULT 0`)
+	// 记住密码时间（秒），默认 900（15分钟）
+	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN pin_timeout INTEGER NOT NULL DEFAULT 900`)
+
 	// 2FA 字段迁移
 	_, _ = db.conn.Exec(`ALTER TABLE users ADD COLUMN two_fa_enabled INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.conn.Exec(`ALTER TABLE users ADD COLUMN two_fa_secret TEXT NOT NULL DEFAULT ''`)

@@ -49,7 +49,7 @@ if ($hDll -eq [IntPtr]::Zero) {
         exit
     }
 }
-Write-Host "    [OK] DLL loaded at 0x$($hDll.ToString('X'))" -ForegroundColor Green
+Write-Host "    [DONE] DLL loaded at 0x$($hDll.ToString('X'))" -ForegroundColor Green
 
 # Test 2: Get export
 $pfn = [KSPTest2]::GetProcAddress($hDll, "GetKeyStorageInterface")
@@ -99,7 +99,7 @@ $hProv = [IntPtr]::Zero
 $result = [KSPTest2]::NCryptOpenStorageProvider([ref]$hProv, "OpenCert Key Storage Provider", 0)
 Write-Host "    Result: 0x$($result.ToString('X8'))"
 if ($result -eq 0) {
-    Write-Host "    [OK] SUCCESS!" -ForegroundColor Green
+    Write-Host "    [DONE] SUCCESS!" -ForegroundColor Green
     [KSPTest2]::NCryptFreeObject($hProv) | Out-Null
 } else {
     Write-Host "    [FAIL]" -ForegroundColor Red
@@ -111,7 +111,7 @@ $hProv2 = [IntPtr]::Zero
 $result2 = [KSPTest2]::NCryptOpenStorageProvider([ref]$hProv2, "OpenCert Key Storage Provider", 0x40)
 Write-Host "    Result: 0x$($result2.ToString('X8'))"
 if ($result2 -eq 0) {
-    Write-Host "    [OK] SUCCESS!" -ForegroundColor Green
+    Write-Host "    [DONE] SUCCESS!" -ForegroundColor Green
     [KSPTest2]::NCryptFreeObject($hProv2) | Out-Null
 }
 

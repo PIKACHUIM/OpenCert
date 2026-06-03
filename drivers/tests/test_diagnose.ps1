@@ -20,7 +20,7 @@ Write-Host "[1/6] Checking KSP DLL..." -ForegroundColor Yellow
 $dllPath = "$env:SystemRoot\System32\$KspDll"
 if (Test-Path $dllPath) {
     $dll = Get-Item $dllPath
-    Write-Host "      [OK] $dllPath ($($dll.Length) bytes)" -ForegroundColor Green
+    Write-Host "      [DONE] $dllPath ($($dll.Length) bytes)" -ForegroundColor Green
 } else {
     Write-Host "      [FAIL] $dllPath NOT FOUND" -ForegroundColor Red
     $errors++
@@ -31,12 +31,12 @@ Write-Host ""
 Write-Host "[2/6] Checking CNG registry..." -ForegroundColor Yellow
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Providers\$KspName"
 if (Test-Path $regPath) {
-    Write-Host "      [OK] Provider key exists" -ForegroundColor Green
+    Write-Host "      [DONE] Provider key exists" -ForegroundColor Green
     $umPath = "$regPath\UM"
     if (Test-Path $umPath) {
         $image = (Get-ItemProperty $umPath -ErrorAction SilentlyContinue).Image
         if ($image) {
-            Write-Host "      [OK] UM\Image = $image" -ForegroundColor Green
+            Write-Host "      [DONE] UM\Image = $image" -ForegroundColor Green
         } else {
             Write-Host "      [WARN] UM\Image not set" -ForegroundColor Yellow
         }
@@ -71,7 +71,7 @@ public class NCryptTest {
 $hProv = [IntPtr]::Zero
 $status = [NCryptTest]::NCryptOpenStorageProvider([ref]$hProv, $KspName, 0)
 if ($status -eq 0) {
-    Write-Host "      [OK] NCryptOpenStorageProvider succeeded (handle=0x$($hProv.ToString('X')))" -ForegroundColor Green
+    Write-Host "      [DONE] NCryptOpenStorageProvider succeeded (handle=0x$($hProv.ToString('X')))" -ForegroundColor Green
 } else {
     Write-Host "      [FAIL] NCryptOpenStorageProvider failed: 0x$($status.ToString('X8'))" -ForegroundColor Red
     $errors++
@@ -89,9 +89,9 @@ if ($hProv -ne [IntPtr]::Zero) {
     $pEnumState = [IntPtr]::Zero
     $status2 = [NCryptTest]::NCryptEnumKeys($hProv, $null, [ref]$pKeyName, [ref]$pEnumState, 0)
     if ($status2 -eq 0) {
-        Write-Host "      [OK] NCryptEnumKeys returned a key" -ForegroundColor Green
+        Write-Host "      [DONE] NCryptEnumKeys returned a key" -ForegroundColor Green
     } elseif ($status2 -eq [int]0x8009002A) {
-        Write-Host "      [OK] NCryptEnumKeys: NTE_NO_MORE_ITEMS (no keys, but function works)" -ForegroundColor Green
+        Write-Host "      [DONE] NCryptEnumKeys: NTE_NO_MORE_ITEMS (no keys, but function works)" -ForegroundColor Green
     } elseif ($status2 -eq [int]0x80090035) {
         Write-Host "      [WARN] NCryptEnumKeys: NTE_DEVICE_NOT_FOUND (client-card backend not running?)" -ForegroundColor Yellow
     } elseif ($status2 -eq [int]0xC00000BB) {
@@ -110,7 +110,7 @@ Write-Host "[5/6] Checking IPC Named Pipe..." -ForegroundColor Yellow
 $pipePath = "\\.\pipe\clients"
 $pipeExists = [System.IO.Directory]::GetFiles("\\.\pipe\", "clients")
 if ($pipeExists.Count -gt 0) {
-    Write-Host "      [OK] Named Pipe '$pipePath' is available (client-card is running)" -ForegroundColor Green
+    Write-Host "      [DONE] Named Pipe '$pipePath' is available (client-card is running)" -ForegroundColor Green
 } else {
     Write-Host "      [WARN] Named Pipe '$pipePath' NOT available" -ForegroundColor Yellow
     Write-Host "      -> Start client-card backend first!" -ForegroundColor Yellow

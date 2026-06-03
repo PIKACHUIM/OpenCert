@@ -102,6 +102,36 @@ func (r *CertRepo) ListByCard(ctx context.Context, cardUUID string) ([]*Certific
 	return certs, rows.Err()
 }
 
+// ListByCardPrefix 通过 card_uuid 前缀查找证书（兼容旧数据中截断的 UUID）。
+func (r *CertRepo) ListByCardPrefix(ctx context.Context, cardUUIDPrefix string) ([]*Certificate, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT uuid, slot_type, card_uuid, cert_type, key_type,
+			cert_content, tpm_platform, remark, created_at, updated_at,
+			CASE WHEN private_data IS NOT NULL AND length(private_data) > 0 THEN 1 ELSE 0 END as has_private,
+			temp_key_salt, temp_key_enc, private_data,
+			tpm_wrapped_blob, tpm_private_blob, tpm_cert_key_salt
+		FROM certificates WHERE card_uuid LIKE ? ORDER BY created_at DESC`, cardUUIDPrefix+"%")
+	if err != nil {
+		return nil, fmt.Errorf("查询证书列表失败: %w", err)
+	}
+	defer rows.Close()
+
+	var certs []*Certificate
+	for rows.Next() {
+		c := &Certificate{}
+		var hasPrivate int
+		if err := rows.Scan(&c.UUID, &c.SlotType, &c.CardUUID, &c.CertType, &c.KeyType,
+			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CreatedAt, &c.UpdatedAt,
+			&hasPrivate, &c.TempKeySalt, &c.TempKeyEnc, &c.PrivateData,
+			&c.TPMWrappedBlob, &c.TPMPrivateBlob, &c.TPMCertKeySalt); err != nil {
+			return nil, fmt.Errorf("扫描证书数据失败: %w", err)
+		}
+		_ = hasPrivate
+		certs = append(certs, c)
+	}
+	return certs, rows.Err()
+}
+
 // ListByCardPublic 列出指定卡片的所有**用户可见**证书，过滤掉 internal 类型（如 TPM 保护密钥）。
 // API handler 应使用此方法返回给前端。
 func (r *CertRepo) ListByCardPublic(ctx context.Context, cardUUID string) ([]*Certificate, error) {

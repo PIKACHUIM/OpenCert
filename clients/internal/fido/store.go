@@ -66,9 +66,27 @@ func (s *Store) Create(ctx context.Context, cardUUID string, meta *Meta, secret 
 
 // List 列出指定卡片下的所有 FIDO 凭据（不含私密数据）。
 func (s *Store) List(ctx context.Context, cardUUID string) ([]Entry, error) {
+	// 先精确匹配，再尝试前缀匹配（兼容旧数据中截断的 card_uuid）
 	certs, err := s.certRepo.ListByCard(ctx, cardUUID)
 	if err != nil {
 		return nil, fmt.Errorf("查询 FIDO 凭据列表失败: %w", err)
+	}
+
+	// 如果精确匹配没有 FIDO 凭据，尝试用前缀匹配（旧数据可能只存了前16字符）
+	hasFIDO := false
+	for _, c := range certs {
+		if c.CertType == storage.CertTypeFIDO {
+			hasFIDO = true
+			break
+		}
+	}
+	if !hasFIDO && len(cardUUID) > 16 {
+		// 用前16字符前缀查询
+		prefix := cardUUID[:16]
+		prefixCerts, err2 := s.certRepo.ListByCardPrefix(ctx, prefix)
+		if err2 == nil && len(prefixCerts) > 0 {
+			certs = append(certs, prefixCerts...)
+		}
 	}
 
 	var entries []Entry

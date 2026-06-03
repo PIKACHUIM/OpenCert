@@ -34,6 +34,10 @@ export interface Card {
   cloud_url?: string;
   cloud_card_uuid?: string;
   enabled?: boolean;
+  fido_enabled?: boolean;
+  totp_enabled?: boolean;
+  credential_enabled?: boolean;
+  pin_timeout?: number;
   created_at: string;
   expires_at?: string;
   cert_stats?: CertStats;

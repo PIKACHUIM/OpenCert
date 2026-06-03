@@ -500,6 +500,10 @@ const Cards: React.FC = () => {
                 remark: record.remark || '',
                 expires_at: record.expires_at ? dayjs(record.expires_at) : null,
                 never_expire: !record.expires_at,
+                fido_enabled: !!record.fido_enabled,
+                totp_enabled: !!record.totp_enabled,
+                credential_enabled: !!record.credential_enabled,
+                pin_timeout: record.pin_timeout ?? 900,
               });
               setEditOpen(true);
             }}
@@ -769,6 +773,10 @@ const Cards: React.FC = () => {
                         remark: selectedCard.remark || '',
                         expires_at: selectedCard.expires_at ? dayjs(selectedCard.expires_at) : null,
                         never_expire: !selectedCard.expires_at,
+                        fido_enabled: !!selectedCard.fido_enabled,
+                        totp_enabled: !!selectedCard.totp_enabled,
+                        credential_enabled: !!selectedCard.credential_enabled,
+                        pin_timeout: selectedCard.pin_timeout ?? 900,
                       });
                       setEditOpen(true);
                     }}
@@ -1063,6 +1071,10 @@ const Cards: React.FC = () => {
             } else if (values.expires_at) {
               updateData.expires_at = values.expires_at.format('YYYY-MM-DD');
             }
+            updateData.fido_enabled = !!values.fido_enabled;
+            updateData.totp_enabled = !!values.totp_enabled;
+            updateData.credential_enabled = !!values.credential_enabled;
+            updateData.pin_timeout = values.pin_timeout ?? 900;
             await updateCard(editCard.uuid, updateData);
             message.success('卡片已更新');
             setEditOpen(false);
@@ -1100,6 +1112,46 @@ const Cards: React.FC = () => {
             >
               为此卡片生成新密钥对
             </Button>
+          </Form.Item>
+          <Form.Item label="功能开关" style={{ marginBottom: 8 }}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text>FIDO2/WebAuthn</Text>
+                <Form.Item name="fido_enabled" valuePropName="checked" noStyle>
+                  <Switch size="small" />
+                </Form.Item>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text>TOTP 动态口令</Text>
+                <Form.Item name="totp_enabled" valuePropName="checked" noStyle>
+                  <Switch size="small" />
+                </Form.Item>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text>安全凭据</Text>
+                <Form.Item name="credential_enabled" valuePropName="checked" noStyle>
+                  <Switch size="small" />
+                </Form.Item>
+              </div>
+            </Space>
+          </Form.Item>
+          <Form.Item name="pin_timeout" label="记住密码时间">
+            <Select
+              options={[
+                { label: '不记住', value: 0 },
+                { label: '5 分钟', value: 300 },
+                { label: '15 分钟', value: 900 },
+                { label: '30 分钟', value: 1800 },
+                { label: '60 分钟', value: 3600 },
+                { label: '3 小时', value: 10800 },
+                { label: '6 小时', value: 21600 },
+                { label: '24 小时', value: 86400 },
+                { label: '72 小时', value: 259200 },
+                { label: '7 天', value: 604800 },
+                { label: '30 天', value: 2592000 },
+                { label: '永久', value: -1 },
+              ]}
+            />
           </Form.Item>
         </Form>
       </Modal>

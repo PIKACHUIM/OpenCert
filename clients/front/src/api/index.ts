@@ -176,6 +176,35 @@ export const getCredentialSecret = (cardUUID: string, certUUID: string, cardPass
   http.post<{ secret_data: string }>(`/api/cards/${cardUUID}/credentials/${certUUID}/secret`, { card_password: cardPassword })
     .then((r) => r.data.secret_data);
 
+// ---- FIDO2/WebAuthn 凭据管理（专用接口，返回结构化元数据）----
+export interface FIDOMeta {
+  rp_id: string;
+  rp_name?: string;
+  user_name: string;
+  user_display_name?: string;
+  user_handle?: string;
+  credential_id: string;
+  algorithm?: string;
+  counter: number;
+  transports?: string[];
+}
+export interface FIDOEntry {
+  uuid: string;
+  card_uuid: string;
+  meta: FIDOMeta;
+  key_type: string;
+  remark: string;
+  created_at: string;
+  updated_at: string;
+}
+export const getFIDOList = (cardUUID: string) =>
+  http.get<FIDOEntry[]>(`/api/cards/${cardUUID}/fido`).then((r) => {
+    const data = r.data;
+    return Array.isArray(data) ? data : [];
+  });
+export const deleteFIDO = (cardUUID: string, uuid: string) =>
+  http.delete(`/api/cards/${cardUUID}/fido/${uuid}`).then((r) => r.data);
+
 // ---- 日志查询 ----
 export const getLogs = (params?: {
   card_uuid?: string;

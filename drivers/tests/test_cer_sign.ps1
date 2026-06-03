@@ -61,7 +61,7 @@ if ($status -ne 0) {
     Write-Host "       [FAIL] NCryptOpenStorageProvider: 0x$($status.ToString('X8'))" -ForegroundColor Red
     exit 1
 }
-Write-Host "       [OK] Provider opened" -ForegroundColor Green
+Write-Host "       [DONE] Provider opened" -ForegroundColor Green
 
 # 获取证书的容器名
 Write-Host ""
@@ -97,7 +97,7 @@ if ($status -ne 0) {
     [NCryptSignTest]::NCryptFreeObject($hProv) | Out-Null
     exit 1
 }
-Write-Host "       [OK] Key opened (handle=0x$($hKey.ToString('X')))" -ForegroundColor Green
+Write-Host "       [DONE] Key opened (handle=0x$($hKey.ToString('X')))" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "[4/4] Testing NCryptSignHash..." -ForegroundColor Yellow
@@ -126,7 +126,7 @@ $signature = New-Object byte[] $sigSize
 $actualSize = 0
 $status = [NCryptSignTest]::NCryptSignHash($hKey, [IntPtr]::Zero, $testHash, 32, $signature, $sigSize, [ref]$actualSize, [NCryptSignTest]::BCRYPT_PAD_PKCS1)
 if ($status -eq 0) {
-    Write-Host "       [OK] Signature successful! ($actualSize bytes)" -ForegroundColor Green
+    Write-Host "       [DONE] Signature successful! ($actualSize bytes)" -ForegroundColor Green
     Write-Host "       First 16 bytes: $([BitConverter]::ToString($signature, 0, [Math]::Min(16, $actualSize)))" -ForegroundColor Gray
 } else {
     Write-Host "       [FAIL] NCryptSignHash: 0x$($status.ToString('X8'))" -ForegroundColor Red

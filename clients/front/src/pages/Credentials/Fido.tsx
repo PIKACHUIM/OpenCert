@@ -9,9 +9,9 @@ import {
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../../components/PageHeader';
 import {
-  getCards, getCerts, deleteCert, createCredential, type CredentialPayload,
+  getCards, getFIDOList, deleteFIDO, createCredential, type CredentialPayload, type FIDOEntry,
 } from '../../api';
-import type { Card, Certificate } from '../../types';
+import type { Card } from '../../types';
 
 const { Text } = Typography;
 
@@ -33,7 +33,7 @@ const FidoPage: React.FC = () => {
   const [cards, setCards] = useState<Card[]>([]);
   const [cardUUID, setCardUUID] = useState<string>('');
   const [cardPassword, setCardPassword] = useState<string>('');
-  const [certs, setCerts] = useState<Certificate[]>([]);
+  const [fidoEntries, setFidoEntries] = useState<FIDOEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
 
@@ -41,7 +41,7 @@ const FidoPage: React.FC = () => {
     try {
       const data = await getCards();
       const list = Array.isArray(data) ? data : (data as any)?.items || [];
-      const local = list.filter((c: Card) => c.slot_type === 'local');
+      const local = list.filter((c: Card) => c.slot_type === 'local' && c.fido_enabled);
       setCards(local);
       if (local.length > 0 && !cardUUID) setCardUUID(local[0].uuid);
     } catch {
@@ -49,51 +49,52 @@ const FidoPage: React.FC = () => {
     }
   };
 
-  const loadCerts = async () => {
-    if (!cardUUID) { setCerts([]); return; }
+  const loadFIDO = async () => {
+    if (!cardUUID) { setFidoEntries([]); return; }
     setLoading(true);
     try {
-      const list = await getCerts(cardUUID);
-      setCerts(list);
+      const list = await getFIDOList(cardUUID);
+      setFidoEntries(list);
     } catch {
-      setCerts([]);
+      setFidoEntries([]);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => { loadCards(); }, []);
-  useEffect(() => { loadCerts(); }, [cardUUID]);
-
-  const fidoData = useMemo(
-    () => certs.filter((c) => c.cert_type === 'fido'),
-    [certs],
-  );
+  useEffect(() => { loadFIDO(); }, [cardUUID]);
 
   const columns = [
-    { title: 'UUID', dataIndex: 'uuid', key: 'uuid', width: 280, ellipsis: true },
-    { title: t('credentials.common.type'), dataIndex: 'key_type', key: 'key_type', width: 140 },
-    { title: t('credentials.common.remark'), dataIndex: 'remark', key: 'remark' },
-{ title: t('credentials.common.createdAt'), dataIndex: 'created_at', key: 'created_at', width: 300 },
+    { title: 'RP ID', dataIndex: ['meta', 'rp_id'], key: 'rp_id', width: 200, ellipsis: true },
+    { title: '用户名', dataIndex: ['meta', 'user_name'], key: 'user_name', width: 180, ellipsis: true },
+    { title: 'Credential ID', dataIndex: ['meta', 'credential_id'], key: 'credential_id', width: 240, ellipsis: true,
+      render: (v: string) => <Tooltip title={v}><Text copyable={{ text: v }} style={{ fontSize: 12 }}>{v?.slice(0, 24)}...</Text></Tooltip>,
+    },
+    { title: '算法', dataIndex: ['meta', 'algorithm'], key: 'algorithm', width: 80 },
+    { title: '计数器', dataIndex: ['meta', 'counter'], key: 'counter', width: 80 },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 180,
+      render: (v: string) => v ? new Date(v).toLocaleString() : '-',
+    },
     {
-      title: t('credentials.common.actions'),
+      title: '操作',
       key: 'actions',
-      width: 120,
-      render: (_: unknown, row: Certificate) => (
+      width: 100,
+      render: (_: unknown, row: FIDOEntry) => (
         <Popconfirm
-          title={t('credentials.common.deleteConfirm')}
+          title="确认删除此 FIDO 凭据？"
           onConfirm={async () => {
             try {
-              await deleteCert(cardUUID, row.uuid);
-              message.success('OK');
-              loadCerts();
+              await deleteFIDO(cardUUID, row.uuid);
+              message.success('删除成功');
+              loadFIDO();
             } catch (e: any) {
-              message.error(e?.message || 'failed');
+              message.error(e?.message || '删除失败');
             }
           }}
         >
           <Button danger size="small" icon={<DeleteOutlined />}>
-            {t('credentials.common.delete')}
+            删除
           </Button>
         </Popconfirm>
       ),
@@ -104,7 +105,7 @@ const FidoPage: React.FC = () => {
     <div>
       <PageHeader
         icon={<KeyOutlined />}
-        title={t('credentials.fido-umdf.pageTitle')}
+        title={t('credentials.fido.pageTitle')}
         tags={
           <Space size={8}>
             <Tag color="green">FIDO2/WebAuthn</Tag>
@@ -142,14 +143,14 @@ const FidoPage: React.FC = () => {
           rowKey="uuid"
           size="small"
           pagination={{ pageSize: 10 }}
-          dataSource={fidoData}
+          dataSource={fidoEntries}
           columns={columns as any}
         />
       </ACard>
 
       {/* 新增模态框 */}
       <Modal
-        title={t('credentials.fido-umdf.pageTitle')}
+        title={t('credentials.fido.pageTitle')}
         open={createModalOpen}
         onCancel={() => setCreateModalOpen(false)}
         footer={null}
@@ -159,7 +160,7 @@ const FidoPage: React.FC = () => {
         <FidoForm
           cardUUID={cardUUID}
           cardPassword={cardPassword}
-          onCreated={() => { loadCerts(); setCreateModalOpen(false); }}
+          onCreated={() => { loadFIDO(); setCreateModalOpen(false); }}
         />
       </Modal>
     </div>

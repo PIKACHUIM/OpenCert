@@ -200,13 +200,14 @@ func (r *CardRepo) Create(ctx context.Context, c *Card) error {
 	}
 
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO cards (uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO cards (uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid, fido_enabled, totp_enabled, credential_enabled, pin_timeout)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.UUID, string(c.SlotType), c.CardName, c.UserUUID, c.Enabled,
 		c.CreatedAt, nullTime(c.ExpiresAt), keysJSON, c.Remark,
 		string(c.SecurityLevel), c.TPMCertKeyEnc, c.TPMCertKeySalt,
 		int64(c.TPMCertKeyNVHandle), c.TPMProvider,
 		c.CloudURL, c.CloudCardUUID,
+		boolToInt(c.FIDOEnabled), boolToInt(c.TOTPEnabled), boolToInt(c.CredentialEnabled), c.PINTimeout,
 	)
 	if err != nil {
 		return fmt.Errorf("创建卡片失败: %w", err)
@@ -221,13 +222,14 @@ func (r *CardRepo) GetByUUID(ctx context.Context, cardUUID string) (*Card, error
 	var expiresAt sql.NullTime
 	var nvHandle int64
 	err := r.db.QueryRowContext(ctx, `
-		SELECT uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid
+SELECT uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid, fido_enabled, totp_enabled, credential_enabled, pin_timeout
 		FROM cards WHERE uuid=?`, cardUUID).
 		Scan(&c.UUID, &c.SlotType, &c.CardName, &c.UserUUID, &c.Enabled,
 			&c.CreatedAt, &expiresAt, &keysJSON, &c.Remark,
 			&c.SecurityLevel, &c.TPMCertKeyEnc, &c.TPMCertKeySalt,
 			&nvHandle, &c.TPMProvider,
-			&c.CloudURL, &c.CloudCardUUID)
+			&c.CloudURL, &c.CloudCardUUID,
+			&c.FIDOEnabled, &c.TOTPEnabled, &c.CredentialEnabled, &c.PINTimeout)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -251,13 +253,14 @@ func (r *CardRepo) GetByUUIDPrefix(ctx context.Context, uuidPrefix string) (*Car
 	var expiresAt sql.NullTime
 	var nvHandle int64
 	err := r.db.QueryRowContext(ctx, `
-		SELECT uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid
+SELECT uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid, fido_enabled, totp_enabled, credential_enabled, pin_timeout
 		FROM cards WHERE uuid LIKE ? LIMIT 1`, uuidPrefix+"%").
 		Scan(&c.UUID, &c.SlotType, &c.CardName, &c.UserUUID, &c.Enabled,
 			&c.CreatedAt, &expiresAt, &keysJSON, &c.Remark,
 			&c.SecurityLevel, &c.TPMCertKeyEnc, &c.TPMCertKeySalt,
 			&nvHandle, &c.TPMProvider,
-			&c.CloudURL, &c.CloudCardUUID)
+			&c.CloudURL, &c.CloudCardUUID,
+			&c.FIDOEnabled, &c.TOTPEnabled, &c.CredentialEnabled, &c.PINTimeout)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -277,7 +280,7 @@ func (r *CardRepo) GetByUUIDPrefix(ctx context.Context, uuidPrefix string) (*Car
 // ListByUser 列出指定用户的所有卡片。
 func (r *CardRepo) ListByUser(ctx context.Context, userUUID string) ([]*Card, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid
+SELECT uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid, fido_enabled, totp_enabled, credential_enabled, pin_timeout
 		FROM cards WHERE user_uuid=? ORDER BY created_at DESC`, userUUID)
 	if err != nil {
 		return nil, fmt.Errorf("查询卡片列表失败: %w", err)
@@ -294,7 +297,8 @@ func (r *CardRepo) ListByUser(ctx context.Context, userUUID string) ([]*Card, er
 			&c.CreatedAt, &expiresAt, &keysJSON, &c.Remark,
 			&c.SecurityLevel, &c.TPMCertKeyEnc, &c.TPMCertKeySalt,
 			&nvHandle, &c.TPMProvider,
-			&c.CloudURL, &c.CloudCardUUID); err != nil {
+			&c.CloudURL, &c.CloudCardUUID,
+			&c.FIDOEnabled, &c.TOTPEnabled, &c.CredentialEnabled, &c.PINTimeout); err != nil {
 			return nil, fmt.Errorf("扫描卡片数据失败: %w", err)
 		}
 		c.TPMCertKeyNVHandle = uint32(nvHandle)
@@ -312,7 +316,7 @@ func (r *CardRepo) ListByUser(ctx context.Context, userUUID string) ([]*Card, er
 // ListAll 列出所有卡片。
 func (r *CardRepo) ListAll(ctx context.Context) ([]*Card, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid
+SELECT uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid, fido_enabled, totp_enabled, credential_enabled, pin_timeout
 		FROM cards ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("查询所有卡片失败: %w", err)
@@ -329,7 +333,8 @@ func (r *CardRepo) ListAll(ctx context.Context) ([]*Card, error) {
 			&c.CreatedAt, &expiresAt, &keysJSON, &c.Remark,
 			&c.SecurityLevel, &c.TPMCertKeyEnc, &c.TPMCertKeySalt,
 			&nvHandle, &c.TPMProvider,
-			&c.CloudURL, &c.CloudCardUUID); err != nil {
+			&c.CloudURL, &c.CloudCardUUID,
+			&c.FIDOEnabled, &c.TOTPEnabled, &c.CredentialEnabled, &c.PINTimeout); err != nil {
 			return nil, fmt.Errorf("扫描卡片数据失败: %w", err)
 		}
 		c.TPMCertKeyNVHandle = uint32(nvHandle)
@@ -351,12 +356,14 @@ func (r *CardRepo) Update(ctx context.Context, c *Card) error {
 		return fmt.Errorf("序列化卡片密钥失败: %w", err)
 	}
 	_, err = r.db.ExecContext(ctx, `
-		UPDATE cards SET slot_type=?, card_name=?, enabled=?, expires_at=?, card_keys=?, remark=?, security_level=?, tpm_cert_key_enc=?, tpm_cert_key_salt=?, tpm_cert_key_nv_handle=?, tpm_provider=?, cloud_url=?, cloud_card_uuid=?
+		UPDATE cards SET slot_type=?, card_name=?, enabled=?, expires_at=?, card_keys=?, remark=?, security_level=?, tpm_cert_key_enc=?, tpm_cert_key_salt=?, tpm_cert_key_nv_handle=?, tpm_provider=?, cloud_url=?, cloud_card_uuid=?, fido_enabled=?, totp_enabled=?, credential_enabled=?, pin_timeout=?
 		WHERE uuid=?`,
 		string(c.SlotType), c.CardName, c.Enabled, nullTime(c.ExpiresAt), keysJSON, c.Remark,
 		string(c.SecurityLevel), c.TPMCertKeyEnc, c.TPMCertKeySalt,
 		int64(c.TPMCertKeyNVHandle), c.TPMProvider,
-		c.CloudURL, c.CloudCardUUID, c.UUID,
+		c.CloudURL, c.CloudCardUUID,
+		boolToInt(c.FIDOEnabled), boolToInt(c.TOTPEnabled), boolToInt(c.CredentialEnabled), c.PINTimeout,
+		c.UUID,
 	)
 	if err != nil {
 		return fmt.Errorf("更新卡片失败: %w", err)

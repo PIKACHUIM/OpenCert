@@ -101,6 +101,12 @@ type Card struct {
 	// Cloud Slot 专用字段
 	CloudURL      string `json:"cloud_url,omitempty"`       // servers 服务地址，如 http://localhost:1027
 	CloudCardUUID string `json:"cloud_card_uuid,omitempty"` // 在 servers 中的卡片 UUID
+	// 功能开关（默认关闭）
+	FIDOEnabled       bool `json:"fido_enabled"`       // 是否启用 FIDO2/WebAuthn 功能
+	TOTPEnabled       bool `json:"totp_enabled"`       // 是否启用 TOTP 功能
+	CredentialEnabled bool `json:"credential_enabled"` // 是否启用安全凭据功能
+	// 记住密码时间（秒），0=不记住，-1=永久，默认 900（15分钟）
+	PINTimeout int `json:"pin_timeout"`
 }
 
 // ---- 证书模型 ----

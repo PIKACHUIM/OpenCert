@@ -381,10 +381,14 @@ func (s *Server) handleUpdateCard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		CardName  *string `json:"card_name"`
-		ExpiresAt *string `json:"expires_at"`
-		Remark    *string `json:"remark"`
-		Enabled   *bool   `json:"enabled"`
+		CardName          *string `json:"card_name"`
+		ExpiresAt         *string `json:"expires_at"`
+		Remark            *string `json:"remark"`
+		Enabled           *bool   `json:"enabled"`
+		FIDOEnabled       *bool   `json:"fido_enabled"`
+		TOTPEnabled       *bool   `json:"totp_enabled"`
+		CredentialEnabled *bool   `json:"credential_enabled"`
+		PINTimeout        *int    `json:"pin_timeout"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
@@ -399,6 +403,18 @@ func (s *Server) handleUpdateCard(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Enabled != nil {
 		card.Enabled = *req.Enabled
+	}
+	if req.FIDOEnabled != nil {
+		card.FIDOEnabled = *req.FIDOEnabled
+	}
+	if req.TOTPEnabled != nil {
+		card.TOTPEnabled = *req.TOTPEnabled
+	}
+	if req.CredentialEnabled != nil {
+		card.CredentialEnabled = *req.CredentialEnabled
+	}
+	if req.PINTimeout != nil {
+		card.PINTimeout = *req.PINTimeout
 	}
 	if req.ExpiresAt != nil {
 		if *req.ExpiresAt == "" {

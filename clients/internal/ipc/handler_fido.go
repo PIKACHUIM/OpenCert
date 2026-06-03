@@ -155,9 +155,9 @@ func (h *PKCSHandler) handleFIDOMakeCredential(ctx context.Context, req *Frame) 
 		return h.buildCardListResp(), ctap2ErrToRV(0x36) // CTAP2_ERR_PIN_REQUIRED
 	}
 
-	// 获取卡片 UUID
+	// 获取卡片 UUID（注意：TokenInfo().SerialNumber 只有前16字符）
 	tokenInfo := slot.TokenInfo()
-	cardUUID := tokenInfo.SerialNumber
+	cardUUIDShort := tokenInfo.SerialNumber
 
 	// 获取 fido-umdf.Store（通过 manager 的存储层）
 	fidoStore := h.getFIDOStore()
@@ -165,6 +165,17 @@ func (h *PKCSHandler) handleFIDOMakeCredential(ctx context.Context, req *Frame) 
 		slog.Error("FIDO MakeCredential: fido-umdf.Store 未初始化")
 		return nil, ctap2ErrToRV(0x7F) // CTAP1_ERR_OTHER
 	}
+
+	// 获取卡片主密钥（从已登录的 Slot 获取），同时获取完整的卡片 UUID
+	masterKey, card, err := h.getCardMasterKey(ctx, cardUUIDShort, slotID)
+	if err != nil {
+		slog.Error("FIDO MakeCredential: 获取主密钥失败", "error", err)
+		return nil, ctap2ErrToRV(0x7F)
+	}
+	defer fido.ZeroBytes(masterKey)
+
+	// 使用完整的卡片 UUID（从数据库获取的，而非截断的 SerialNumber）
+	cardUUID := card.UUID
 
 	// 生成 EC P-256 密钥对（ES256 算法）
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -213,15 +224,7 @@ func (h *PKCSHandler) handleFIDOMakeCredential(ctx context.Context, req *Frame) 
 		AAGUID:        base64.StdEncoding.EncodeToString(opencertAAGUID()),
 	}
 
-	// 获取卡片主密钥（从已登录的 Slot 获取）
-	masterKey, card, err := h.getCardMasterKey(ctx, cardUUID, slotID)
-	if err != nil {
-		slog.Error("FIDO MakeCredential: 获取主密钥失败", "error", err)
-		return nil, ctap2ErrToRV(0x7F)
-	}
-	defer fido.ZeroBytes(masterKey)
-
-	// 存储凭据
+	// 存储凭据（使用完整的 cardUUID）
 	entry, err := fidoStore.Create(ctx, cardUUID, meta, secret, masterKey, card)
 	if err != nil {
 		slog.Error("FIDO MakeCredential: 存储凭据失败", "error", err)
@@ -277,12 +280,21 @@ func (h *PKCSHandler) handleFIDOGetAssertion(ctx context.Context, req *Frame) (i
 	}
 
 	tokenInfo := slot.TokenInfo()
-	cardUUID := tokenInfo.SerialNumber
+	cardUUIDShort := tokenInfo.SerialNumber
 
 	fidoStore := h.getFIDOStore()
 	if fidoStore == nil {
 		return nil, ctap2ErrToRV(0x7F)
 	}
+
+	// 获取完整的卡片 UUID（TokenInfo.SerialNumber 只有前16字符）
+	masterKey, cardRecord, err := h.getCardMasterKey(ctx, cardUUIDShort, slotID)
+	if err != nil {
+		slog.Error("FIDO GetAssertion: 获取卡片信息失败", "error", err)
+		return nil, ctap2ErrToRV(0x7F)
+	}
+	defer fido.ZeroBytes(masterKey)
+	cardUUID := cardRecord.UUID
 
 	// 查找匹配的凭据
 	entries, err := fidoStore.List(ctx, cardUUID)
@@ -322,13 +334,7 @@ func (h *PKCSHandler) handleFIDOGetAssertion(ctx context.Context, req *Frame) (i
 	}
 
 	// 获取私密数据（解密私钥）
-	masterKey, card, err := h.getCardMasterKey(ctx, cardUUID, slotID)
-	if err != nil {
-		return nil, ctap2ErrToRV(0x7F)
-	}
-	defer fido.ZeroBytes(masterKey)
-
-	secret, err := fidoStore.GetSecret(ctx, matchEntry.UUID, masterKey, card)
+	secret, err := fidoStore.GetSecret(ctx, matchEntry.UUID, masterKey, cardRecord)
 	if err != nil {
 		slog.Error("FIDO GetAssertion: 解密私钥失败", "error", err)
 		return nil, ctap2ErrToRV(0x7F)
@@ -1132,7 +1138,7 @@ type fidoCardListResp struct {
 	Cards []fidoCardInfo `json:"cards"`
 }
 
-// buildCardListResp 构建可用卡片列表响应。
+// buildCardListResp 构建可用卡片列表响应（仅包含 fido_enabled=true 的卡片）。
 func (h *PKCSHandler) buildCardListResp() *fidoCardListResp {
 	slotIDs := h.manager.GetSlotList(true)
 	resp := &fidoCardListResp{}
@@ -1142,8 +1148,18 @@ func (h *PKCSHandler) buildCardListResp() *fidoCardListResp {
 			continue
 		}
 		info := slot.TokenInfo()
+		cardUUID := info.SerialNumber
+
+		// 检查卡片是否启用了 FIDO 功能
+		if h.cardRepo != nil {
+			card, err := h.cardRepo.GetByUUIDPrefix(context.Background(), cardUUID)
+			if err != nil || card == nil || !card.FIDOEnabled {
+				continue
+			}
+		}
+
 		resp.Cards = append(resp.Cards, fidoCardInfo{
-			CardUUID: info.SerialNumber,
+			CardUUID: cardUUID,
 			CardName: info.Label,
 		})
 	}

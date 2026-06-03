@@ -32,7 +32,7 @@ TEST_PASS="ThreeStackE2E#2026"
 
 log()  { printf "\033[36m[E2E]\033[0m %s\n" "$*"; }
 fail() { printf "\033[31m[FAIL]\033[0m %s\n" "$*" >&2; exit 1; }
-ok()   { printf "\033[32m[OK]\033[0m %s\n" "$*"; }
+ok()   { printf "\033[32m[DONE]\033[0m %s\n" "$*"; }
 
 # ---- 1. 健康检查 ----
 log "1) 检查 server-card 健康..."
