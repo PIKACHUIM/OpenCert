@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	pipeName = `\\.\pipe\pkcs11-client-card`
+	pipeName = `\\.\pipe\clients`
 
 	// 协议魔数 "PK11"
 	ipcMagic uint32 = 0x504B3131

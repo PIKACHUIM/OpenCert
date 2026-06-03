@@ -16,12 +16,12 @@
 #  include <windows.h>
    typedef HANDLE ipc_fd_t;
 #  define IPC_INVALID_FD  INVALID_HANDLE_VALUE
-#  define IPC_PIPE_NAME   "\\\\.\\pipe\\pkcs11-client-card"
+#  define IPC_PIPE_NAME   "\\\\.\\pipe\\clients"
 #else
 #  include <unistd.h>
    typedef int ipc_fd_t;
 #  define IPC_INVALID_FD  (-1)
-#  define IPC_SOCKET_PATH "/tmp/pkcs11-client-card.sock"
+#  define IPC_SOCKET_PATH "/tmp/clients.sock"
 #endif
 
 /* ---- 协议常量 ---- */

@@ -32,7 +32,8 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($BuildDir -eq "") {
     $BuildDir = Join-Path $scriptDir "..\build\FidoUsbIpVhci"
 }
-$BuildDir = (Resolve-Path $BuildDir -ErrorAction SilentlyContinue)?.Path
+$resolved = Resolve-Path $BuildDir -ErrorAction SilentlyContinue
+$BuildDir = if ($resolved) { $resolved.Path } else { $null }
 if (-not $BuildDir -or -not (Test-Path $BuildDir)) {
     Write-Fail "BuildDir not found: $BuildDir"
     exit 1

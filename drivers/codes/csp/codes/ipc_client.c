@@ -2,8 +2,8 @@
  * ipc_client.c — pkcs11-mock IPC 客户端实现
  *
  * 跨平台：
- *   Windows  → Named Pipe  \\.\pipe\pkcs11-client-card
- *   macOS/Linux → Unix Domain Socket /tmp/pkcs11-client-card.sock
+ *   Windows  → Named Pipe  \\.\pipe\clients
+ *   macOS/Linux → Unix Domain Socket /tmp/clients.sock
  *
  * 协议：Magic(4B,BE) + Cmd(4B,BE) + Len(4B,BE) + JSON Payload
  */

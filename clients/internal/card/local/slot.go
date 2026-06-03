@@ -271,19 +271,6 @@ func (s *Slot) IsLoggedIn() bool {
 	return s.loggedIn
 }
 
-// MasterKey 返回已解锁的主密钥（仅登录后有效，调用方不得修改）。
-func (s *Slot) MasterKey() []byte {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if !s.loggedIn {
-		return nil
-	}
-	// 返回副本，防止外部修改
-	cp := make([]byte, len(s.masterKey))
-	copy(cp, s.masterKey)
-	return cp
-}
-
 // FindObjects 根据属性模板查找对象。
 func (s *Slot) FindObjects(ctx context.Context, template []pkcs11types.Attribute) ([]pkcs11types.ObjectHandle, error) {
 	s.mu.RLock()

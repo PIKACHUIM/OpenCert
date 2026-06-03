@@ -144,6 +144,8 @@
     <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
     <EnableInf2cat>false</EnableInf2cat>
     <RunInfVerif>false</RunInfVerif>
+    <EnableTestSign>false</EnableTestSign>
+    <SignMode>Off</SignMode>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
@@ -153,6 +155,8 @@
     <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
     <EnableInf2cat>false</EnableInf2cat>
     <RunInfVerif>false</RunInfVerif>
+    <EnableTestSign>false</EnableTestSign>
+    <SignMode>Off</SignMode>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
@@ -162,6 +166,8 @@
     <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
     <EnableInf2cat>false</EnableInf2cat>
     <RunInfVerif>false</RunInfVerif>
+    <EnableTestSign>false</EnableTestSign>
+    <SignMode>Off</SignMode>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
@@ -171,6 +177,8 @@
     <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
     <EnableInf2cat>false</EnableInf2cat>
     <RunInfVerif>false</RunInfVerif>
+    <EnableTestSign>false</EnableTestSign>
+    <SignMode>Off</SignMode>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -188,7 +196,7 @@
       <AdditionalDependencies>%(AdditionalDependencies);ntstrsafe.lib;usbd.lib</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>gencat.bat $(OutDir) 10_$(DDKPlatform) $(SolutionDir)\driver\usbip_test.pfx</Command>
+      <Command>REM gencat.bat disabled - signing handled by build script</Command>
     </PostBuildEvent>
     <Inf>
       <TimeStamp>0.3.5.0</TimeStamp>
@@ -210,7 +218,7 @@
       <AdditionalDependencies>%(AdditionalDependencies);ntstrsafe.lib;usbd.lib</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>gencat.bat $(OutDir) 10_$(DDKPlatform) $(SolutionDir)\driver\usbip_test.pfx</Command>
+      <Command>REM gencat.bat disabled - signing handled by build script</Command>
     </PostBuildEvent>
     <Inf>
       <TimeStamp>0.3.5.0</TimeStamp>
@@ -233,7 +241,7 @@
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
     </Link>
     <PostBuildEvent>
-      <Command>gencat.bat $(OutDir) 10_$(DDKPlatform) $(SolutionDir)\driver\usbip_test.pfx</Command>
+      <Command>REM gencat.bat disabled - signing handled by build script</Command>
     </PostBuildEvent>
     <Inf>
       <TimeStamp>0.3.5.0</TimeStamp>
@@ -252,10 +260,10 @@
       <DisableSpecificWarnings>4996;%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>%(AdditionalDependencies);ntstrsafe.lib;usbd.lib</AdditionalDependencies>
+      <AdditionalDependencies>%(AdditionalDependencies);ntstrsafe.lib;usbd.lib;$(OutDir)libdrv.lib</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>gencat.bat $(OutDir) 10_$(DDKPlatform) $(SolutionDir)\driver\usbip_test.pfx</Command>
+      <Command>REM gencat.bat disabled - signing handled by build script</Command>
     </PostBuildEvent>
     <Inf>
       <TimeStamp>0.3.5.0</TimeStamp>
@@ -265,9 +273,11 @@
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\lib\libdrv.vcxproj">
+    <ProjectReference Include="..\.\lib\libdrv.vcxproj">
       <Project>{27ab4325-4980-4634-9818-ae6bd61de532}</Project>
-      <AdditionalProperties>IntDir=$(IntDir)libdrv\</AdditionalProperties>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+      <UseLibraryDependencyInputs>false</UseLibraryDependencyInputs>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

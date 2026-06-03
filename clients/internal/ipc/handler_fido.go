@@ -151,7 +151,8 @@ func (h *PKCSHandler) handleFIDOMakeCredential(ctx context.Context, req *Frame) 
 	slot, slotID := h.findAnyLoggedInSlot()
 	if slot == nil {
 		slog.Warn("FIDO MakeCredential: 没有已登录的卡片")
-		return nil, ctap2ErrToRV(0x36) // CTAP2_ERR_PIN_REQUIRED
+		// 返回可用卡片列表，供 fido-go 弹窗选择
+		return h.buildCardListResp(), ctap2ErrToRV(0x36) // CTAP2_ERR_PIN_REQUIRED
 	}
 
 	// 获取卡片 UUID
@@ -272,7 +273,7 @@ func (h *PKCSHandler) handleFIDOGetAssertion(ctx context.Context, req *Frame) (i
 	// 找到已登录的 Slot
 	slot, slotID := h.findAnyLoggedInSlot()
 	if slot == nil {
-		return nil, ctap2ErrToRV(0x36) // CTAP2_ERR_PIN_REQUIRED
+		return h.buildCardListResp(), ctap2ErrToRV(0x36) // CTAP2_ERR_PIN_REQUIRED
 	}
 
 	tokenInfo := slot.TokenInfo()
@@ -630,18 +631,26 @@ func parseGetAssertionCBOR(data []byte) (*ctap2GetAssertionReq, error) {
 // ================================================================
 
 // buildGetInfoCBOR 构造 authenticatorGetInfo 的 CBOR 响应。
+// 参考：https://fidoalliance.org/specs/fido-v2.1-ps-20210615/
+//
+//	Key 0x01: versions (必需)
+//	Key 0x03: aaguid (必需)
+//	Key 0x04: options
+//	Key 0x05: maxMsgSize
+//	Key 0x09: transports
+//	Key 0x0A: algorithms
 func buildGetInfoCBOR() []byte {
 	var buf cborBuilder
-	buf.writeMapHeader(4)
-	// 1: versions
+	buf.writeMapHeader(6)
+	// 0x01: versions
 	buf.writeUint(1)
 	buf.writeArrayHeader(2)
 	buf.writeText("FIDO_2_0")
 	buf.writeText("FIDO_2_1")
-	// 3: aaguid
+	// 0x03: aaguid
 	buf.writeUint(3)
 	buf.writeBytes(opencertAAGUID())
-	// 4: options
+	// 0x04: options
 	buf.writeUint(4)
 	buf.writeMapHeader(3)
 	buf.writeText("rk")
@@ -650,14 +659,21 @@ func buildGetInfoCBOR() []byte {
 	buf.writeBool(true)
 	buf.writeText("uv")
 	buf.writeBool(false)
-	// 6: algorithms
-	buf.writeUint(6)
+	// 0x05: maxMsgSize
+	buf.writeUint(5)
+	buf.writeUint(1200)
+	// 0x09: transports
+	buf.writeUint(9)
+	buf.writeArrayHeader(1)
+	buf.writeText("usb")
+	// 0x0A: algorithms (注意：不是 0x06！0x06 是 pinUvAuthProtocols)
+	buf.writeUint(0x0A)
 	buf.writeArrayHeader(1)
 	buf.writeMapHeader(2)
 	buf.writeText("type")
 	buf.writeText("public-key")
 	buf.writeText("alg")
-	buf.writeNegInt(7) // ES256 = -7
+	buf.writeNegInt(-7) // ES256 = -7
 	return buf.bytes()
 }
 
@@ -736,12 +752,12 @@ func buildCOSEKey(pubKey *ecdsa.PublicKey) ([]byte, error) {
 	buf.writeUint(1)
 	buf.writeUint(2) // kty: EC2
 	buf.writeUint(3)
-	buf.writeNegInt(7) // alg: ES256 = -7
-	buf.writeNegInt(0) // -1: crv
-	buf.writeUint(1)   // P-256
-	buf.writeNegInt(1) // -2: x
+	buf.writeNegInt(-7) // alg: ES256 = -7
+	buf.writeNegInt(-1) // -1: crv
+	buf.writeUint(1)    // P-256
+	buf.writeNegInt(-2) // -2: x
 	buf.writeBytes(xPad)
-	buf.writeNegInt(2) // -3: y
+	buf.writeNegInt(-3) // -3: y
 	buf.writeBytes(yPad)
 	return buf.bytes(), nil
 }
@@ -779,10 +795,17 @@ func buildAttestationObject(authData, clientDataHash []byte) ([]byte, error) {
 func buildAssertionObject(authData, sig, credID []byte, entry *fido.Entry) ([]byte, error) {
 	var buf cborBuilder
 	buf.writeMapHeader(3)
+	// key 1: credential (PublicKeyCredentialDescriptor)
 	buf.writeUint(1)
+	buf.writeMapHeader(2)
+	buf.writeText("id")
 	buf.writeBytes(credID)
+	buf.writeText("type")
+	buf.writeText("public-key")
+	// key 2: authData
 	buf.writeUint(2)
 	buf.writeBytes(authData)
+	// key 3: signature
 	buf.writeUint(3)
 	buf.writeBytes(sig)
 	return buf.bytes(), nil
@@ -1098,6 +1121,35 @@ func marshalECDSASignatureDER(r, s *big.Int) ([]byte, error) {
 // 辅助：Slot 和存储访问
 // ================================================================
 
+// fidoCardInfo 是单张卡片的信息（用于 PIN_REQUIRED 响应）。
+type fidoCardInfo struct {
+	CardUUID string `json:"card_uuid"`
+	CardName string `json:"card_name"`
+}
+
+// fidoCardListResp 是 PIN_REQUIRED 时返回的卡片列表。
+type fidoCardListResp struct {
+	Cards []fidoCardInfo `json:"cards"`
+}
+
+// buildCardListResp 构建可用卡片列表响应。
+func (h *PKCSHandler) buildCardListResp() *fidoCardListResp {
+	slotIDs := h.manager.GetSlotList(true)
+	resp := &fidoCardListResp{}
+	for _, slotID := range slotIDs {
+		slot := h.manager.GetSlot(slotID)
+		if slot == nil {
+			continue
+		}
+		info := slot.TokenInfo()
+		resp.Cards = append(resp.Cards, fidoCardInfo{
+			CardUUID: info.SerialNumber,
+			CardName: info.Label,
+		})
+	}
+	return resp
+}
+
 // findAnyLoggedInSlot 查找任意已登录的 Slot。
 func (h *PKCSHandler) findAnyLoggedInSlot() (card.SlotProvider, pkcs11types.SlotID) {
 	slotIDs := h.manager.GetSlotList(true)
@@ -1125,9 +1177,17 @@ func (h *PKCSHandler) getCardMasterKey(ctx context.Context, cardUUID string, slo
 	if h.cardRepo == nil {
 		return nil, nil, fmt.Errorf("存储层未初始化")
 	}
+	// TokenInfo().SerialNumber 只有前16字符，先尝试精确匹配，再尝试前缀匹配
 	cardRecord, err := h.cardRepo.GetByUUID(ctx, cardUUID)
-	if err != nil || cardRecord == nil {
+	if err != nil {
 		return nil, nil, fmt.Errorf("找不到卡片: %w", err)
+	}
+	if cardRecord == nil {
+		// 精确匹配失败，尝试前缀匹配
+		cardRecord, err = h.cardRepo.GetByUUIDPrefix(ctx, cardUUID)
+		if err != nil || cardRecord == nil {
+			return nil, nil, fmt.Errorf("找不到卡片(前缀=%s): %v", cardUUID, err)
+		}
 	}
 
 	// 通过 Slot 获取已缓存的主密钥

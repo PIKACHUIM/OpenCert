@@ -8,10 +8,22 @@ chcp 65001 >nul 2>&1
 ::
 :: 输出:
 ::   build\FidoUsbIpVhci\
-::     - usbip_vhci_ude.sys  (signed)
+::     - usbip_vhci_ude.sys  (signed)  UDE 驱动
+::     - usbip_vhci_ude.pdb            调试符号
 ::     - usbip_vhci_ude.inf
 ::     - usbip_vhci_ude.cat  (signed)
+::     - usbip_vhci.sys      (signed)  旧版 WDM KMDF 驱动
+::     - usbip_vhci.pdb
+::     - usbip_vhci.inf
+::     - usbip_vhci.cat      (signed)
+::     - usbip_stub.sys      (signed)  USB stub 驱动
+::     - usbip_stub.pdb
 ::     - usbip.exe           (signed)
+::     - usbip.pdb
+::     - usbipd.exe          (signed)  USB/IP 服务端
+::     - usbipd.pdb
+::     - attacher.exe        (signed)
+::     - attacher.pdb
 ::   build\fido-go.exe       (signed)
 ::
 :: 必须在 drivers\ 根目录下运行，或通过 builds.bat 调用
@@ -27,9 +39,16 @@ popd
 set "BUILD_DIR=%DRIVERS_ROOT%\build\FidoUsbIpVhci"
 set "USBIP_WIN=%DRIVERS_ROOT%\codes\usbip-win"
 set "FIDO_GO=%DRIVERS_ROOT%\codes\fido-go"
-set "VCXPROJ_VHCI=%USBIP_WIN%\driver\vhci_ude\usbip_vhci_ude.vcxproj"
+set "VCXPROJ_VHCI_UDE=%USBIP_WIN%\driver\vhci_ude\usbip_vhci_ude.vcxproj"
+set "VCXPROJ_VHCI=%USBIP_WIN%\driver\vhci\usbip_vhci.vcxproj"
+set "VCXPROJ_STUB=%USBIP_WIN%\driver\stub\usbip_stub.vcxproj"
 set "VCXPROJ_USBIP=%USBIP_WIN%\userspace\src\usbip\usbip.vcxproj"
-set "INF_SRC=%USBIP_WIN%\driver\vhci_ude\usbip_vhci_ude.inf"
+set "VCXPROJ_USBIPD=%USBIP_WIN%\userspace\src\usbipd\usbipd.vcxproj"
+set "VCXPROJ_ATTACHER=%USBIP_WIN%\userspace\src\attacher\attacher.vcxproj"
+set "VCXPROJ_COMMON=%USBIP_WIN%\userspace\lib\usbip_common.vcxproj"
+set "INF_SRC_UDE=%USBIP_WIN%\driver\vhci_ude\usbip_vhci_ude.inf"
+set "INF_SRC_VHCI=%USBIP_WIN%\driver\vhci\usbip_vhci.inf"
+set "INF_SRC_ROOT=%USBIP_WIN%\driver\vhci\usbip_root.inf"
 
 :: 如果被 builds.bat 调用，不打印独立横幅
 if "%~1"=="--quiet" (
@@ -115,12 +134,12 @@ if "!GO_EXE!"=="" (
 )
 
 :: 检查源文件
-if not exist "!VCXPROJ_VHCI!" (
-    echo       [FAIL] vhci_ude vcxproj not found: !VCXPROJ_VHCI!
+if not exist "!VCXPROJ_VHCI_UDE!" (
+    echo       [FAIL] vhci_ude vcxproj not found: !VCXPROJ_VHCI_UDE!
     exit /b 1
 )
-if not exist "!INF_SRC!" (
-    echo       [FAIL] INF not found: !INF_SRC!
+if not exist "!INF_SRC_UDE!" (
+    echo       [FAIL] INF not found: !INF_SRC_UDE!
     exit /b 1
 )
 
@@ -134,11 +153,13 @@ if not exist "!BUILD_DIR!" mkdir "!BUILD_DIR!"
 
 set "_LOG=%TEMP%\opencert_usbip_build.log"
 
-REM 先单独编译 libdrv（ProjectReference），指定独立 IntDir 避免 MSB8028 冲突
+REM Build libdrv first (ProjectReference) with separate IntDir to avoid MSB8028
 set "VCXPROJ_LIBDRV=!USBIP_WIN!\driver\lib\libdrv.vcxproj"
 set "OUTDIR_RELEASE=!BUILD_DIR!\x64\Release"
 set "INTDIR_LIBDRV=!BUILD_DIR!\x64\Release\int\libdrv"
-set "INTDIR_VHCI=!BUILD_DIR!\x64\Release\int\vhci_ude"
+set "INTDIR_VHCI_UDE=!BUILD_DIR!\x64\Release\int\vhci_ude"
+set "INTDIR_VHCI=!BUILD_DIR!\x64\Release\int\vhci"
+set "INTDIR_STUB=!BUILD_DIR!\x64\Release\int\stub"
 set "INTDIR_USBIP=!BUILD_DIR!\x64\Release\int\usbip"
 
 "!MSBUILD!" "!VCXPROJ_LIBDRV!" /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /p:TreatWarningsAsErrors=false /p:OutDir=!OUTDIR_RELEASE!\ /p:IntDir=!INTDIR_LIBDRV!\ /nologo /verbosity:quiet > "!_LOG!" 2>&1
@@ -150,8 +171,8 @@ if !errorlevel! neq 0 (
 )
 echo       [DONE] libdrv compiled
 
-REM 编译 vhci_ude.sys
-"!MSBUILD!" "!VCXPROJ_VHCI!" /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /p:TreatWarningsAsErrors=false /p:RunInfVerif=false /p:EnableInf2cat=false /p:PostBuildEventUseInBuild=false /p:OutDir=!OUTDIR_RELEASE!\ /p:IntDir=!INTDIR_VHCI!\ /nologo /verbosity:quiet > "!_LOG!" 2>&1
+REM Build vhci_ude.sys (UDE driver, BuildProjectReferences=false skips libdrv rebuild)
+"!MSBUILD!" "!VCXPROJ_VHCI_UDE!" /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /p:TreatWarningsAsErrors=false /p:SkipPackageVerification=true /p:EnableInf2cat=false /p:PostBuildEventUseInBuild=false /p:BuildProjectReferences=false /p:OutDir=!OUTDIR_RELEASE!\ /p:IntDir=!INTDIR_VHCI_UDE!\ /nologo /verbosity:quiet > "!_LOG!" 2>&1
 if !errorlevel! neq 0 (
     echo       [FAIL] vhci_ude MSBuild failed. Log:
     type "!_LOG!"
@@ -160,13 +181,68 @@ if !errorlevel! neq 0 (
 )
 echo       [DONE] usbip_vhci_ude.sys compiled
 
-:: 编译 usbip.exe（如果 vcxproj 存在）
+REM Build usbip_vhci.sys (legacy WDM KMDF driver)
+if exist "!VCXPROJ_VHCI!" (
+    "!MSBUILD!" "!VCXPROJ_VHCI!" /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /p:TreatWarningAsError=false /p:TreatWarningsAsErrors=false /p:SkipPackageVerification=true /p:RunInfVerif=false /p:EnableInf2cat=false /p:PostBuildEventUseInBuild=false /p:SignMode=Off /p:EnableTestSign=false /p:OutDir=!OUTDIR_RELEASE!\ /p:IntDir=!INTDIR_VHCI!\ /nologo /verbosity:quiet > "!_LOG!" 2>&1
+    if !errorlevel! neq 0 (
+        echo       [WARN] usbip_vhci.sys MSBuild failed ^(non-fatal^). Log:
+        type "!_LOG!"
+    ) else (
+        echo       [DONE] usbip_vhci.sys compiled
+    )
+)
+
+REM Build usbip_stub.sys (USB stub driver)
+if exist "!VCXPROJ_STUB!" (
+    "!MSBUILD!" "!VCXPROJ_STUB!" /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /p:TreatWarningAsError=false /p:TreatWarningsAsErrors=false /p:SkipPackageVerification=true /p:RunInfVerif=false /p:EnableInf2cat=false /p:PostBuildEventUseInBuild=false /p:SignMode=Off /p:EnableTestSign=false /p:OutDir=!OUTDIR_RELEASE!\ /p:IntDir=!INTDIR_STUB!\ /nologo /verbosity:quiet > "!_LOG!" 2>&1
+    if !errorlevel! neq 0 (
+        echo       [WARN] usbip_stub.sys MSBuild failed ^(non-fatal^). Log:
+        type "!_LOG!"
+    ) else (
+        echo       [DONE] usbip_stub.sys compiled
+    )
+)
+
+:: 编译 usbip_common.lib（usbip.exe 和 attacher.exe 的共同依赖，先编译）
+set "INTDIR_COMMON=!BUILD_DIR!\x64\Release\int\usbip_common"
+if exist "!VCXPROJ_COMMON!" (
+    "!MSBUILD!" "!VCXPROJ_COMMON!" /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /p:TreatWarningsAsErrors=false /p:OutDir=!OUTDIR_RELEASE!\ /p:IntDir=!INTDIR_COMMON!\ /nologo /verbosity:quiet >> "!_LOG!" 2>&1
+    if !errorlevel! neq 0 (
+        echo       [WARN] usbip_common.lib MSBuild failed ^(non-fatal^)
+    ) else (
+        echo       [DONE] usbip_common.lib compiled
+    )
+)
+
+:: 编译 usbip.exe
 if exist "!VCXPROJ_USBIP!" (
-    "!MSBUILD!" "!VCXPROJ_USBIP!" /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /p:TreatWarningsAsErrors=false /p:RunInfVerif=false /p:EnableInf2cat=false /p:PostBuildEventUseInBuild=false /p:OutDir=!OUTDIR_RELEASE!\ /p:IntDir=!INTDIR_USBIP!\ /nologo /verbosity:quiet >> "!_LOG!" 2>&1
+    "!MSBUILD!" "!VCXPROJ_USBIP!" /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /p:TreatWarningsAsErrors=false /p:SkipPackageVerification=true /p:EnableInf2cat=false /p:PostBuildEventUseInBuild=false /p:OutDir=!OUTDIR_RELEASE!\ /p:IntDir=!INTDIR_USBIP!\ /nologo /verbosity:quiet >> "!_LOG!" 2>&1
     if !errorlevel! neq 0 (
         echo       [WARN] usbip.exe MSBuild failed ^(non-fatal^)
     ) else (
         echo       [DONE] usbip.exe compiled
+    )
+)
+
+:: 编译 usbipd.exe
+set "INTDIR_USBIPD=!BUILD_DIR!\x64\Release\int\usbipd"
+if exist "!VCXPROJ_USBIPD!" (
+    "!MSBUILD!" "!VCXPROJ_USBIPD!" /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /p:TreatWarningsAsErrors=false /p:OutDir=!OUTDIR_RELEASE!\ /p:IntDir=!INTDIR_USBIPD!\ /nologo /verbosity:quiet >> "!_LOG!" 2>&1
+    if !errorlevel! neq 0 (
+        echo       [WARN] usbipd.exe MSBuild failed ^(non-fatal^)
+    ) else (
+        echo       [DONE] usbipd.exe compiled
+    )
+)
+
+:: 编译 attacher.exe
+set "INTDIR_ATTACHER=!BUILD_DIR!\x64\Release\int\attacher"
+if exist "!VCXPROJ_ATTACHER!" (
+    "!MSBUILD!" "!VCXPROJ_ATTACHER!" /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /p:TreatWarningsAsErrors=false /p:OutDir=!OUTDIR_RELEASE!\ /p:IntDir=!INTDIR_ATTACHER!\ /nologo /verbosity:quiet >> "!_LOG!" 2>&1
+    if !errorlevel! neq 0 (
+        echo       [WARN] attacher.exe MSBuild failed ^(non-fatal^)
+    ) else (
+        echo       [DONE] attacher.exe compiled
     )
 )
 del /Q "!_LOG!" >nul 2>&1
@@ -183,13 +259,59 @@ if not exist "!SYS_SRC!" (
 )
 
 copy /Y "!SYS_SRC!" "!BUILD_DIR!\usbip_vhci_ude.sys" >nul
-copy /Y "!INF_SRC!" "!BUILD_DIR!\usbip_vhci_ude.inf" >nul
-echo       [DONE] SYS + INF copied to build\FidoUsbIpVhci\
+copy /Y "!INF_SRC_UDE!" "!BUILD_DIR!\usbip_vhci_ude.inf" >nul
+echo       [DONE] usbip_vhci_ude.sys + .inf copied
 
-:: 复制 usbip.exe（如果编译成功）
-if exist "!BUILD_DIR!\x64\Release\usbip.exe" (
-    copy /Y "!BUILD_DIR!\x64\Release\usbip.exe" "!BUILD_DIR!\usbip.exe" >nul
-    echo       [DONE] usbip.exe copied to build\FidoUsbIpVhci\
+REM Patch usbip_vhci_ude.inf: replace $ARCH$ with AMD64, fill DriverVer, remove CoInstaller sections
+powershell -NoProfile -Command ^
+    "$inf = Get-Content '!BUILD_DIR!\usbip_vhci_ude.inf' -Raw;" ^
+    "$date = (Get-Date).ToString('MM/dd/yyyy');" ^
+    "$inf = $inf -replace '\$ARCH\$', 'AMD64';" ^
+    "$inf = $inf -replace 'DriverVer=\s*\r?\n', ('DriverVer=' + $date + ',1.0.0.0`r`n');" ^
+    "$inf = $inf -replace '(?ms)\[vhci_Device\.NT\.CoInstallers\].*?(?=\n\[)', '';" ^
+    "$inf = $inf -replace '(?ms)\[vhci_Device_CoInstaller_AddReg\].*?(?=\n\[)', '';" ^
+    "$inf = $inf -replace '(?ms)\[vhci_Device_CoInstaller_CopyFiles\].*?(?=\n\[)', '';" ^
+    "$inf = $inf -replace '(?ms)\[vhci_Device\.NT\.Wdf\].*?(?=\n\[)', '';" ^
+    "$inf = $inf -replace '(?ms)\[usbip_vhci_wdfsect\].*?(?=\n\[|\z)', '';" ^
+    "$inf = $inf -replace 'vhci_Device_CoInstaller_CopyFiles = 11\r?\n', '';" ^
+    "$inf = $inf -replace 'WdfCoInstaller\$KMDFCOINSTALLERVERSION\$\.dll=1[^\r\n]*\r?\n', '';" ^
+    "Set-Content '!BUILD_DIR!\usbip_vhci_ude.inf' $inf -NoNewline" >nul 2>&1
+echo       [DONE] usbip_vhci_ude.inf patched ^(ARCH/DriverVer/CoInstaller^)
+
+:: 复制 usbip_vhci.inf（已在源文件中固定 NTAMD64 和 DriverVer）
+if exist "!INF_SRC_VHCI!" (
+    copy /Y "!INF_SRC_VHCI!" "!BUILD_DIR!\usbip_vhci.inf" >nul
+    echo       [DONE] usbip_vhci.inf copied
+)
+
+:: 复制 usbip_root.inf（已在源文件中固定 NTAMD64 和 DriverVer）
+if exist "!INF_SRC_ROOT!" (
+    copy /Y "!INF_SRC_ROOT!" "!BUILD_DIR!\usbip_root.inf" >nul
+    echo       [DONE] usbip_root.inf copied
+)
+
+:: 复制 SYS 文件及其 PDB
+for %%F in (usbip_vhci_ude usbip_vhci usbip_stub) do (
+    if exist "!BUILD_DIR!\x64\Release\%%F.sys" (
+        copy /Y "!BUILD_DIR!\x64\Release\%%F.sys" "!BUILD_DIR!\%%F.sys" >nul
+        echo       [DONE] %%F.sys copied
+    )
+    if exist "!BUILD_DIR!\x64\Release\%%F.pdb" (
+        copy /Y "!BUILD_DIR!\x64\Release\%%F.pdb" "!BUILD_DIR!\%%F.pdb" >nul
+        echo       [DONE] %%F.pdb copied
+    )
+)
+
+:: 复制 EXE 文件及其 PDB
+for %%F in (usbip usbipd attacher) do (
+    if exist "!BUILD_DIR!\x64\Release\%%F.exe" (
+        copy /Y "!BUILD_DIR!\x64\Release\%%F.exe" "!BUILD_DIR!\%%F.exe" >nul
+        echo       [DONE] %%F.exe copied
+    )
+    if exist "!BUILD_DIR!\x64\Release\%%F.pdb" (
+        copy /Y "!BUILD_DIR!\x64\Release\%%F.pdb" "!BUILD_DIR!\%%F.pdb" >nul
+        echo       [DONE] %%F.pdb copied
+    )
 )
 
 :: 清理中间构建目录
@@ -212,11 +334,14 @@ if not exist "!FIDO_GO!\go.mod" (
 
 pushd "!FIDO_GO!"
 go mod tidy >nul 2>&1
-go build -o "%DRIVERS_ROOT%\build\fido-go.exe" ./cmd/fido-go
+go build -o "%DRIVERS_ROOT%\build\fido-go.exe" ./cmd/fido-go 2>"!_LOG!"
 if !errorlevel! neq 0 (
-    echo       [WARN] fido-go.exe build failed
+    echo       [WARN] fido-go.exe build failed. Log:
+    type "!_LOG!"
+    del /Q "!_LOG!" >nul 2>&1
 ) else (
     echo       [DONE] fido-go.exe compiled to build\fido-go.exe
+    del /Q "!_LOG!" >nul 2>&1
 )
 popd
 
@@ -232,12 +357,14 @@ if "!SIGNTOOL!"=="" (
     goto :done
 )
 
-:: 步骤1: 签名 usbip_vhci_ude.sys
-call :sign_one "!BUILD_DIR!\usbip_vhci_ude.sys" "usbip_vhci_ude.sys"
+:: 步骤1: 签名所有 SYS（必须在 Inf2Cat 之前完成）
+for %%F in (usbip_vhci_ude usbip_vhci usbip_stub) do (
+    if exist "!BUILD_DIR!\%%F.sys" call :sign_one "!BUILD_DIR!\%%F.sys" "%%F.sys"
+)
 
-:: 步骤2: 签名 usbip.exe（如果存在）
-if exist "!BUILD_DIR!\usbip.exe" (
-    call :sign_one "!BUILD_DIR!\usbip.exe" "usbip.exe"
+:: 步骤2: 签名所有 EXE
+for %%F in (usbip usbipd attacher) do (
+    if exist "!BUILD_DIR!\%%F.exe" call :sign_one "!BUILD_DIR!\%%F.exe" "%%F.exe"
 )
 
 :: 步骤3: 签名 fido-go.exe（如果存在）
@@ -251,23 +378,33 @@ if "!INF2CAT!"=="" (
     goto :done
 )
 
-"!INF2CAT!" /driver:"!BUILD_DIR!" /os:10_x64 >nul 2>&1
+REM Inf2Cat scans the whole directory and generates one CAT per INF
+set "_INF2CAT_LOG=%TEMP%\opencert_inf2cat.log"
+"!INF2CAT!" /driver:"!BUILD_DIR!" /os:10_x64 > "!_INF2CAT_LOG!" 2>&1
 if !errorlevel! neq 0 (
-    echo       [WARN] Inf2Cat failed, .cat not generated
+    echo       [WARN] Inf2Cat failed, .cat not generated. Log:
+    type "!_INF2CAT_LOG!"
+    del /Q "!_INF2CAT_LOG!" >nul 2>&1
     goto :done
 )
-if not exist "!BUILD_DIR!\usbip_vhci_ude.cat" (
-    echo       [WARN] .cat file not generated
-    goto :done
-)
-echo       [DONE] usbip_vhci_ude.cat generated
+del /Q "!_INF2CAT_LOG!" >nul 2>&1
 
-:: 步骤5: 签名 CAT
-"!SIGNTOOL!" sign /sha1 "!EV_THUMBPRINT!" /fd sha256 /tr http://timestamp.digicert.com /td sha256 "!BUILD_DIR!\usbip_vhci_ude.cat" >nul 2>&1
-if !errorlevel! neq 0 (
-    echo       [WARN] CAT sign failed ^(EV cert may not be inserted^)
-) else (
-    echo       [DONE] usbip_vhci_ude.cat signed
+set "CAT_COUNT=0"
+for %%C in ("!BUILD_DIR!\*.cat") do set /a CAT_COUNT+=1
+if !CAT_COUNT! equ 0 (
+    echo       [WARN] No .cat files generated
+    goto :done
+)
+echo       [DONE] CAT files generated ^(!CAT_COUNT! file^(s^)^)
+
+:: 步骤5: 签名所有 CAT
+for %%C in ("!BUILD_DIR!\*.cat") do (
+    "!SIGNTOOL!" sign /sha1 "!EV_THUMBPRINT!" /fd sha256 /tr http://timestamp.digicert.com /td sha256 "%%C" >nul 2>&1
+    if !errorlevel! neq 0 (
+        echo       [WARN] %%~nxC sign failed ^(EV cert may not be inserted^)
+    ) else (
+        echo       [DONE] %%~nxC signed
+    )
 )
 
 :done

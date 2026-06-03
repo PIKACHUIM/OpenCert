@@ -178,12 +178,28 @@ if exist "build\FidoUsbIpVhci\usbip_vhci_ude.inf" (
     echo       FidoUsbIpVhci\usbip_vhci_ude.inf
     set /a FILE_COUNT+=1
 )
-if exist "build\FidoUsbIpVhci\usbip_vhci_ude.cat" (
-    echo       FidoUsbIpVhci\usbip_vhci_ude.cat
+if exist "build\FidoUsbIpVhci\usbip_vhci.sys" (
+    echo       FidoUsbIpVhci\usbip_vhci.sys
+    set /a FILE_COUNT+=1
+)
+if exist "build\FidoUsbIpVhci\usbip_vhci.inf" (
+    echo       FidoUsbIpVhci\usbip_vhci.inf
+    set /a FILE_COUNT+=1
+)
+if exist "build\FidoUsbIpVhci\usbip_stub.sys" (
+    echo       FidoUsbIpVhci\usbip_stub.sys
+    set /a FILE_COUNT+=1
+)
+for %%C in (build\FidoUsbIpVhci\*.cat) do (
+    echo       FidoUsbIpVhci\%%~nxC
     set /a FILE_COUNT+=1
 )
 if exist "build\FidoUsbIpVhci\usbip.exe" (
     echo       FidoUsbIpVhci\usbip.exe
+    set /a FILE_COUNT+=1
+)
+if exist "build\FidoUsbIpVhci\attacher.exe" (
+    echo       FidoUsbIpVhci\attacher.exe
     set /a FILE_COUNT+=1
 )
 if exist "build\fido-go.exe" (

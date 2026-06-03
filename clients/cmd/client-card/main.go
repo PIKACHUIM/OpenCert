@@ -20,6 +20,7 @@ import (
 	tpm2card "github.com/globaltrusts/client-card/internal/card/tpm2"
 	"github.com/globaltrusts/client-card/internal/card/tpmsc"
 	"github.com/globaltrusts/client-card/internal/certprop"
+	"github.com/globaltrusts/client-card/internal/fido"
 	"github.com/globaltrusts/client-card/internal/ipc"
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/internal/tpm"
@@ -104,9 +105,18 @@ func main() {
 
 	// 启动 IPC 服务
 	ipcServer := ipc.NewServer(cfg.IPC.IPCPath())
-	pkcsHandler := ipc.NewPKCSHandler(manager)
+	// 初始化 FIDO Store（复用 storage.Certificate 表）
+	cardRepo := storage.NewCardRepo(db)
+	certRepo := storage.NewCertRepo(db)
+	km := local.NewKeyManager(certRepo, cardRepo)
+	fidoStore := fido.NewStore(certRepo, cardRepo, km)
+	slog.Info("FIDO Store 已初始化")
+	pkcsHandler := ipc.NewPKCSHandlerWithOptions(manager, ipc.PKCSHandlerOptions{
+		FIDOStore: fidoStore,
+		CardRepo:  cardRepo,
+		CertRepo:  certRepo,
+	})
 	pkcsHandler.Register(ipcServer)
-	pkcsHandler.RegisterKSPHandlers(ipcServer) // 注册 KSP 专用命令
 
 	if err := ipcServer.Start(); err != nil {
 		slog.Error("启动 IPC 服务失败", "error", err)

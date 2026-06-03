@@ -244,6 +244,36 @@ func (r *CardRepo) GetByUUID(ctx context.Context, cardUUID string) (*Card, error
 	return c, nil
 }
 
+// GetByUUIDPrefix 通过 UUID 前缀查找卡片（TokenInfo.SerialNumber 只有前16字符）。
+func (r *CardRepo) GetByUUIDPrefix(ctx context.Context, uuidPrefix string) (*Card, error) {
+	c := &Card{}
+	var keysJSON []byte
+	var expiresAt sql.NullTime
+	var nvHandle int64
+	err := r.db.QueryRowContext(ctx, `
+		SELECT uuid, slot_type, card_name, user_uuid, enabled, created_at, expires_at, card_keys, remark, security_level, tpm_cert_key_enc, tpm_cert_key_salt, tpm_cert_key_nv_handle, tpm_provider, cloud_url, cloud_card_uuid
+		FROM cards WHERE uuid LIKE ? LIMIT 1`, uuidPrefix+"%").
+		Scan(&c.UUID, &c.SlotType, &c.CardName, &c.UserUUID, &c.Enabled,
+			&c.CreatedAt, &expiresAt, &keysJSON, &c.Remark,
+			&c.SecurityLevel, &c.TPMCertKeyEnc, &c.TPMCertKeySalt,
+			&nvHandle, &c.TPMProvider,
+			&c.CloudURL, &c.CloudCardUUID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询卡片失败: %w", err)
+	}
+	c.TPMCertKeyNVHandle = uint32(nvHandle)
+	if expiresAt.Valid {
+		c.ExpiresAt = &expiresAt.Time
+	}
+	if err := json.Unmarshal(keysJSON, &c.CardKeys); err != nil {
+		return nil, fmt.Errorf("解析卡片密钥失败: %w", err)
+	}
+	return c, nil
+}
+
 // ListByUser 列出指定用户的所有卡片。
 func (r *CardRepo) ListByUser(ctx context.Context, userUUID string) ([]*Card, error) {
 	rows, err := r.db.QueryContext(ctx, `

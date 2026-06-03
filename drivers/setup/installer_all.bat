@@ -260,8 +260,8 @@ if "!RUN_USBIP!"=="0" (
     goto :summary
 )
 
-if exist "%SCRIPT_DIR%register_usbip.ps1" (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%register_usbip.ps1" -BuildDir "%BUILD_DIR%\FidoUsbIpVhci"
+if exist "%SCRIPT_DIR%register_vhci.ps1" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%register_vhci.ps1" -BuildDir "%BUILD_DIR%\FidoUsbIpVhci"
     if !errorlevel! neq 0 (
         echo       [WARN] USB/IP driver installation returned non-zero
         set "RESULT_USBIP=FAIL"
@@ -269,7 +269,7 @@ if exist "%SCRIPT_DIR%register_usbip.ps1" (
         set "RESULT_USBIP=OK"
     )
 ) else (
-    echo       [WARN] register_usbip.ps1 not found
+    echo       [WARN] register_vhci.ps1 not found
     set "RESULT_USBIP=FAIL"
 )
 

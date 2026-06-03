@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -60,6 +61,26 @@ func main() {
 	// 创建 IPC CTAP 代理（透传 CBOR 给 client-card）
 	ctapProxy := client.NewIPCCTAPProxy()
 
+	// 注入 PIN 成功后的 USB/IP 重启回调：
+	// detach 当前设备 → 等待 → 重新 attach，让 Windows 重新发现设备
+	ctapProxy.OnPINSuccess = func() {
+		slog.Info("PIN 登录成功，准备重启 USB/IP 设备...")
+		// 先等待一小段时间，让当前 CTAP 响应发送完毕
+		time.Sleep(500 * time.Millisecond)
+		// detach
+		if err := detachUSBIP(*usbipDir); err != nil {
+			slog.Warn("USB/IP detach 失败（可能设备已断开）", "error", err)
+		}
+		// 等待 Windows 处理 detach
+		time.Sleep(1 * time.Second)
+		// 重新 attach
+		if err := attachUSBIP(*usbipDir); err != nil {
+			slog.Error("USB/IP re-attach 失败", "error", err)
+		} else {
+			slog.Info("USB/IP 设备已重新连接，等待 Windows 发起新请求")
+		}
+	}
+
 	// 构建 virtual-fido 服务器栈：
 	//   IPCCTAPProxy → CTAPHIDServer → USBDevice → USBIPServer
 	// U2F 层使用空实现（返回不支持，避免 nil panic）
@@ -70,6 +91,16 @@ func main() {
 	// 处理退出信号
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// 检查端口是否可用
+	if ln, err := net.Listen("tcp", ":3240"); err != nil {
+		slog.Error("端口 3240 已被占用，请先关闭之前的 fido-go 实例",
+			"error", err,
+			"hint", "运行 netstat -ano | findstr :3240 查看占用进程")
+		os.Exit(1)
+	} else {
+		ln.Close()
+	}
 
 	// 启动 USB/IP 服务器（goroutine）
 	serverDone := make(chan struct{})
@@ -99,6 +130,25 @@ func main() {
 	}
 }
 
+// detachUSBIP 执行 usbip detach 命令，断开虚拟设备。
+func detachUSBIP(usbipDirOverride string) error {
+	usbipExe := findUSBIPExe(usbipDirOverride)
+	if usbipExe == "" {
+		return fmt.Errorf("找不到 usbip.exe")
+	}
+
+	slog.Info("执行 USB/IP detach", "exe", usbipExe)
+	cmd := exec.Command(usbipExe, "detach", "-p", "0")
+	cmd.Dir = filepath.Dir(usbipExe)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("usbip detach 失败: %w", err)
+	}
+	slog.Info("USB/IP detach 成功")
+	return nil
+}
+
 // attachUSBIP 执行 usbip attach 命令，将虚拟设备挂载到 Windows。
 func attachUSBIP(usbipDirOverride string) error {
 	usbipExe := findUSBIPExe(usbipDirOverride)
@@ -108,6 +158,7 @@ func attachUSBIP(usbipDirOverride string) error {
 
 	slog.Info("执行 USB/IP attach", "exe", usbipExe)
 	cmd := exec.Command(usbipExe, "attach", "-r", "127.0.0.1", "-b", "2-2")
+	cmd.Dir = filepath.Dir(usbipExe) // attacher.exe 必须在 usbip.exe 同目录
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
