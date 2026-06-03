@@ -106,48 +106,79 @@ if exist "%SCRIPT_DIR%register_fido.ps1" (
     echo       [WARN] register_fido.ps1 not found, skipping FIDO2 registration
 )
 
-:: Step 5: 安装 UMDF FIDO2 驱动（SmartCardReader 虚拟设备）
+:: Step 5: 安装 HID FIDO2 驱动（虚拟 HID 设备）
 echo.
-echo [5/5] Installing UMDF FIDO2 Driver...
+echo [5/5] Installing HID FIDO2 Driver...
 
-set "UMDF_INF=%BUILD_DIR%\OpenCertFIDODriver.inf"
-set "UMDF_PS1=%SCRIPT_DIR%..\codes\fido-umdf\scripts\create_device_node.ps1"
+set "HID_INF=%BUILD_DIR%\OpenCertFIDOHidDriver.inf"
+set "HID_DLL=%BUILD_DIR%\OpenCertFIDOHidDriver.dll"
 
-if not exist "%UMDF_INF%" (
-    echo       [WARN] build\OpenCertFIDODriver.inf not found, skipping UMDF driver
+:: ---- 注释掉旧的 UMDF 驱动安装 ----
+:: set "UMDF_INF=%BUILD_DIR%\OpenCertFIDODriver.inf"
+:: set "UMDF_PS1=%SCRIPT_DIR%..\codes\fido-umdf\scripts\create_device_node.ps1"
+:: if not exist "%UMDF_INF%" goto :verify
+:: pnputil /remove-device "ROOT\OPENCERTFIDO\0000" >nul 2>&1
+:: for /f "tokens=2 delims=: " %%N in ('pnputil /enum-drivers 2^>nul ^| findstr /i "OpenCertFIDODriver"') do (
+::     pnputil /delete-driver %%N /uninstall /force >nul 2>&1
+:: )
+:: pnputil /add-driver "%UMDF_INF%" /install
+:: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%UMDF_PS1%" -InfFile "%UMDF_INF%"
+:: ---- 旧 UMDF 安装结束 ----
+
+if not exist "!HID_DLL!" (
+    echo       [WARN] build\OpenCertFIDOHidDriver.dll not found, skipping HID driver
+    goto :verify
+)
+if not exist "!HID_INF!" (
+    echo       [WARN] build\OpenCertFIDOHidDriver.inf not found, skipping HID driver
     goto :verify
 )
 
-:: 移除旧设备节点（忽略失败，设备可能不存在）
-echo       Removing old device node...
-pnputil /remove-device "ROOT\OPENCERTFIDO\0000" >nul 2>&1
-
-:: 查找并删除旧驱动包（oem*.inf 中匹配 OpenCertFIDODriver 的）
-echo       Removing old driver package...
-for /f "tokens=2 delims=: " %%N in ('pnputil /enum-drivers 2^>nul ^| findstr /i "OpenCertFIDODriver"') do (
-    pnputil /delete-driver %%N /uninstall /force >nul 2>&1
+:: Find devcon.exe
+set "DEVCON="
+for /d %%V in ("C:\Program Files (x86)\Windows Kits\10\Tools\*") do (
+    if exist "%%V\x64\devcon.exe" if "!DEVCON!"=="" set "DEVCON=%%V\x64\devcon.exe"
+)
+if "!DEVCON!"=="" (
+    where devcon >nul 2>&1
+    if !errorlevel! equ 0 set "DEVCON=devcon"
 )
 
-:: 安装新驱动包
-echo       Installing driver package...
-pnputil /add-driver "%UMDF_INF%" /install
-if %errorlevel% neq 0 (
-    echo       [WARN] pnputil /add-driver failed
-    goto :verify
+:: Create device node
+if "!DEVCON!"=="" (
+    echo       [WARN] devcon.exe not found, skipping device node creation
+    goto :hid_install_pkg
 )
-echo       [DONE] Driver package installed
-
-:: 创建设备节点
-if not exist "%UMDF_PS1%" (
-    echo       [WARN] create_device_node.ps1 not found, skipping device node creation
-    goto :verify
-)
-echo       Creating device node...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%UMDF_PS1%" -InfFile "%UMDF_INF%"
-if %errorlevel% neq 0 (
-    echo       [WARN] Device node creation failed
+"!DEVCON!" find "ROOT\OPENCERTFIDOHID" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo       [INFO] Device node already exists
 ) else (
-    echo       [DONE] UMDF FIDO2 driver installed
+    "!DEVCON!" install "!HID_INF!" "ROOT\OPENCERTFIDOHID"
+    if !errorlevel! neq 0 (
+        echo       [WARN] Device node creation failed
+        goto :hid_install_pkg
+    )
+    echo       [DONE] Device node created
+)
+
+:hid_install_pkg
+:: Add driver package
+pnputil /add-driver "!HID_INF!" /install
+if !errorlevel! neq 0 (
+    echo       [WARN] pnputil /add-driver returned non-zero
+) else (
+    echo       [DONE] HID driver package installed
+)
+
+:: Update device driver
+if not "!DEVCON!"=="" (
+    "!DEVCON!" update "!HID_INF!" "ROOT\OPENCERTFIDOHID"
+    if !errorlevel! neq 0 (
+        pnputil /add-driver "!HID_INF!" /install /force >nul 2>&1
+        echo       [WARN] devcon update failed, forced update attempted
+    ) else (
+        echo       [DONE] HID FIDO2 driver updated
+    )
 )
 
 :verify

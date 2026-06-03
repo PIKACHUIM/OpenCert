@@ -1,0 +1,126 @@
+; OpenCertFIDOHidDriver.inf
+; OpenCert FIDO2 虚拟 HID 认证器驱动安装信息文件
+;
+; 设备类：HIDClass（{745A17A0-74D3-11D0-B6FE-00A0C90F57DA}）
+; 驱动类型：UMDF2 + mshidumdf.sys（HID minidriver 适配层）
+; 硬件 ID：ROOT\OPENCERTFIDOHID
+;
+; 架构：
+;   hidclass.sys（HID 类驱动）
+;     └── mshidumdf.sys（HID minidriver 适配层，将 HID 请求转发给 UMDF）
+;           └── OpenCertFIDOHidDriver.dll（UMDF2 驱动，实现 IHidReportDescriptor）
+;
+; 安装后效果：
+;   - 设备管理器 → 人体学输入设备 → "OpenCert FIDO2 Authenticator"
+;   - Windows WebAuthn API 自动发现此设备作为 FIDO2 认证器
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = HIDClass
+ClassGuid   = {745A17A0-74D3-11D0-B6FE-00A0C90F57DA}
+Provider    = %ManufacturerName%
+DriverVer   = 06/02/2025,1.0.0.1
+CatalogFile = OpenCertFIDOHidDriver.cat
+PnpLockdown = 1
+
+; ================================================================
+; 制造商和型号
+; ================================================================
+[Manufacturer]
+%ManufacturerName% = Standard, NTamd64
+
+[Standard.NTamd64]
+%DeviceDesc% = OpenCertFIDOHid_Install, ROOT\OPENCERTFIDOHID
+
+; ================================================================
+; 安装节
+; ================================================================
+[OpenCertFIDOHid_Install.NT]
+CopyFiles = OpenCertFIDOHid_CopyFiles
+
+[OpenCertFIDOHid_Install.NT.hw]
+AddReg = OpenCertFIDOHid_HwReg
+
+[OpenCertFIDOHid_Install.NT.Services]
+; mshidumdf 作为函数驱动（FDO），WUDFRd 作为下层服务
+AddService = mshidumdf, 0x000001f8, MsHidUmdf_ServiceInstall
+AddService = WUDFRd,    0x00000002, WUDFRD_ServiceInstall
+
+[OpenCertFIDOHid_Install.NT.Wdf]
+UmdfService              = OpenCertFIDOHidDriver, OpenCertFIDOHid_UmdfInstall
+UmdfServiceOrder         = OpenCertFIDOHidDriver
+; 允许 hidclass.sys（内核模式）访问此 UMDF 驱动
+UmdfKernelModeClientPolicy = AllowKernelModeClients
+UmdfFileObjectPolicy     = AllowNullAndUnknownFileObjects
+UmdfFsContextUsePolicy   = CannotUseFsContexts
+; 方法类型：缓冲 I/O（HID 要求）
+UmdfMethodNeitherAction  = Copy
+UmdfDispatchType         = Sequential
+
+; ================================================================
+; UMDF 服务安装
+; ================================================================
+[OpenCertFIDOHid_UmdfInstall]
+UmdfLibraryVersion = 2.15.0
+ServiceBinary      = %12%\UMDF\OpenCertFIDOHidDriver.dll
+UmdfImpersonationLevel = Identification
+
+; ================================================================
+; mshidumdf 内核服务（HID minidriver 适配层）
+; ================================================================
+[MsHidUmdf_ServiceInstall]
+DisplayName    = %MsHidUmdfDisplayName%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\mshidumdf.sys
+
+; ================================================================
+; WUDFRd 内核服务
+; ================================================================
+[WUDFRD_ServiceInstall]
+DisplayName    = %WudfRdDisplayName%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\WUDFRd.sys
+
+; ================================================================
+; 硬件注册表项
+; ================================================================
+[OpenCertFIDOHid_HwReg]
+; 设备友好名称
+HKR,,"FriendlyName",,%DeviceFriendlyName%
+; 标记为虚拟设备
+HKR,,"VirtualDevice",0x00010001,1
+; 告知 mshidumdf 此驱动提供 HID 报告描述符
+HKR,,"LowerFilters",0x00010000,"mshidumdf"
+
+; ================================================================
+; 文件复制
+; ================================================================
+[OpenCertFIDOHid_CopyFiles]
+OpenCertFIDOHidDriver.dll
+
+[DestinationDirs]
+OpenCertFIDOHid_CopyFiles = 12,UMDF  ; %SystemRoot%\System32\drivers\UMDF\
+
+; ================================================================
+; 源文件位置
+; ================================================================
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+OpenCertFIDOHidDriver.dll = 1
+
+; ================================================================
+; 字符串定义
+; ================================================================
+[Strings]
+ManufacturerName      = "GlobalTrusts"
+DeviceDesc            = "OpenCert FIDO2 Authenticator (HID)"
+DeviceFriendlyName    = "OpenCert FIDO2 Authenticator"
+DiskName              = "OpenCert FIDO2 HID Driver Installation Disk"
+WudfRdDisplayName     = "Windows Driver Foundation - User-mode Driver Framework Reflector"
+MsHidUmdfDisplayName  = "Microsoft HID UMDF Minidriver"

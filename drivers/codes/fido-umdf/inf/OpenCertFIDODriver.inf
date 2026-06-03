@@ -81,8 +81,8 @@ ServiceBinary  = %12%\WUDFRd.sys
 HKR,,"FriendlyName",,%ReaderFriendlyName%
 ; 标记为虚拟设备
 HKR,,"VirtualDevice",0x00010001,1
-; UMDF 独占访问模式（SmartCardReader 类驱动要求）
-HKR,"WUDF","Exclusive",0x00010001,1
+; 不使用独占访问模式，允许 SCardSvr 打开设备
+HKR,"WUDF","Exclusive",0x00010001,0
 
 ; ================================================================
 ; 文件复制
