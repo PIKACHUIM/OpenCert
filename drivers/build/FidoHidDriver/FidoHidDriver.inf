@@ -1,0 +1,80 @@
+; FidoHidDriver.inf
+; OpenCert FIDO2 Virtual HID Authenticator Driver
+;
+; Architecture:
+;   WUDFRd.sys (UMDF reflector, FDO)
+;     -> FidoHidDriver.dll (UMDF2, handles CTAPHID protocol)
+;
+;   After install, register_fido.ps1 sets LowerFilters=MsHidUmdf so:
+;   hidclass.sys -> MsHidUmdf.sys -> WUDFRd.sys -> FidoHidDriver.dll
+;
+;   hidclass.sys creates HID child devices and registers HID interface
+;   WebAuthn API discovers FIDO2 device via HID interface GUID
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = HIDClass
+ClassGuid   = {745A17A0-74D3-11D0-B6FE-00A0C90F57DA}
+Provider    = %ManufacturerName%
+DriverVer   = 06/03/2025,1.0.0.5
+CatalogFile = FidoHidDriver.cat
+PnpLockdown = 1
+
+[Manufacturer]
+%ManufacturerName% = Standard, NTamd64
+
+[Standard.NTamd64]
+%DeviceDesc% = FidoHidDriver_Install, ROOT\FidoHidDriver
+
+[FidoHidDriver_Install.NT]
+CopyFiles = FidoHidDriver_CopyFiles
+
+[FidoHidDriver_Install.NT.hw]
+AddReg = FidoHidDriver_HwReg
+
+[FidoHidDriver_Install.NT.Services]
+AddService = WUDFRd, 0x000001fa, WUDFRD_ServiceInstall
+
+[FidoHidDriver_Install.NT.Wdf]
+UmdfService                  = FidoHidDriver, FidoHidDriver_UmdfInstall
+UmdfServiceOrder             = FidoHidDriver
+UmdfKernelModeClientPolicy   = AllowKernelModeClients
+UmdfFileObjectPolicy         = AllowNullAndUnknownFileObjects
+UmdfFsContextUsePolicy       = CannotUseFsContexts
+UmdfMethodNeitherAction      = Copy
+UmdfDispatchType             = Sequential
+
+[FidoHidDriver_UmdfInstall]
+UmdfLibraryVersion = 2.15.0
+ServiceBinary      = %12%\UMDF\FidoHidDriver.dll
+UmdfImpersonationLevel = Identification
+
+[WUDFRD_ServiceInstall]
+DisplayName    = %WudfRdDisplayName%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\WUDFRd.sys
+
+[FidoHidDriver_HwReg]
+HKR,,"FriendlyName",,%DeviceFriendlyName%
+HKR,,"VirtualDevice",0x00010001,1
+
+[FidoHidDriver_CopyFiles]
+FidoHidDriver.dll
+
+[DestinationDirs]
+FidoHidDriver_CopyFiles = 12,UMDF
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+FidoHidDriver.dll = 1
+
+[Strings]
+ManufacturerName    = "GlobalTrusts"
+DeviceDesc          = "OpenCert FIDO2 Authenticator (HID)"
+DeviceFriendlyName  = "OpenCert FIDO2 Authenticator"
+DiskName            = "OpenCert FIDO2 HID Driver Installation Disk"
+WudfRdDisplayName   = "Windows Driver Foundation - User-mode Driver Framework Reflector"

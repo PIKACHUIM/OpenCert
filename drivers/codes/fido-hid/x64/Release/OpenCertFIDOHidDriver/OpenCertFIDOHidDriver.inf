@@ -1,0 +1,108 @@
+; FidoHidDriver.inf
+; OpenCert FIDO2 虚拟 HID 认证器驱动安装信息文件
+;
+; 设备类：HIDClass（{745A17A0-74D3-11D0-B6FE-00A0C90F57DA}）
+; 驱动类型：UMDF2（用户态驱动框架 v2）
+; 硬件 ID：ROOT\FidoHidDriver
+;
+; 架构：
+;   hidclass.sys 通过 WUDFRd.sys 反射器加载本 UMDF 驱动
+;   本驱动响应 IOCTL_HID_GET_REPORT_DESCRIPTOR 等 HID minidriver IOCTL
+;   报告描述符声明 Usage Page 0xF1D0（FIDO Alliance）
+;   Windows WebAuthn API 通过 HID Usage Page 识别 FIDO2 设备
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = HIDClass
+ClassGuid   = {745A17A0-74D3-11D0-B6FE-00A0C90F57DA}
+Provider    = %ManufacturerName%
+DriverVer = 06/03/2026,12.28.16.709
+CatalogFile = FidoHidDriver.cat
+PnpLockdown = 1
+
+; ================================================================
+; 制造商和型号
+; ================================================================
+[Manufacturer]
+%ManufacturerName% = Standard, NTamd64
+
+[Standard.NTamd64]
+%DeviceDesc% = FidoHidDriver_Install, ROOT\FidoHidDriver
+
+; ================================================================
+; 安装节
+; ================================================================
+[FidoHidDriver_Install.NT]
+CopyFiles = FidoHidDriver_CopyFiles
+
+[FidoHidDriver_Install.NT.hw]
+AddReg = FidoHidDriver_HwReg
+
+[FidoHidDriver_Install.NT.Services]
+AddService = WUDFRd, 0x000001fa, WUDFRD_ServiceInstall
+
+[FidoHidDriver_Install.NT.Wdf]
+UmdfService                  = FidoHidDriver, FidoHidDriver_UmdfInstall
+UmdfServiceOrder             = FidoHidDriver
+; 允许 hidclass.sys（内核模式客户端）访问此 UMDF 驱动
+UmdfKernelModeClientPolicy   = AllowKernelModeClients
+UmdfFileObjectPolicy         = AllowNullAndUnknownFileObjects
+UmdfFsContextUsePolicy       = CannotUseFsContexts
+; HID 报告使用缓冲 I/O
+UmdfMethodNeitherAction      = Copy
+UmdfDispatchType             = Sequential
+
+; ================================================================
+; UMDF 服务安装
+; ================================================================
+[FidoHidDriver_UmdfInstall]
+UmdfLibraryVersion = 2.15.0
+ServiceBinary      = %12%\UMDF\FidoHidDriver.dll
+UmdfImpersonationLevel = Identification
+
+; ================================================================
+; WUDFRd 内核服务（反射器，将 HID IOCTL 转发给 UMDF 驱动）
+; ================================================================
+[WUDFRD_ServiceInstall]
+DisplayName    = %WudfRdDisplayName%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\WUDFRd.sys
+
+; ================================================================
+; 硬件注册表项
+; ================================================================
+[FidoHidDriver_HwReg]
+; 设备友好名称
+HKR,,"FriendlyName",,%DeviceFriendlyName%
+; 标记为虚拟设备
+HKR,,"VirtualDevice",0x00010001,1
+
+; ================================================================
+; 文件复制
+; ================================================================
+[FidoHidDriver_CopyFiles]
+FidoHidDriver.dll
+
+[DestinationDirs]
+FidoHidDriver_CopyFiles = 12,UMDF  ; %SystemRoot%\System32\drivers\UMDF\
+
+; ================================================================
+; 源文件位置
+; ================================================================
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+FidoHidDriver.dll = 1
+
+; ================================================================
+; 字符串定义
+; ================================================================
+[Strings]
+ManufacturerName    = "GlobalTrusts"
+DeviceDesc          = "OpenCert FIDO2 Authenticator (HID)"
+DeviceFriendlyName  = "OpenCert FIDO2 Authenticator"
+DiskName            = "OpenCert FIDO2 HID Driver Installation Disk"
+WudfRdDisplayName   = "Windows Driver Foundation - User-mode Driver Framework Reflector"

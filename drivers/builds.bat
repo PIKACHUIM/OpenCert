@@ -1,14 +1,17 @@
 @echo off
 chcp 65001 >nul 2>&1
 :: ============================================================
-:: OpenCert Drivers - 一键构建 (CSP + KSP, x64 + x86)
-:: 输出到 build/ 目录
+:: OpenCert Drivers - Build Script
+:: Output: build/ directory
 :: ============================================================
 setlocal enabledelayedexpansion
 
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
+:: ============================================================
+:: Environment Detection
+:: ============================================================
 set "VSBASE="
 for %%P in (
     "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build"
@@ -17,408 +20,201 @@ for %%P in (
     "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build"
 ) do if exist %%P if "!VSBASE!"=="" set "VSBASE=%%~P"
 
-if "!VSBASE!"=="" (echo [ERROR] Visual Studio not found! & exit /b 1)
+if "!VSBASE!"=="" (echo [FAIL] Visual Studio not found! & exit /b 1)
+
+:: Find signtool.exe
+set "SIGNTOOL="
+for /d %%V in ("C:\Program Files (x86)\Windows Kits\10\bin\*") do (
+    if exist "%%V\x64\signtool.exe" if "!SIGNTOOL!"=="" set "SIGNTOOL=%%V\x64\signtool.exe"
+)
+
+:: EV Certificate Thumbprint (Finnox Technology)
+set "EV_THUMBPRINT=929F16F67222DCFA6A3C15A774F5F460FA79FED1"
 
 if not exist "build" mkdir build
-if not exist "build\OpenCertFIDODriver" mkdir "build\OpenCertFIDODriver"
-if not exist "build\OpenCertFIDOHidDriver" mkdir "build\OpenCertFIDOHidDriver"
 
 echo.
 echo ============================================================
-echo   OpenCert Drivers Build (CSP + KSP + FIDO, x64 + x86)
+echo   OpenCert Drivers Build
 echo ============================================================
+
+:: ============================================================
+:: [1/3] Build KSP + CSP + FIDO DLLs (cl.exe)
+:: ============================================================
+echo.
+echo [1/3] Building KSP + CSP + FIDO DLLs...
 
 :: ---- x64 ----
-echo.
-echo [x64] Initializing...
+echo       [x64] Initializing VC environment...
 call "!VSBASE!\vcvars64.bat" >nul 2>&1
 
-:: echo [x64] Building KSP...
+:: --- KSP x64 (uncomment to enable) ---
 :: cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
 ::     codes\ksp\codes\opencert_ksp.c /Fe"build\OpenCertKSP_x64.dll" /Fo"build\ksp_x64.obj" ^
 ::     /link /DEF:codes\ksp\codes\OpenCertKSP.def ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib credui.lib user32.lib ole32.lib /NOLOGO /DLL /MACHINE:X64
-:: if %errorlevel% neq 0 (echo [FAILED] KSP x64 & exit /b 1)
-:: echo [OK] build\OpenCertKSP_x64.dll
+:: if %errorlevel% neq 0 (echo       [FAIL] KSP x64 & exit /b 1)
+:: echo       [DONE] build\OpenCertKSP_x64.dll
 
-:: echo [x64] Building CSP...
+:: --- CSP x64 (uncomment to enable) ---
 :: cl.exe /nologo /O2 /W4 /LD /utf-8 /DWIN32 /D_WINDOWS /D_USRDLL /DCRYPTOKI_EXPORTS /D_CRT_SECURE_NO_WARNINGS ^
 ::     /Icodes\csp\codes codes\csp\codes\pkcs11-mock.c codes\csp\codes\ipc_client.c codes\csp\codes\ipc_json.c ^
 ::     /Fe"build\OpenCertCSP_x64.dll" ^
 ::     /link Advapi32.lib /NOLOGO /DLL /MACHINE:X64
-:: if %errorlevel% neq 0 (echo [FAILED] CSP x64 & exit /b 1)
-:: echo [OK] build\OpenCertCSP_x64.dll
+:: if %errorlevel% neq 0 (echo       [FAIL] CSP x64 & exit /b 1)
+:: echo       [DONE] build\OpenCertCSP_x64.dll
 
-echo [x64] Building FIDO...
-cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
-    /Icodes\csp\codes codes\fido\codes\opencert_fido.c codes\csp\codes\ipc_client.c ^
-    /Fe"build\OpenCertFIDODriver\OpenCertFIDO_x64.dll" ^
-    /link /DEF:codes\fido\codes\OpenCertFIDO.def winscard.lib kernel32.lib advapi32.lib /NOLOGO /DLL /MACHINE:X64
-if %errorlevel% neq 0 (echo [FAILED] FIDO x64 & exit /b 1)
-echo [OK] build\OpenCertFIDODriver\OpenCertFIDO_x64.dll
+:: --- FIDO x64 (uncomment to enable) ---
+:: cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
+::     /Icodes\csp\codes codes\fido\codes\opencert_fido.c codes\csp\codes\ipc_client.c ^
+::     /Fe"build\OpenFIDOLib_x64.dll" ^
+::     /link /DEF:codes\fido\codes\OpenCertFIDO.def winscard.lib kernel32.lib advapi32.lib /NOLOGO /DLL /MACHINE:X64
+:: if %errorlevel% neq 0 (echo       [FAIL] FIDO x64 & exit /b 1)
+:: echo       [DONE] build\OpenFIDOLib_x64.dll
 
 :: ---- x86 ----
-echo.
-echo [x86] Initializing...
+echo       [x86] Initializing VC environment...
 call "!VSBASE!\vcvars32.bat" >nul 2>&1
 
-:: echo [x86] Building KSP...
+:: --- KSP x86 (uncomment to enable) ---
 :: cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
 ::     codes\ksp\codes\opencert_ksp.c /Fe"build\OpenCertKSP_x86.dll" /Fo"build\ksp_x86.obj" ^
 ::     /link /DEF:codes\ksp\codes\OpenCertKSP.def ncrypt.lib bcrypt.lib crypt32.lib kernel32.lib advapi32.lib credui.lib user32.lib ole32.lib /NOLOGO /DLL /MACHINE:X86
-:: if %errorlevel% neq 0 (echo [FAILED] KSP x86 & exit /b 1)
-:: echo [OK] build\OpenCertKSP_x86.dll
+:: if %errorlevel% neq 0 (echo       [FAIL] KSP x86 & exit /b 1)
+:: echo       [DONE] build\OpenCertKSP_x86.dll
 
-:: echo [x86] Building CSP...
+:: --- CSP x86 (uncomment to enable) ---
 :: cl.exe /nologo /O2 /W4 /LD /utf-8 /DWIN32 /D_WINDOWS /D_USRDLL /DCRYPTOKI_EXPORTS /D_CRT_SECURE_NO_WARNINGS ^
 ::     /Icodes\csp\codes codes\csp\codes\pkcs11-mock.c codes\csp\codes\ipc_client.c codes\csp\codes\ipc_json.c ^
 ::     /Fe"build\OpenCertCSP_x86.dll" ^
 ::     /link Advapi32.lib /NOLOGO /DLL /MACHINE:X86
-:: if %errorlevel% neq 0 (echo [FAILED] CSP x86 & exit /b 1)
-:: echo [OK] build\OpenCertCSP_x86.dll
+:: if %errorlevel% neq 0 (echo       [FAIL] CSP x86 & exit /b 1)
+:: echo       [DONE] build\OpenCertCSP_x86.dll
 
-echo [x86] Building FIDO...
-cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
-    /Icodes\csp\codes codes\fido\codes\opencert_fido.c codes\csp\codes\ipc_client.c ^
-    /Fe"build\OpenCertFIDODriver\OpenCertFIDO_x86.dll" ^
-    /link /DEF:codes\fido\codes\OpenCertFIDO.def winscard.lib kernel32.lib advapi32.lib /NOLOGO /DLL /MACHINE:X86
-if %errorlevel% neq 0 (echo [FAILED] FIDO x86 & exit /b 1)
-echo [OK] build\OpenCertFIDODriver\OpenCertFIDO_x86.dll
+:: --- FIDO x86 (uncomment to enable) ---
+:: cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
+::     /Icodes\csp\codes codes\fido\codes\opencert_fido.c codes\csp\codes\ipc_client.c ^
+::     /Fe"build\OpenFIDOLib_x86.dll" ^
+::     /link /DEF:codes\fido\codes\OpenCertFIDO.def winscard.lib kernel32.lib advapi32.lib /NOLOGO /DLL /MACHINE:X86
+:: if %errorlevel% neq 0 (echo       [FAIL] FIDO x86 & exit /b 1)
+:: echo       [DONE] build\OpenFIDOLib_x86.dll
 
-:: 清理中间文件
+:: Clean intermediate files
 del /Q build\*.obj build\*.exp build\*.lib *.obj *.exp *.lib >nul 2>&1
-del /Q build\OpenCertFIDODriver\*.obj build\OpenCertFIDODriver\*.exp build\OpenCertFIDODriver\*.lib >nul 2>&1
 
-:: ---- UMDF FIDO2 驱动（通过 WUDFRd 被 PC/SC 框架识别） ----
+echo       [NOT] KSP/CSP/FIDO cl.exe builds are commented out
+
+:: ============================================================
+:: [2/4] Build UMDF FIDO2 Driver (disabled - 方案已废弃)
+:: ============================================================
+:: echo.
+:: echo [2/4] Building UMDF FIDO2 Driver...
+:: call "%ROOT%setup\build_mdf_dll.bat"
+:: if !errorlevel! neq 0 (
+::     echo       [WARN] UMDF driver build failed
+:: )
+
+:: ============================================================
+:: [3/4] Build HID FIDO2 Driver (disabled - 已切换到 USB/IP 方案)
+:: ============================================================
+:: echo.
+:: echo [2/4] Building HID FIDO2 Driver...
+:: call "%ROOT%setup\build_hid_dll.bat" --quiet
+:: if !errorlevel! neq 0 (
+::     echo       [WARN] HID driver build failed
+:: )
+
+:: ============================================================
+:: [3/4] Build USB/IP VHCI Driver + fido-go
+:: ============================================================
 echo.
-echo [UMDF] Building FIDO2 UMDF Driver (requires WDK)...
-call :build_umdf_driver
+echo [2/3] Building USB/IP VHCI Driver + fido-go...
+
+call "%ROOT%setup\build_usb_sys.bat" --quiet
 if !errorlevel! neq 0 (
-    echo [WARN] UMDF 驱动构建失败（可能未安装 WDK VS 扩展），跳过
-    echo        安装 WDK VS 扩展: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
-) else (
-    call :package_umdf_driver
+    echo       [WARN] USB/IP build failed
 )
 
-:: ---- HID FIDO2 驱动（方案B：通过 HID Usage Page 0xF1D0 被 WebAuthn API 识别） ----
+:: ============================================================
+:: [3/3] Sign all files in build/
+:: ============================================================
 echo.
-echo [HID] Building FIDO2 HID Driver (requires WDK)...
-call :build_hid_driver
-if !errorlevel! neq 0 (
-    echo [WARN] HID 驱动构建失败（可能未安装 WDK VS 扩展），跳过
-    echo        安装 WDK VS 扩展: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
-) else (
-    call :package_hid_driver
+echo [3/3] Signing all files in build/...
+
+if "!SIGNTOOL!"=="" (
+    echo       [WARN] signtool.exe not found, skipping
+    goto :summary
 )
 
+set "SIGN_COUNT=0"
+set "SIGN_FAIL=0"
+
+:: Sign root-level DLLs (KSP, CSP, FIDO)
+for %%F in (build\*.dll) do (
+    call :sign_file "%%F"
+)
+
+if !SIGN_COUNT! equ 0 echo       [INFO] No files to sign
+if !SIGN_COUNT! gtr 0 echo       [DONE] Signed !SIGN_COUNT! file^(s^), !SIGN_FAIL! failed
+
+:summary
+:: ============================================================
+:: Build Summary
+:: ============================================================
 echo.
 echo ============================================================
- echo   Build Complete! Output in build\
- echo     OpenCertFIDODriver\OpenCertFIDO_x64.dll
- echo     OpenCertFIDODriver\OpenCertFIDO_x86.dll
- echo     OpenCertFIDODriver\OpenCertFIDODriver.dll
- echo     OpenCertFIDODriver\OpenCertFIDODriver.inf
- echo     OpenCertFIDODriver\OpenCertFIDODriver.cat
- echo     OpenCertFIDOHidDriver\OpenCertFIDOHidDriver.dll
- echo     OpenCertFIDOHidDriver\OpenCertFIDOHidDriver.inf
- echo     OpenCertFIDOHidDriver\OpenCertFIDOHidDriver.cat
+echo   Build Complete! Output in build\
+echo ============================================================
+
+set "FILE_COUNT=0"
+for %%F in (build\*.dll) do (
+    echo       %%~nxF
+    set /a FILE_COUNT+=1
+)
+if exist "build\FidoUsbIpVhci\usbip_vhci_ude.sys" (
+    echo       FidoUsbIpVhci\usbip_vhci_ude.sys
+    set /a FILE_COUNT+=1
+)
+if exist "build\FidoUsbIpVhci\usbip_vhci_ude.inf" (
+    echo       FidoUsbIpVhci\usbip_vhci_ude.inf
+    set /a FILE_COUNT+=1
+)
+if exist "build\FidoUsbIpVhci\usbip_vhci_ude.cat" (
+    echo       FidoUsbIpVhci\usbip_vhci_ude.cat
+    set /a FILE_COUNT+=1
+)
+if exist "build\FidoUsbIpVhci\usbip.exe" (
+    echo       FidoUsbIpVhci\usbip.exe
+    set /a FILE_COUNT+=1
+)
+if exist "build\fido-go.exe" (
+    echo       fido-go.exe
+    set /a FILE_COUNT+=1
+)
+
+echo.
+echo   Total: !FILE_COUNT! file(s)
 echo ============================================================
 exit /b 0
 
 :: ================================================================
-:: 子程序：构建 UMDF FIDO2 驱动
-:: 使用 MSBuild + WDK 工具集（WindowsUserModeDriver10.0）
+:: Subroutine: sign_file - Sign a single file with EV certificate
 :: ================================================================
-:build_umdf_driver
-setlocal enabledelayedexpansion
+:sign_file
+set "_SF_FILE=%~1"
+set "_SF_NAME=%~nx1"
 
-:: 查找 MSBuild
-set "MSBUILD="
-for %%P in (
-    "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
-    "C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe"
-    "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
-    "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
-) do if exist "%%~P" if "!MSBUILD!"=="" set "MSBUILD=%%~P"
-
-if "!MSBUILD!"=="" (
-    echo [WARN] 未找到 MSBuild.exe
-    endlocal
-    exit /b 1
+"!SIGNTOOL!" verify /pa "!_SF_FILE!" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo       [SKIP] !_SF_NAME! ^(already signed^)
+    exit /b 0
 )
 
-:: 检查 WDK 是否安装
-set "WDK_PROPS="
-set "WDK_BUILD_ROOT=C:\Program Files (x86)\Windows Kits\10\build"
-if exist "!WDK_BUILD_ROOT!" (
-    for /d %%V in ("!WDK_BUILD_ROOT!\*") do (
-        if exist "%%V\WindowsDriver.Common.props" (
-            if "!WDK_PROPS!"=="" set "WDK_PROPS=%%V\WindowsDriver.Common.props"
-        )
-    )
-)
-
-if "!WDK_PROPS!"=="" (
-    echo [WARN] 未找到 WDK，跳过 UMDF 驱动构建
-    echo        请安装 WDK: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
-    endlocal
-    exit /b 1
-)
-echo [OK] WDK: !WDK_PROPS!
-
-:: 创建输出目录
-if not exist "build\OpenCertFIDODriver" mkdir "build\OpenCertFIDODriver"
-
-:: 构建 x64 Release
-echo [UMDF x64] Building...
-"!MSBUILD!" "codes\fido-umdf\OpenCertFIDODriver.vcxproj" ^
-    /p:Configuration=Release ^
-    /p:Platform=x64 ^
-    /p:OutDir="%~dp0build\OpenCertFIDODriver\x64\Release\\" ^
-    /p:IntDir="%~dp0build\OpenCertFIDODriver\x64\Release\int\\" ^
-    /nologo /verbosity:minimal
+"!SIGNTOOL!" sign /sha1 "!EV_THUMBPRINT!" /fd sha256 /tr http://timestamp.digicert.com /td sha256 "!_SF_FILE!" >nul 2>&1
 if !errorlevel! neq 0 (
-    echo [FAILED] UMDF Driver x64
-    endlocal
+    echo       [WARN] !_SF_NAME! sign failed ^(EV cert may not be inserted^)
+    set /a SIGN_FAIL+=1
     exit /b 1
 )
-echo [OK] build\OpenCertFIDODriver\x64\Release\OpenCertFIDODriver.dll
-
-endlocal
+echo       [DONE] !_SF_NAME!
+set /a SIGN_COUNT+=1
 exit /b 0
-
-:: ================================================================
-:: 子程序：打包 UMDF 驱动 - 复制到 build\OpenCertFIDODriver\，生成 .cat 并签名
-:: ================================================================
-:package_umdf_driver
-setlocal enabledelayedexpansion
-
-set "BUILD_DIR=%~dp0build\OpenCertFIDODriver"
-set "INF_SRC=%~dp0codes\fido-umdf\inf"
-set "DLL_SRC=%BUILD_DIR%\x64\Release\OpenCertFIDODriver.dll"
-
-echo.
-echo [Package] 打包 UMDF 驱动到 build\OpenCertFIDODriver\...
-
-:: 检查 DLL 是否存在
-if not exist "!DLL_SRC!" (
-    echo [ERROR] 未找到构建输出: !DLL_SRC!
-    endlocal & exit /b 1
-)
-
-:: Step 1: 复制 DLL 和 INF 到 build\OpenCertFIDODriver\
-echo [1/4] 复制驱动文件到 build\OpenCertFIDODriver\...
-copy /Y "!DLL_SRC!" "!BUILD_DIR!\OpenCertFIDODriver.dll" >nul
-copy /Y "!INF_SRC!\OpenCertFIDODriver.inf" "!BUILD_DIR!\OpenCertFIDODriver.inf" >nul
-echo [OK] OpenCertFIDODriver.dll + .inf 已复制到 build\OpenCertFIDODriver\
-
-:: Step 2: 删除临时构建目录
-echo [2/4] 清理临时构建中间目录...
-if exist "!BUILD_DIR!\x64" (
-    rmdir /S /Q "!BUILD_DIR!\x64"
-    echo [OK] build\OpenCertFIDODriver\x64\ 已删除
-)
-
-:: Step 3: 查找 inf2cat
-echo [3/4] 生成 .cat 目录文件...
-set "INF2CAT="
-for /d %%V in ("C:\Program Files (x86)\Windows Kits\10\bin\*") do (
-    if exist "%%V\x86\Inf2Cat.exe" if "!INF2CAT!"=="" set "INF2CAT=%%V\x86\Inf2Cat.exe"
-)
-if "!INF2CAT!"=="" (
-    echo [WARN] 未找到 Inf2Cat.exe，跳过 .cat 生成
-    echo        请安装 WDK: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
-    endlocal & exit /b 0
-)
-
-"!INF2CAT!" /driver:"!BUILD_DIR!" /os:10_x64 /verbose 2>&1
-if !errorlevel! neq 0 (
-    echo [WARN] Inf2Cat 生成 .cat 失败，请检查 INF 文件
-    endlocal & exit /b 0
-)
-if not exist "!BUILD_DIR!\OpenCertFIDODriver.cat" (
-    echo [WARN] .cat 文件未生成
-    endlocal & exit /b 0
-)
-echo [OK] build\OpenCertFIDODriver\OpenCertFIDODriver.cat 已生成
-
-:: Step 4: 自动签名（DLL + .cat）
-echo [4/4] 签名 DLL 和 .cat 文件...
-set "SIGNTOOL="
-for /d %%V in ("C:\Program Files (x86)\Windows Kits\10\bin\*") do (
-    if exist "%%V\x64\signtool.exe" if "!SIGNTOOL!"=="" set "SIGNTOOL=%%V\x64\signtool.exe"
-)
-if "!SIGNTOOL!"=="" (
-    echo [WARN] 未找到 signtool.exe，跳过签名
-    endlocal & exit /b 0
-)
-
-set "EV_THUMBPRINT=929F16F67222DCFA6A3C15A774F5F460FA79FED1"
-
-"!SIGNTOOL!" sign /sha1 "!EV_THUMBPRINT!" /fd sha256 /tr http://timestamp.digicert.com /td sha256 /v "!BUILD_DIR!\OpenCertFIDODriver.dll" 2>&1
-if !errorlevel! neq 0 (
-    echo [WARN] DLL 签名失败（EV 证书可能未插入），跳过
-    echo        手动签名: signtool sign /sha1 !EV_THUMBPRINT! /fd sha256 /tr http://timestamp.digicert.com /td sha256 build\OpenCertFIDODriver\OpenCertFIDODriver.dll
-) else (
-    echo [OK] build\OpenCertFIDODriver\OpenCertFIDODriver.dll 签名成功
-)
-
-"!SIGNTOOL!" sign /sha1 "!EV_THUMBPRINT!" /fd sha256 /tr http://timestamp.digicert.com /td sha256 /v "!BUILD_DIR!\OpenCertFIDODriver.cat" 2>&1
-if !errorlevel! neq 0 (
-    echo [WARN] .cat 签名失败（EV 证书可能未插入），跳过
-    echo        手动签名: signtool sign /sha1 !EV_THUMBPRINT! /fd sha256 /tr http://timestamp.digicert.com /td sha256 build\OpenCertFIDODriver\OpenCertFIDODriver.cat
-) else (
-    echo [OK] build\OpenCertFIDODriver\OpenCertFIDODriver.cat 签名成功
-)
-
-endlocal & exit /b 0
-
-:: ================================================================
-:: 子程序：构建 HID FIDO2 驱动
-:: 使用 MSBuild + WDK 工具集（WindowsUserModeDriver10.0）
-:: ================================================================
-:build_hid_driver
-setlocal enabledelayedexpansion
-
-:: 查找 MSBuild
-set "MSBUILD="
-for %%P in (
-    "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
-    "C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe"
-    "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
-    "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
-) do if exist "%%~P" if "!MSBUILD!"=="" set "MSBUILD=%%~P"
-
-if "!MSBUILD!"=="" (
-    echo [WARN] 未找到 MSBuild.exe
-    endlocal
-    exit /b 1
-)
-
-:: 检查 WDK 是否安装（动态枚举版本目录，不依赖固定版本号）
-set "WDK_PROPS="
-set "WDK_BUILD_ROOT=C:\Program Files (x86)\Windows Kits\10\build"
-if exist "!WDK_BUILD_ROOT!" (
-    for /d %%V in ("!WDK_BUILD_ROOT!\*") do (
-        if exist "%%V\WindowsDriver.Common.props" (
-            if "!WDK_PROPS!"=="" set "WDK_PROPS=%%V\WindowsDriver.Common.props"
-        )
-    )
-)
-
-if "!WDK_PROPS!"=="" (
-    echo [WARN] 未找到 WDK，跳过 UMDF 驱动构建
-    echo        请安装 WDK: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
-    endlocal
-    exit /b 1
-)
-echo [OK] WDK: !WDK_PROPS!
-
-:: 创建输出目录
-if not exist "build\OpenCertFIDOHidDriver" mkdir "build\OpenCertFIDOHidDriver"
-
-:: 构建 x64 Release
-echo [HID x64] Building...
-"!MSBUILD!" "codes\fido-hid\OpenCertFIDOHidDriver.vcxproj" ^
-    /p:Configuration=Release ^
-    /p:Platform=x64 ^
-    /p:OutDir="%~dp0build\OpenCertFIDOHidDriver\x64\Release\\" ^
-    /p:IntDir="%~dp0build\OpenCertFIDOHidDriver\x64\Release\int\\" ^
-    /nologo /verbosity:minimal
-if !errorlevel! neq 0 (
-    echo [FAILED] HID Driver x64
-    endlocal
-    exit /b 1
-)
-echo [OK] build\OpenCertFIDOHidDriver\x64\Release\OpenCertFIDOHidDriver.dll
-
-endlocal
-exit /b 0
-
-:: ================================================================
-:: 子程序：打包 HID 驱动 - 复制到 build\，生成 .cat 并签名
-:: ================================================================
-:package_hid_driver
-setlocal enabledelayedexpansion
-
-set "BUILD_DIR=%~dp0build\OpenCertFIDOHidDriver"
-set "INF_SRC=%~dp0codes\fido-hid\inf"
-set "DLL_SRC=%BUILD_DIR%\x64\Release\OpenCertFIDOHidDriver.dll"
-
-echo.
-echo [Package] 打包 HID 驱动到 build\...
-
-:: 检查 DLL 是否存在
-if not exist "!DLL_SRC!" (
-    echo [ERROR] 未找到构建输出: !DLL_SRC!
-    endlocal & exit /b 1
-)
-
-:: Step 1: 复制 DLL 和 INF 到 build\OpenCertFIDOHidDriver\
-echo [1/4] 复制驱动文件到 build\OpenCertFIDOHidDriver\...
-copy /Y "!DLL_SRC!" "!BUILD_DIR!\OpenCertFIDOHidDriver.dll" >nul
-copy /Y "!INF_SRC!\OpenCertFIDOHidDriver.inf" "!BUILD_DIR!\OpenCertFIDOHidDriver.inf" >nul
-echo [OK] OpenCertFIDOHidDriver.dll + .inf 已复制到 build\OpenCertFIDOHidDriver\
-
-:: Step 2: 删除临时构建目录
-echo [2/4] 清理临时构建中间目录...
-if exist "!BUILD_DIR!\x64" (
-    rmdir /S /Q "!BUILD_DIR!\x64"
-    echo [OK] build\OpenCertFIDOHidDriver\x64\ 已删除
-)
-
-:: Step 3: 查找 inf2cat（只在 x86 目录下）
-echo [3/4] 生成 .cat 目录文件...
-set "INF2CAT="
-for /d %%V in ("C:\Program Files (x86)\Windows Kits\10\bin\*") do (
-    if exist "%%V\x86\Inf2Cat.exe" if "!INF2CAT!"=="" set "INF2CAT=%%V\x86\Inf2Cat.exe"
-)
-if "!INF2CAT!"=="" (
-    echo [WARN] 未找到 Inf2Cat.exe，跳过 .cat 生成
-    echo        请安装 WDK: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
-    endlocal & exit /b 0
-)
-
-"!INF2CAT!" /driver:"!BUILD_DIR!" /os:10_x64 /verbose 2>&1
-if !errorlevel! neq 0 (
-    echo [WARN] Inf2Cat 生成 .cat 失败，请检查 INF 文件
-    endlocal & exit /b 0
-)
-if not exist "!BUILD_DIR!\OpenCertFIDOHidDriver.cat" (
-    echo [WARN] .cat 文件未生成
-    endlocal & exit /b 0
-)
-echo [OK] build\OpenCertFIDOHidDriver\OpenCertFIDOHidDriver.cat 已生成
-
-:: Step 4: 自动签名（DLL + .cat，查找 EV 证书）
-echo [4/4] 签名 DLL 和 .cat 文件...
-set "SIGNTOOL="
-for /d %%V in ("C:\Program Files (x86)\Windows Kits\10\bin\*") do (
-    if exist "%%V\x64\signtool.exe" if "!SIGNTOOL!"=="" set "SIGNTOOL=%%V\x64\signtool.exe"
-)
-if "!SIGNTOOL!"=="" (
-    echo [WARN] 未找到 signtool.exe，跳过签名
-    endlocal & exit /b 0
-)
-
-:: 使用固定 EV 证书指纹（Finnox Technology）
-set "EV_THUMBPRINT=929F16F67222DCFA6A3C15A774F5F460FA79FED1"
-
-:: 先签名 DLL（UMDF 驱动 DLL 必须有代码签名，否则 WUDFRd 拒绝加载）
-"!SIGNTOOL!" sign /sha1 "!EV_THUMBPRINT!" /fd sha256 /tr http://timestamp.digicert.com /td sha256 /v "!BUILD_DIR!\OpenCertFIDOHidDriver.dll" 2>&1
-if !errorlevel! neq 0 (
-    echo [WARN] DLL 签名失败（EV 证书可能未插入），跳过
-    echo        手动签名: signtool sign /sha1 !EV_THUMBPRINT! /fd sha256 /tr http://timestamp.digicert.com /td sha256 build\OpenCertFIDOHidDriver\OpenCertFIDOHidDriver.dll
-) else (
-    echo [OK] build\OpenCertFIDOHidDriver\OpenCertFIDOHidDriver.dll 签名成功
-)
-
-:: 再签名 .cat
-"!SIGNTOOL!" sign /sha1 "!EV_THUMBPRINT!" /fd sha256 /tr http://timestamp.digicert.com /td sha256 /v "!BUILD_DIR!\OpenCertFIDOHidDriver.cat" 2>&1
-if !errorlevel! neq 0 (
-    echo [WARN] .cat 签名失败（EV 证书可能未插入），跳过
-    echo        手动签名: signtool sign /sha1 !EV_THUMBPRINT! /fd sha256 /tr http://timestamp.digicert.com /td sha256 build\OpenCertFIDOHidDriver\OpenCertFIDOHidDriver.cat
-) else (
-    echo [OK] build\OpenCertFIDOHidDriver\OpenCertFIDOHidDriver.cat 签名成功
-)
-
-endlocal & exit /b 0

@@ -15,11 +15,11 @@ setlocal enabledelayedexpansion
 set "SCRIPT_DIR=%~dp0"
 set "DRIVER_DIR=%SCRIPT_DIR%.."
 set "DRIVERS_ROOT=%SCRIPT_DIR%..\..\.."
-set "BUILD_DLL=%DRIVERS_ROOT%build\fido-driver\x64\Release\OpenCertFIDODriver.dll"
+set "BUILD_DLL=%DRIVERS_ROOT%build\fido-driver\x64\Release\FidoMdfDriver.dll"
 set "INF_DIR=%DRIVER_DIR%\inf"
-set "INF_FILE=%INF_DIR%\OpenCertFIDODriver.inf"
-set "CAT_FILE=%INF_DIR%\OpenCertFIDODriver.cat"
-set "INF_DLL=%INF_DIR%\OpenCertFIDODriver.dll"
+set "INF_FILE=%INF_DIR%\FidoMdfDriver.inf"
+set "CAT_FILE=%INF_DIR%\FidoMdfDriver.cat"
+set "INF_DLL=%INF_DIR%\FidoMdfDriver.dll"
 
 :: EV 证书指纹（Finnox Technology）
 set "EV_THUMBPRINT=929F16F67222DCFA6A3C15A774F5F460FA79FED1"
@@ -36,7 +36,7 @@ if %errorlevel% neq 0 (
     echo         右键 install_driver_ev.bat -^> 以管理员身份运行
     pause & exit /b 1
 )
-echo [OK] 管理员权限确认
+echo [DONE] 管理员权限确认
 
 :: ---- 检查构建输出 ----
 if not exist "%BUILD_DLL%" (
@@ -44,7 +44,7 @@ if not exist "%BUILD_DLL%" (
     echo         请先运行 builds.bat 构建驱动
     pause & exit /b 1
 )
-echo [OK] 驱动 DLL: %BUILD_DLL%
+echo [DONE] 驱动 DLL: %BUILD_DLL%
 
 :: ---- 查找 WDK 工具（inf2cat 在 x86 目录，signtool 在 x64 目录）----
 set "INF2CAT="
@@ -61,8 +61,8 @@ if "!SIGNTOOL!"=="" (
     echo [ERROR] 未找到 signtool.exe，请安装 WDK
     pause & exit /b 1
 )
-echo [OK] Inf2Cat:  !INF2CAT!
-echo [OK] signtool: !SIGNTOOL!
+echo [DONE] Inf2Cat:  !INF2CAT!
+echo [DONE] signtool: !SIGNTOOL!
 
 :: ---- Step 1: 复制 DLL 到 INF 目录（inf2cat 要求源文件与 INF 同目录）----
 echo.
@@ -72,7 +72,7 @@ if %errorlevel% neq 0 (
     echo [ERROR] 复制 DLL 失败！
     pause & exit /b 1
 )
-echo [OK] DLL 已复制到 INF 目录
+echo [DONE] DLL 已复制到 INF 目录
 
 :: ---- Step 2: 生成 .cat 目录文件 ----
 echo.
@@ -86,7 +86,7 @@ if not exist "%CAT_FILE%" (
     echo [ERROR] .cat 文件未生成！
     pause & exit /b 1
 )
-echo [OK] .cat 文件生成成功
+echo [DONE] .cat 文件生成成功
 
 :: ---- Step 3: 签名 .cat 文件（EV 证书）----
 echo.
@@ -96,7 +96,7 @@ if %errorlevel% neq 0 (
     echo [ERROR] .cat 签名失败！请确认 EV 证书已插入/可用
     pause & exit /b 1
 )
-echo [OK] .cat 签名成功
+echo [DONE] .cat 签名成功
 
 :: ---- Step 4: 安装驱动包 ----
 echo.
@@ -109,7 +109,7 @@ if %errorlevel% neq 0 (
     echo   eventvwr.msc -^> Windows 日志 -^> 系统 -^> 筛选 SetupAPI
     pause & exit /b 1
 )
-echo [OK] 驱动包安装成功
+echo [DONE] 驱动包安装成功
 
 :: ---- Step 5: 创建虚拟设备节点 ----
 echo.
@@ -126,7 +126,7 @@ if not "!DEVCON!"=="" (
     if !errorlevel! neq 0 (
         echo [WARN] devcon install 返回非零，设备可能已存在（可忽略）
     ) else (
-        echo [OK] 虚拟设备节点已创建
+        echo [DONE] 虚拟设备节点已创建
     )
 ) else (
     echo [WARN] 未找到 devcon.exe，手动创建设备节点...

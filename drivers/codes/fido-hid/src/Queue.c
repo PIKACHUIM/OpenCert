@@ -58,17 +58,22 @@ extern void OpenCertHidTrace(const char* tag, NTSTATUS status);
 #endif
 
 /*
- * HID 设备描述符（9字节，标准 USB HID 描述符格式）
+ * HID 设备描述符（标准格式，与 hidclass.sys 期望的 HID_DESCRIPTOR 结构一致）
+ * 参考：WDK hidport.h HID_DESCRIPTOR
  */
 #pragma pack(push, 1)
+typedef struct _HID_DESCRIPTOR_DESC_LIST {
+    BYTE  bReportType;          /* 报告描述符类型 = 0x22 */
+    USHORT wReportLength;       /* 报告描述符长度 */
+} HID_DESCRIPTOR_DESC_LIST;
+
 typedef struct _HID_DEVICE_DESCRIPTOR {
-    BYTE  bLength;              /* 描述符长度 = 9 */
+    BYTE  bLength;              /* 描述符长度 = sizeof(HID_DEVICE_DESCRIPTOR) */
     BYTE  bDescriptorType;      /* 描述符类型 = 0x21 (HID) */
     USHORT bcdHID;              /* HID 规范版本 = 0x0111 (1.11) */
     BYTE  bCountryCode;         /* 国家代码 = 0 */
     BYTE  bNumDescriptors;      /* 下级描述符数量 = 1 */
-    BYTE  bReportDescriptorType;/* 报告描述符类型 = 0x22 */
-    USHORT wReportDescriptorLength; /* 报告描述符长度 */
+    HID_DESCRIPTOR_DESC_LIST DescriptorList[1]; /* 报告描述符列表 */
 } HID_DEVICE_DESCRIPTOR_T;
 
 typedef struct _HID_DEVICE_ATTRIBUTES {
@@ -106,8 +111,10 @@ QueueInitialize(
         &queueConfig,
         WdfIoQueueDispatchSequential
     );
-    queueConfig.EvtIoDeviceControl = EvtIoDeviceControl;
-    queueConfig.EvtIoWrite         = EvtIoWrite;
+    queueConfig.EvtIoDeviceControl         = EvtIoDeviceControl;
+    /* hidclass.sys 通过 IRP_MJ_INTERNAL_DEVICE_CONTROL 发送 HID minidriver IOCTL */
+    queueConfig.EvtIoInternalDeviceControl = EvtIoDeviceControl;
+    queueConfig.EvtIoWrite                 = EvtIoWrite;
 
     status = WdfIoQueueCreate(
         Device,
@@ -610,13 +617,13 @@ EvtIoDeviceControl(
             CompleteRequest(Request, status, 0);
             break;
         }
-        desc.bLength                  = sizeof(desc);
-        desc.bDescriptorType          = 0x21; /* HID */
-        desc.bcdHID                   = 0x0111;
-        desc.bCountryCode             = 0;
-        desc.bNumDescriptors          = 1;
-        desc.bReportDescriptorType    = 0x22; /* Report */
-        desc.wReportDescriptorLength  = HID_REPORT_DESCRIPTOR_LEN;
+        desc.bLength                              = sizeof(desc);
+        desc.bDescriptorType                      = 0x21; /* HID */
+        desc.bcdHID                               = 0x0111;
+        desc.bCountryCode                         = 0;
+        desc.bNumDescriptors                      = 1;
+        desc.DescriptorList[0].bReportType        = 0x22; /* Report */
+        desc.DescriptorList[0].wReportLength      = HID_REPORT_DESCRIPTOR_LEN;
         RtlCopyMemory(outBuf, &desc, sizeof(desc));
         CompleteRequest(Request, STATUS_SUCCESS, sizeof(desc));
         break;
@@ -709,4 +716,23 @@ EvtIoRead(
     WdfRequestMarkCancelable(Request, NULL);
     /* 不完成请求，让它挂起 */
     (void)Request;
+}
+
+/* ================================================================
+ * EvtIoInternalDeviceControl - 内部 IOCTL 分发
+ *
+ * hidclass.sys 通过 IRP_MJ_INTERNAL_DEVICE_CONTROL 发送 HID minidriver IOCTL，
+ * UMDF 框架将其路由到此回调。直接转发给 EvtIoDeviceControl 处理。
+ * ================================================================ */
+VOID
+EvtIoInternalDeviceControl(
+    _In_ WDFQUEUE   Queue,
+    _In_ WDFREQUEST Request,
+    _In_ size_t     OutputBufferLength,
+    _In_ size_t     InputBufferLength,
+    _In_ ULONG      IoControlCode
+)
+{
+    /* 内部 IOCTL 与外部 IOCTL 使用相同的处理逻辑 */
+    EvtIoDeviceControl(Queue, Request, OutputBufferLength, InputBufferLength, IoControlCode);
 }

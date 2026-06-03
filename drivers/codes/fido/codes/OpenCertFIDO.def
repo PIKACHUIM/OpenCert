@@ -1,3 +1,2 @@
-LIBRARY "OpenCertFIDO"
 EXPORTS
     FidoTransmit

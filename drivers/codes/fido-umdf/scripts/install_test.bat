@@ -15,8 +15,8 @@ set "DRIVER_DIR=%SCRIPT_DIR%.."
 set "DRIVERS_ROOT=%SCRIPT_DIR%..\..\.."
 set "BUILD_DIR=%DRIVERS_ROOT%build\fido-driver\x64\Release"
 set "INF_DIR=%DRIVER_DIR%\inf"
-set "INF_FILE=%INF_DIR%\OpenCertFIDODriver.inf"
-set "DLL_FILE=%BUILD_DIR%\OpenCertFIDODriver.dll"
+set "INF_FILE=%INF_DIR%\FidoMdfDriver.inf"
+set "DLL_FILE=%BUILD_DIR%\FidoMdfDriver.dll"
 
 echo.
 echo ============================================================
@@ -40,7 +40,7 @@ if %errorlevel% neq 0 (
     echo.
     pause & exit /b 1
 )
-echo [OK] 测试签名模式已开启
+echo [DONE] 测试签名模式已开启
 
 :: ---- 查找 WDK 工具 ----
 set "WDK_BIN="
@@ -51,7 +51,7 @@ if "!WDK_BIN!"=="" (
     echo [ERROR] 未找到 WDK 工具（inf2cat.exe），请安装 WDK
     pause & exit /b 1
 )
-echo [OK] WDK 工具: !WDK_BIN!
+echo [DONE] WDK 工具: !WDK_BIN!
 
 :: ---- 检查构建输出 ----
 if not exist "%DLL_FILE%" (
@@ -59,7 +59,7 @@ if not exist "%DLL_FILE%" (
     echo         请先运行 builds.bat 构建驱动
     pause & exit /b 1
 )
-echo [OK] 驱动 DLL: %DLL_FILE%
+echo [DONE] 驱动 DLL: %DLL_FILE%
 
 :: ---- 生成/复用测试证书 ----
 echo.
@@ -94,24 +94,24 @@ if "!CERT_THUMBPRINT!"=="" (
     echo [ERROR] 无法获取测试证书指纹
     pause & exit /b 1
 )
-echo [OK] 证书指纹: !CERT_THUMBPRINT!
+echo [DONE] 证书指纹: !CERT_THUMBPRINT!
 
 :: ---- 复制 DLL 到 UMDF 目录 ----
 echo.
 echo [2/5] 部署 DLL 到 UMDF 目录...
 set "UMDF_DIR=%SystemRoot%\System32\drivers\UMDF"
 if not exist "%UMDF_DIR%" mkdir "%UMDF_DIR%"
-copy /Y "%DLL_FILE%" "%UMDF_DIR%\OpenCertFIDODriver.dll" >nul
+copy /Y "%DLL_FILE%" "%UMDF_DIR%\FidoMdfDriver.dll" >nul
 if %errorlevel% neq 0 (
     echo [ERROR] 复制 DLL 失败！
     pause & exit /b 1
 )
-echo [OK] DLL -> %UMDF_DIR%\OpenCertFIDODriver.dll
+echo [DONE] DLL -> %UMDF_DIR%\FidoMdfDriver.dll
 
 :: ---- 签名 DLL ----
 echo.
 echo [3/5] 签名驱动文件...
-"!WDK_BIN!\signtool.exe" sign /sha1 "!CERT_THUMBPRINT!" /fd sha256 /v "%UMDF_DIR%\OpenCertFIDODriver.dll" 2>&1
+"!WDK_BIN!\signtool.exe" sign /sha1 "!CERT_THUMBPRINT!" /fd sha256 /v "%UMDF_DIR%\FidoMdfDriver.dll" 2>&1
 if %errorlevel% neq 0 (
     echo [WARN] DLL 签名失败，继续尝试...
 )
@@ -123,8 +123,8 @@ echo [4/5] 生成并签名 .cat 目录文件...
 if %errorlevel% neq 0 (
     echo [WARN] inf2cat 失败，尝试直接安装 INF...
 ) else (
-    if exist "%INF_DIR%\OpenCertFIDODriver.cat" (
-        "!WDK_BIN!\signtool.exe" sign /sha1 "!CERT_THUMBPRINT!" /fd sha256 /v "%INF_DIR%\OpenCertFIDODriver.cat" 2>&1
+    if exist "%INF_DIR%\FidoMdfDriver.cat" (
+        "!WDK_BIN!\signtool.exe" sign /sha1 "!CERT_THUMBPRINT!" /fd sha256 /v "%INF_DIR%\FidoMdfDriver.cat" 2>&1
     )
 )
 
@@ -146,7 +146,7 @@ if %errorlevel% neq 0 (
     echo   3. INF 文件格式错误
     pause & exit /b 1
 )
-echo [OK] INF 安装成功
+echo [DONE] INF 安装成功
 
 :: 创建虚拟设备节点
 set "DEVCON="
@@ -161,7 +161,7 @@ if not "!DEVCON!"=="" (
     if !errorlevel! neq 0 (
         echo [WARN] devcon install 返回错误，设备可能已存在
     ) else (
-        echo [OK] 虚拟设备节点已创建
+        echo [DONE] 虚拟设备节点已创建
     )
 ) else (
     echo [WARN] 未找到 devcon.exe

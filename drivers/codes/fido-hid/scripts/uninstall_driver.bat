@@ -31,8 +31,8 @@ if "!DEVCON!"=="" (
 )
 
 if not "!DEVCON!"=="" (
-    "!DEVCON!" remove "ROOT\OPENCERTFIDOHID" >nul 2>&1
-    echo [OK] 设备节点已删除（或不存在）
+    "!DEVCON!" remove "ROOT\FidoHidDriver" >nul 2>&1
+    echo [DONE] 设备节点已删除（或不存在）
 ) else (
     echo [WARN] 未找到 devcon.exe，跳过设备节点删除
     echo        请手动在设备管理器中卸载 "OpenCert FIDO2 Authenticator (HID)"
@@ -42,14 +42,14 @@ if not "!DEVCON!"=="" (
 echo.
 echo [2/2] 从驱动存储删除驱动包...
 
-:: 查找 oem*.inf 中匹配 opencertfidohid 的条目
-for /f "tokens=1" %%I in ('pnputil /enum-drivers 2^>nul ^| findstr /i "opencertfidohid"') do (
+:: 查找 oem*.inf 中匹配 FidoHidDriver 的条目
+for /f "tokens=1" %%I in ('pnputil /enum-drivers 2^>nul ^| findstr /i "FidoHidDriver"') do (
     set "OEM_INF=%%I"
 )
 
 if defined OEM_INF (
     pnputil /delete-driver "!OEM_INF!" /uninstall /force
-    echo [OK] 驱动包 !OEM_INF! 已删除
+    echo [DONE] 驱动包 !OEM_INF! 已删除
 ) else (
     echo [INFO] 未找到已安装的 HID 驱动包，可能已卸载
 )

@@ -9,7 +9,7 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OpenCertCSP", "codes\csp\Op
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OpenCertFIDO", "codes\fido\OpenCertFIDO.vcxproj", "{C3D4E5F6-3456-789A-BCDE-F01234567890}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OpenCertFIDODriver", "codes\fido-umdf\OpenCertFIDODriver.vcxproj", "{A1B2C3D4-5678-90AB-CDEF-012345678901}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "FidoMdfDriver", "codes\fido-umdf\FidoMdfDriver.vcxproj", "{A1B2C3D4-5678-90AB-CDEF-012345678901}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

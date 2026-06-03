@@ -19,15 +19,15 @@ if (-not $isAdmin) {
 if ($InfFile -eq "") {
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     # 优先使用 build\ 目录（DLL 和 INF 在同一目录，CopyFiles 才能找到 DLL）
-    $buildInf = Join-Path $scriptDir "..\..\..\build\OpenCertFIDODriver.inf"
+    $buildInf = Join-Path $scriptDir "..\..\..\build\FidoMdfDriver.inf"
     $buildInf = [System.IO.Path]::GetFullPath($buildInf)
     if (Test-Path $buildInf) {
         $InfFile = $buildInf
     } else {
         # 回退到 inf\ 目录（仅用于调试，CopyFiles 会失败）
-        $InfFile = Join-Path $scriptDir "..\inf\OpenCertFIDODriver.inf"
+        $InfFile = Join-Path $scriptDir "..\inf\FidoMdfDriver.inf"
         $InfFile = [System.IO.Path]::GetFullPath($InfFile)
-        Write-Host "[WARN] build\OpenCertFIDODriver.inf not found, using source inf (DLL copy may fail)" -ForegroundColor Yellow
+        Write-Host "[WARN] build\FidoMdfDriver.inf not found, using source inf (DLL copy may fail)" -ForegroundColor Yellow
     }
 }
 
@@ -118,7 +118,7 @@ if ($devInfoSet -eq [DevNodeHelper]::INVALID_HANDLE) {
     Write-Host "[ERROR] SetupDiCreateDeviceInfoList failed, error: $err" -ForegroundColor Red
     exit 1
 }
-Write-Host "[OK] Device info set created"
+Write-Host "[DONE] Device info set created"
 
 try {
     # Step 2: Create device node
@@ -158,7 +158,7 @@ try {
             $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
             Write-Host "[WARN] SetDeviceRegistryProperty failed, error: $err" -ForegroundColor Yellow
         } else {
-            Write-Host "[OK] HardwareId set: $HardwareId"
+            Write-Host "[DONE] HardwareId set: $HardwareId"
         }
 
         # Register device with PnP manager
@@ -170,7 +170,7 @@ try {
             $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
             Write-Host "[WARN] SetupDiCallClassInstaller failed, error: $err" -ForegroundColor Yellow
         } else {
-            Write-Host "[OK] Device registered with PnP manager"
+            Write-Host "[DONE] Device registered with PnP manager"
         }
     }
 
@@ -194,7 +194,7 @@ try {
         Write-Host "  0xE0000003 = No matching driver found in INF"
         Write-Host "  0x00000005 = Access denied (need Administrator)"
     } else {
-        Write-Host "[OK] Driver installed to device node" -ForegroundColor Green
+        Write-Host "[DONE] Driver installed to device node" -ForegroundColor Green
         if ($reboot) {
             Write-Host "[INFO] Reboot required to complete installation" -ForegroundColor Yellow
         }

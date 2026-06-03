@@ -15,7 +15,7 @@ chcp 65001 >nul 2>&1
 ::   - 管理员权限运行
 ::   - WDK 已安装（提供 inf2cat.exe、signtool.exe）
 ::   - EV 代码签名证书已安装到证书存储
-::   - 已构建 OpenCertFIDODriver.dll
+::   - 已构建 FidoMdfDriver.dll
 ::
 :: 用法：
 ::   install_driver.bat [证书指纹]
@@ -28,8 +28,8 @@ set "DRIVER_DIR=%SCRIPT_DIR%.."
 set "DRIVERS_ROOT=%SCRIPT_DIR%..\..\..\"
 set "BUILD_DIR=%DRIVERS_ROOT%build\fido-driver"
 set "INF_DIR=%DRIVER_DIR%\inf"
-set "INF_FILE=%INF_DIR%\OpenCertFIDODriver.inf"
-set "DLL_FILE=%BUILD_DIR%\x64\Release\OpenCertFIDODriver.dll"
+set "INF_FILE=%INF_DIR%\FidoMdfDriver.inf"
+set "DLL_FILE=%BUILD_DIR%\x64\Release\FidoMdfDriver.dll"
 set "CERT_THUMBPRINT=%~1"
 
 echo.
@@ -45,7 +45,7 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-echo [OK] 管理员权限确认
+echo [DONE] 管理员权限确认
 
 :: ---- 查找 WDK 工具 ----
 set "WDK_BIN="
@@ -60,7 +60,7 @@ if "!WDK_BIN!"=="" (
     echo        如需签名，请手动运行 inf2cat.exe 和 signtool.exe
     goto :install_driver
 )
-echo [OK] WDK 工具目录: !WDK_BIN!
+echo [DONE] WDK 工具目录: !WDK_BIN!
 
 :: ---- 检查构建输出 ----
 if not exist "%DLL_FILE%" (
@@ -69,7 +69,7 @@ if not exist "%DLL_FILE%" (
     pause
     exit /b 1
 )
-echo [OK] 驱动 DLL: %DLL_FILE%
+echo [DONE] 驱动 DLL: %DLL_FILE%
 
 :: ---- 生成 .cat 目录文件 ----
 echo.
@@ -78,7 +78,7 @@ echo [1/4] 生成 .cat 目录文件...
 if %errorlevel% neq 0 (
     echo [WARN] inf2cat.exe 失败，继续尝试安装（测试模式可跳过签名）
 ) else (
-    echo [OK] .cat 文件生成成功
+    echo [DONE] .cat 文件生成成功
 )
 
 :: ---- 签名驱动文件 ----
@@ -102,21 +102,21 @@ if not "!CERT_THUMBPRINT!"=="" (
     )
 
     :: 签名 .cat 文件
-    if exist "%INF_DIR%\OpenCertFIDODriver.cat" (
+    if exist "%INF_DIR%\FidoMdfDriver.cat" (
         "!WDK_BIN!\signtool.exe" sign ^
             /sha1 "!CERT_THUMBPRINT!" ^
             /fd sha256 ^
             /tr http://timestamp.digicert.com ^
             /td sha256 ^
             /v ^
-            "%INF_DIR%\OpenCertFIDODriver.cat"
+            "%INF_DIR%\FidoMdfDriver.cat"
         if %errorlevel% neq 0 (
             echo [ERROR] .cat 签名失败！
             pause
             exit /b 1
         )
     )
-    echo [OK] 驱动文件签名完成
+    echo [DONE] 驱动文件签名完成
 ) else (
     echo [2/4] 未提供证书指纹，跳过签名步骤
     echo       注意：未签名驱动只能在测试模式下安装
@@ -130,13 +130,13 @@ echo [3/4] 部署驱动文件...
 set "UMDF_DIR=%SystemRoot%\System32\drivers\UMDF"
 if not exist "%UMDF_DIR%" mkdir "%UMDF_DIR%"
 
-copy /Y "%DLL_FILE%" "%UMDF_DIR%\OpenCertFIDODriver.dll" >nul
+copy /Y "%DLL_FILE%" "%UMDF_DIR%\FidoMdfDriver.dll" >nul
 if %errorlevel% neq 0 (
     echo [ERROR] 复制 DLL 到 %UMDF_DIR% 失败！
     pause
     exit /b 1
 )
-echo [OK] DLL 已部署到 %UMDF_DIR%\OpenCertFIDODriver.dll
+echo [DONE] DLL 已部署到 %UMDF_DIR%\FidoMdfDriver.dll
 
 :: ---- 安装 INF ----
 echo.
@@ -151,7 +151,7 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-echo [OK] INF 安装成功
+echo [DONE] INF 安装成功
 
 :: ---- 创建虚拟设备节点 ----
 echo.
@@ -171,7 +171,7 @@ if not "!DEVCON!"=="" (
         echo [WARN] devcon install 失败，尝试使用 pnputil...
         pnputil /scan-devices
     ) else (
-        echo [OK] 虚拟设备节点创建成功
+        echo [DONE] 虚拟设备节点创建成功
     )
 ) else (
     echo [WARN] 未找到 devcon.exe，使用 pnputil 扫描设备...
@@ -192,7 +192,7 @@ pnputil /enum-drivers | findstr /i "opencert"
 if %errorlevel% neq 0 (
     echo [WARN] 驱动存储中未找到 OpenCert 驱动
 ) else (
-    echo [OK] 驱动已在驱动存储中
+    echo [DONE] 驱动已在驱动存储中
 )
 
 echo.

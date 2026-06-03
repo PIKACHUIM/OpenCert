@@ -11,9 +11,9 @@ if %errorlevel% neq 0 (
 )
 
 set "SCRIPT_DIR=%~dp0"
-set "BUILD_DIR=%SCRIPT_DIR%..\..\..\build\OpenCertFIDOHidDriver"
-set "INF_FILE=%BUILD_DIR%\OpenCertFIDOHidDriver.inf"
-set "DLL_FILE=%BUILD_DIR%\OpenCertFIDOHidDriver.dll"
+set "BUILD_DIR=%SCRIPT_DIR%..\..\..\build\FidoHidDriver"
+set "INF_FILE=%BUILD_DIR%\FidoHidDriver.inf"
+set "DLL_FILE=%BUILD_DIR%\FidoHidDriver.dll"
 
 echo.
 echo ============================================================
@@ -53,18 +53,18 @@ if "!DEVCON!"=="" (
     goto :install_driver
 )
 
-"!DEVCON!" find "ROOT\OPENCERTFIDOHID" >nul 2>&1
+"!DEVCON!" find "ROOT\FidoHidDriver" >nul 2>&1
 if !errorlevel! equ 0 (
     echo [INFO] 设备节点已存在，跳过创建
 ) else (
     echo [INFO] 创建设备节点...
-    "!DEVCON!" install "!INF_FILE!" "ROOT\OPENCERTFIDOHID"
+    "!DEVCON!" install "!INF_FILE!" "ROOT\FidoHidDriver"
     if !errorlevel! neq 0 (
         echo [ERROR] 设备节点创建失败
         pause
         exit /b 1
     )
-    echo [OK] 设备节点已创建
+    echo [DONE] 设备节点已创建
 )
 
 :install_driver
@@ -75,23 +75,23 @@ pnputil /add-driver "!INF_FILE!" /install
 if !errorlevel! neq 0 (
     echo [WARN] pnputil 返回非零，可能已安装或需要重启
 )
-echo [OK] 驱动包已添加
+echo [DONE] 驱动包已添加
 
 :: Step 3: Update device driver
 echo.
 echo [3/3] 更新设备驱动...
 if not "!DEVCON!"=="" (
-    "!DEVCON!" update "!INF_FILE!" "ROOT\OPENCERTFIDOHID"
+    "!DEVCON!" update "!INF_FILE!" "ROOT\FidoHidDriver"
     if !errorlevel! neq 0 (
         echo [WARN] devcon update 失败，尝试 pnputil 强制更新...
         pnputil /add-driver "!INF_FILE!" /install /force
         if !errorlevel! neq 0 (
             echo [WARN] 强制更新失败，请重启后重试
         ) else (
-            echo [OK] 驱动已强制更新
+            echo [DONE] 驱动已强制更新
         )
     ) else (
-        echo [OK] 设备驱动已更新
+        echo [DONE] 设备驱动已更新
     )
 ) else (
     echo [INFO] 无 devcon，驱动将在设备枚举时自动加载

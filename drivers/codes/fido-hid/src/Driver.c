@@ -22,12 +22,12 @@ static void DbgTrace(const char* tag, NTSTATUS status)
 
     GetLocalTime(&st);
     StringCchPrintfA(buf, sizeof(buf),
-        "[%02d:%02d:%02d.%03d] [OPENCERTFIDOHID] %s status=0x%08X\r\n",
+        "[%02d:%02d:%02d.%03d] [FidoHidDriver] %s status=0x%08X\r\n",
         st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
         tag, (unsigned)status);
     OutputDebugStringA(buf);
 
-    h = CreateFileA("C:\\ProgramData\\opencertfidohid_trace.log",
+    h = CreateFileA("C:\\ProgramData\\FidoHidDriver_trace.log",
         FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h != INVALID_HANDLE_VALUE) {

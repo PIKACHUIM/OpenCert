@@ -216,7 +216,7 @@ HKLM\SOFTWARE\Microsoft\Cryptography\Calais\Readers\OpenCert FIDO2 Reader 0
 echo [x64] Building FIDO...
 cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
     /Icodes\csp\codes codes\fido\codes\opencert_fido.c codes\csp\codes\ipc_client.c ^
-    /Fe"build\OpenCertFIDO_x64.dll" ^
+    /Fe"build\OpenFIDOLib_x64.dll" ^
     /link /DEF:codes\fido\codes\OpenCertFIDO.def winscard.lib kernel32.lib advapi32.lib /NOLOGO /DLL /MACHINE:X64
 ```
 
@@ -225,7 +225,7 @@ cl.exe /nologo /O2 /W3 /LD /utf-8 /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
 build\
   OpenCertKSP_x64.dll   OpenCertKSP_x86.dll
   OpenCertCSP_x64.dll   OpenCertCSP_x86.dll
-  OpenCertFIDO_x64.dll  OpenCertFIDO_x86.dll  ← 新增
+  OpenFIDOLib_x64.dll  OpenFIDOLib_x86.dll  ← 新增
 ```
 
 **复用 ipc_client.c**：FIDO DLL 复用 CSP 驱动的 IPC 客户端实现，保持 IPC 通信逻辑一致。

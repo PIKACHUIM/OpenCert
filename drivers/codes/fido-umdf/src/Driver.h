@@ -4,7 +4,7 @@
  * 架构：
  *   浏览器 → Windows WebAuthn API
  *          → Windows CCID 驱动栈（wudfrd.sys）
- *          → 本驱动（OpenCertFIDODriver.dll，UMDF2）
+ *          → 本驱动（FidoMdfDriver.dll，UMDF2）
  *          → Named Pipe IPC
  *          → OpenCert client-card（Go 后端）
  *          → 智能卡 / 本地存储
@@ -52,7 +52,7 @@ extern const GUID GUID_DEVINTERFACE_SMARTCARD_READER;
 #endif
 
 /* ---- 驱动标识 ---- */
-#define DRIVER_NAME         L"OpenCertFIDODriver"
+#define DRIVER_NAME         L"FidoMdfDriver"
 #define DEVICE_NAME         L"\\Device\\OpenCertFIDO"
 #define DEVICE_SYMLINK      L"\\DosDevices\\OpenCertFIDO"
 

@@ -5,12 +5,12 @@
  *   浏览器 → Windows WebAuthn API
  *          → Windows HID 驱动栈（hidclass.sys）
  *          → mshidumdf.sys（HID minidriver 适配层）
- *          → 本驱动（OpenCertFIDOHidDriver.dll，UMDF2）
+ *          → 本驱动（FidoHidDriver.dll，UMDF2）
  *          → Named Pipe IPC
  *          → OpenCert client-card（Go 后端）
  *          → 智能卡 / 本地存储
  *
- * 设备节点：ROOT\OPENCERTFIDOHID\0000
+ * 设备节点：ROOT\FidoHidDriver\0000
  * 设备类：HIDClass（{745A17A0-74D3-11D0-B6FE-00A0C90F57DA}）
  * HID Usage Page：0xF1D0（FIDO Alliance）
  * HID Usage：0x0001（FIDO Authenticator）
@@ -31,11 +31,11 @@
 #include <stdio.h>
 
 /* ---- 驱动标识 ---- */
-#define DRIVER_NAME         L"OpenCertFIDOHidDriver"
-#define DEVICE_NAME         L"\\Device\\OpenCertFIDOHid"
+#define DRIVER_NAME         L"FidoHidDriver"
+#define DEVICE_NAME         L"\\Device\\FidoHidDriver"
 
 /* 设备硬件 ID，与 INF 保持一致 */
-#define HARDWARE_ID         L"ROOT\\OPENCERTFIDOHID"
+#define HARDWARE_ID         L"ROOT\\FidoHidDriver"
 
 /* ---- HID FIDO2 常量 ---- */
 
@@ -192,6 +192,9 @@ NTSTATUS QueueInitialize(WDFDEVICE Device);
 EVT_WDF_IO_QUEUE_IO_READ        EvtIoRead;
 EVT_WDF_IO_QUEUE_IO_WRITE       EvtIoWrite;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl;
+/* hidclass.sys 通过 IRP_MJ_INTERNAL_DEVICE_CONTROL 发送 HID minidriver IOCTL，
+ * UMDF 将其路由到 EvtIoInternalDeviceControl，复用 EvtIoDeviceControl 实现 */
+EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL EvtIoInternalDeviceControl;
 
 /* Ipc.c */
 NTSTATUS IpcCall(

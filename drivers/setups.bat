@@ -27,12 +27,12 @@ echo.
 echo [1/3] Deploying KSP...
 if exist "%BUILD_DIR%\OpenCertKSP_x64.dll" (
     copy /Y "%BUILD_DIR%\OpenCertKSP_x64.dll" "%SystemRoot%\System32\%KSP_DLL%" >nul 2>&1
-    echo       [OK] System32\%KSP_DLL% (x64)
+    echo       [DONE] System32\%KSP_DLL% (x64)
 ) else (echo       [SKIP] OpenCertKSP_x64.dll not found in build\)
 
 if exist "%BUILD_DIR%\OpenCertKSP_x86.dll" (
     copy /Y "%BUILD_DIR%\OpenCertKSP_x86.dll" "%SystemRoot%\SysWOW64\%KSP_DLL%" >nul 2>&1
-    echo       [OK] SysWOW64\%KSP_DLL% (x86)
+    echo       [DONE] SysWOW64\%KSP_DLL% (x86)
 ) else (echo       [WARN] OpenCertKSP_x86.dll not found - 32-bit apps won't work)
 
 :: Step 2: CSP
@@ -40,12 +40,12 @@ echo.
 echo [2/3] Deploying CSP...
 if exist "%BUILD_DIR%\OpenCertCSP_x64.dll" (
     copy /Y "%BUILD_DIR%\OpenCertCSP_x64.dll" "%SystemRoot%\System32\OpenCertCSP.dll" >nul 2>&1
-    echo       [OK] System32\OpenCertCSP.dll (x64)
+    echo       [DONE] System32\OpenCertCSP.dll (x64)
 ) else (echo       [SKIP] OpenCertCSP_x64.dll not found)
 
 if exist "%BUILD_DIR%\OpenCertCSP_x86.dll" (
     copy /Y "%BUILD_DIR%\OpenCertCSP_x86.dll" "%SystemRoot%\SysWOW64\OpenCertCSP.dll" >nul 2>&1
-    echo       [OK] SysWOW64\OpenCertCSP.dll (x86)
+    echo       [DONE] SysWOW64\OpenCertCSP.dll (x86)
 ) else (echo       [WARN] OpenCertCSP_x86.dll not found)
 
 :: Step 3: 注册 KSP
@@ -55,11 +55,11 @@ set "REG_KSP=HKLM\SYSTEM\CurrentControlSet\Control\Cryptography\Providers\%KSP_N
 reg add "%REG_KSP%" /f >nul 2>&1
 reg add "%REG_KSP%\UM" /f >nul 2>&1
 reg add "%REG_KSP%\UM" /v "Image" /t REG_SZ /d "%KSP_DLL%" /f >nul 2>&1
-echo       [OK] KSP registered: %KSP_NAME%
+echo       [DONE] KSP registered: %KSP_NAME%
 
 :: 验证
 echo.
-powershell.exe -NoProfile -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class V { [DllImport(\"ncrypt.dll\", CharSet=CharSet.Unicode)] public static extern int NCryptOpenStorageProvider(out IntPtr p, string n, int f); [DllImport(\"ncrypt.dll\")] public static extern int NCryptFreeObject(IntPtr h); }'; $h=[IntPtr]::Zero; $r=[V]::NCryptOpenStorageProvider([ref]$h,'OpenCert Key Storage Provider',0); if($r -eq 0){[V]::NCryptFreeObject($h)|Out-Null; Write-Host '  [OK] KSP verified'}else{Write-Host \"  [WARN] KSP verify failed: 0x$($r.ToString('X8'))\"}"
+powershell.exe -NoProfile -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class V { [DllImport(\"ncrypt.dll\", CharSet=CharSet.Unicode)] public static extern int NCryptOpenStorageProvider(out IntPtr p, string n, int f); [DllImport(\"ncrypt.dll\")] public static extern int NCryptFreeObject(IntPtr h); }'; $h=[IntPtr]::Zero; $r=[V]::NCryptOpenStorageProvider([ref]$h,'OpenCert Key Storage Provider',0); if($r -eq 0){[V]::NCryptFreeObject($h)|Out-Null; Write-Host '  [DONE] KSP verified'}else{Write-Host \"  [WARN] KSP verify failed: 0x$($r.ToString('X8'))\"}"
 
 echo.
 echo ============================================================
