@@ -3,9 +3,9 @@
 // 设计要点：
 //   - 仅依赖标准库，不引入 wechatpay-apiv3 等三方 SDK
 //   - 协议：微信支付 V3（HTTP Authorization 头签名 + 平台证书验签）
-//   - 接口：POST /v3/pay/transactions/native (Native 扫码)；
-//          GET  /v3/pay/transactions/out-trade-no/{out_trade_no}（查询）；
-//          POST /v3/refund/domestic/refunds（退款）
+//   - 接口：POST /v3/pay/transactions/natives (Native 扫码)；
+//     GET  /v3/pay/transactions/out-trade-no/{out_trade_no}（查询）；
+//     POST /v3/refund/domestic/refunds（退款）
 //   - 回调：JSON Body + AEAD-AES-256-GCM 解密 resource.ciphertext
 //
 // 配置项（PaymentPlugin.Config 中的 JSON 字段）：
@@ -43,14 +43,14 @@ import (
 
 // WeChatProvider 实现 PaymentProvider。
 type WeChatProvider struct {
-	MchID          string
-	AppID          string
-	SerialNo       string
-	PrivateKey     *rsa.PrivateKey
-	APIV3Key       []byte
-	PlatformCert   *x509.Certificate
-	Gateway        string
-	httpClient     *http.Client
+	MchID        string
+	AppID        string
+	SerialNo     string
+	PrivateKey   *rsa.PrivateKey
+	APIV3Key     []byte
+	PlatformCert *x509.Certificate
+	Gateway      string
+	httpClient   *http.Client
 }
 
 // WeChatConfig 是 PaymentPlugin.Config 反序列化结构。
@@ -134,7 +134,7 @@ func (p *WeChatProvider) CreateOrder(ctx context.Context, req CreateOrderReq) (*
 	bodyBytes, _ := json.Marshal(body)
 
 	respBody, err := p.doRequest(ctx, http.MethodPost,
-		"/v3/pay/transactions/native", bodyBytes)
+		"/v3/pay/transactions/natives", bodyBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -208,10 +208,10 @@ func (p *WeChatProvider) VerifyCallback(ctx context.Context, body []byte, header
 	var notify struct {
 		EventType string `json:"event_type"`
 		Resource  struct {
-			AlgorithmStr string `json:"algorithm"`
-			Ciphertext   string `json:"ciphertext"`
+			AlgorithmStr   string `json:"algorithm"`
+			Ciphertext     string `json:"ciphertext"`
 			AssociatedData string `json:"associated_data"`
-			Nonce        string `json:"nonce"`
+			Nonce          string `json:"nonce"`
 		} `json:"resource"`
 	}
 	if err := json.Unmarshal(body, &notify); err != nil {
