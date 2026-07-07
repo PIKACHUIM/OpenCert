@@ -19,7 +19,8 @@ type CSRRequest struct {
 	Country      string            `json:"country"`
 	Province     string            `json:"province"`
 	Locality     string            `json:"locality"`
-	KeyType      string            `json:"key_type"` // rsa2048/rsa4096/ec256/ec384/ec521
+	KeyType      string            `json:"key_type"`    // rsa2048/rsa4096/ec256/ec384/ec521
+	DigestType   string            `json:"digest_type"` // sha256/sha384/sha512；空值则按密钥类型选默认值
 	DNSNames     []string          `json:"dns_names"`
 	IPAddresses  []string          `json:"ip_addresses"`
 	Emails       []string          `json:"emails"`
@@ -68,9 +69,10 @@ func GenerateCSR(req *CSRRequest) (*CSRResult, error) {
 
 	// 构建 CSR 模板
 	template := &x509.CertificateRequest{
-		Subject:        subject,
-		DNSNames:       req.DNSNames,
-		EmailAddresses: req.Emails,
+		Subject:            subject,
+		SignatureAlgorithm: resolveSignatureAlgorithm(req.KeyType, req.DigestType),
+		DNSNames:           req.DNSNames,
+		EmailAddresses:     req.Emails,
 	}
 
 	// 解析 IP 地址
@@ -114,6 +116,56 @@ func GenerateCSR(req *CSRRequest) (*CSRResult, error) {
 		KeyPEM: keyPEM,
 		KeyDER: keyDER,
 	}, nil
+}
+
+// resolveSignatureAlgorithm 根据密钥类型和摘要类型返回签名算法。
+// digestType 可为 "sha1"/"sha256"/"sha384"/"sha512"，空值则按密钥类型取默认值（sha256）。
+// Ed25519 忽略 digestType，始终返回 x509.PureEd25519。
+func resolveSignatureAlgorithm(keyType, digestType string) x509.SignatureAlgorithm {
+	switch keyType {
+	case "rsa2048", "rsa4096", "rsa8192":
+		switch digestType {
+		case "sha1":
+			return x509.SHA1WithRSA
+		case "sha384":
+			return x509.SHA384WithRSA
+		case "sha512":
+			return x509.SHA512WithRSA
+		default: // sha256 及空值
+			return x509.SHA256WithRSA
+		}
+	case "ec256":
+		switch digestType {
+		case "sha384":
+			return x509.ECDSAWithSHA384
+		case "sha512":
+			return x509.ECDSAWithSHA512
+		default:
+			return x509.ECDSAWithSHA256
+		}
+	case "ec384":
+		switch digestType {
+		case "sha256":
+			return x509.ECDSAWithSHA256
+		case "sha512":
+			return x509.ECDSAWithSHA512
+		default:
+			return x509.ECDSAWithSHA384
+		}
+	case "ec521":
+		switch digestType {
+		case "sha256":
+			return x509.ECDSAWithSHA256
+		case "sha384":
+			return x509.ECDSAWithSHA384
+		default:
+			return x509.ECDSAWithSHA512
+		}
+	case "ed25519":
+		return x509.PureEd25519
+	default:
+		return x509.SHA256WithRSA
+	}
 }
 
 // extraNameOIDs 是额外 DN 字段名到 OID 的映射表（对齐 dn.txt 25 个标准字段）。

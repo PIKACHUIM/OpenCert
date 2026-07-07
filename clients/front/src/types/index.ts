@@ -161,6 +161,7 @@ export interface CSRRecord {
   locality?: string;
   email?: string;
   key_type: string;
+  digest_type?: string;  // sha256 / sha384 / sha512；空值表示使用默认值
   key_storage: KeyStorage;
   card_uuid?: string;
   san_dns?: string;
@@ -185,6 +186,7 @@ export interface CreateCSRRequest {
   locality?: string;
   email?: string;
   key_type: string;
+  digest_type?: string;  // sha256 / sha384 / sha512；空值则按密钥类型取默认值
   key_storage: KeyStorage;
   card_uuid?: string;
   card_password?: string;

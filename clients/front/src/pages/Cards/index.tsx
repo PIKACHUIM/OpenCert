@@ -21,7 +21,7 @@ const { Title, Text } = Typography;
 
 // 密钥类型选项
 const KEY_TYPE_OPTIONS = [
-  { value: 'ec256', label: 'EC P-256（推荐）' },
+  { value: 'ec256', label: 'EC P-256' },
   { value: 'ec384', label: 'EC P-384' },
   { value: 'ec521', label: 'EC P-521' },
   { value: 'rsa2048', label: 'RSA 2048' },

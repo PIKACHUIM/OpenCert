@@ -236,6 +236,7 @@ type CSRRecord struct {
 	Locality      string      `json:"locality"`
 	Email         string      `json:"email"`
 	KeyType       string      `json:"key_type"`
+	DigestType    string      `json:"digest_type"`   // sha256/sha384/sha512；空值表示使用默认值
 	KeyStorage    KeyStorage  `json:"key_storage"`
 	CardUUID      string      `json:"card_uuid"` // KeyStorage=smartcard 时有效
 	SANDN         string      `json:"san_dns"`   // 逗号分隔

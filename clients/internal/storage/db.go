@@ -156,6 +156,8 @@ func (db *DB) migrate() error {
 	_, _ = db.conn.Exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`)
 	_, _ = db.conn.Exec(`ALTER TABLE users ADD COLUMN username TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.conn.Exec(`ALTER TABLE pki_csrs ADD COLUMN extra_subject TEXT NOT NULL DEFAULT '{}'`)
+	// CSR 摘要算法字段迁移
+	_, _ = db.conn.Exec(`ALTER TABLE pki_csrs ADD COLUMN digest_type TEXT NOT NULL DEFAULT ''`)
 	// 智能卡安全等级迁移：为现有卡片添加新字段
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN security_level TEXT NOT NULL DEFAULT 'low'`)
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_cert_key_enc TEXT`)

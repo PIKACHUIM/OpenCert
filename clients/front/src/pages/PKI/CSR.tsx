@@ -39,15 +39,41 @@ const EXTRA_DN_FIELDS = [
 ];
 
 const KEY_TYPE_OPTIONS = [
-  { label: 'RSA 2048', value: 'rsa2048' },
-  { label: 'RSA 4096', value: 'rsa4096' },
-  { label: 'RSA 8192', value: 'rsa8192' },
-  { label: 'EC P-256（推荐）', value: 'ec256' },
-  { label: 'EC P-384', value: 'ec384' },
-  { label: 'EC P-521', value: 'ec521' },
-  { label: 'Ed25519', value: 'ed25519' },
-  { label: 'SM2', value: 'sm2' },
+  { label: 'RSA2048（推荐算法）', value: 'rsa2048' },
+  { label: 'RSA4096（更加安全）', value: 'rsa4096' },
+  { label: 'RSA8192（更加安全）', value: 'rsa8192' },
+  { label: 'ECP-256（推荐算法）', value: 'ec256' },
+  { label: 'ECP-384（更加安全）', value: 'ec384' },
+  { label: 'ECP-521（更加安全）', value: 'ec521' },
+  { label: 'ED25519（特殊算法）', value: 'ed25519' },
+  { label: 'SM2+SM3（国密算法）', value: 'sm2' },
 ];
+
+/**
+ * 根据密钥类型返回可选摘要算法列表。Ed25519/SM2 无需选择，返回 null。
+ * highSecurity=true 时过滤掉 SHA-1（TPM 高安全等级不支持）。
+ */
+function getDigestOptions(keyType: string, highSecurity = false) {
+  if (keyType === 'ed25519' || keyType === 'sm2') return null;
+  const opts = [
+    { label: 'SHA-160（过时算法）', value: 'sha1' },
+    { label: 'SHA-256（推荐算法）', value: 'sha256' },
+    { label: 'SHA-384（更加安全）', value: 'sha384' },
+    { label: 'SHA-512（更加安全）', value: 'sha512' },
+  ];
+  return highSecurity ? opts.filter((o) => o.value !== 'sha1') : opts;
+}
+
+/** 根据密钥类型推断默认摘要算法（ed25519/sm2 返回其固定绑定的算法值，仅用于展示） */
+function defaultDigestForKey(keyType: string): string {
+  switch (keyType) {
+    case 'ec384':   return 'sha384';
+    case 'ec521':   return 'sha512';
+    case 'ed25519': return 'sha512'; // Ed25519 内部固定使用 SHA-512（不可更改）
+    case 'sm2':     return 'sm3';    // SM2 国密标准固定使用 SM3（不可更改）
+    default:        return 'sha256';
+  }
+}
 
 const KEY_USAGE_OPTIONS = [
   { label: '数字签名', value: 'digitalSignature' },
@@ -79,6 +105,18 @@ const CSRPage: React.FC = () => {
   const [creating, setCreating] = useState(false);
   const [form] = Form.useForm();
   const [keyStorage, setKeyStorage] = useState<'database' | 'smartcard'>('database');
+  const [selectedKeyType, setSelectedKeyType] = useState<string>('rsa2048');
+  const [selectedCardUUID, setSelectedCardUUID] = useState<string>('');
+
+  // 高安全等级：所选智能卡 security_level === 'high' 时限制可用算法
+  const selectedCard = cards.find((c) => c.uuid === selectedCardUUID);
+  const isHighSecurity = keyStorage === 'smartcard' && selectedCard?.security_level === 'high';
+
+  // 高安全等级下屏蔽 Ed25519 / SM2（TPM 不支持）
+  const effectiveKeyTypeOptions = KEY_TYPE_OPTIONS.map((opt) => ({
+    ...opt,
+    disabled: isHighSecurity && (opt.value === 'ed25519' || opt.value === 'sm2'),
+  }));
 
   const [viewOpen, setViewOpen] = useState(false);
   const [viewRecord, setViewRecord] = useState<CSRRecord | null>(null);
@@ -115,6 +153,8 @@ const CSRPage: React.FC = () => {
       setCreateOpen(false);
       form.resetFields();
       setKeyStorage('database');
+      setSelectedKeyType('rsa2048');
+      setSelectedCardUUID('');
       load();
     } catch (e: any) { if (e.message) message.error(e.message); }
     finally { setCreating(false); }
@@ -280,10 +320,11 @@ const CSRPage: React.FC = () => {
 
       {/* 生成 CSR 弹窗 */}
       <Modal title={<Space><KeyOutlined />生成 CSR</Space>} open={createOpen}
-        onOk={handleCreate} onCancel={() => { setCreateOpen(false); form.resetFields(); setKeyStorage('database'); }}
+        onOk={handleCreate}
+        onCancel={() => { setCreateOpen(false); form.resetFields(); setKeyStorage('database'); setSelectedKeyType('rsa2048'); setSelectedCardUUID(''); }}
         okText="生成" cancelText="取消" confirmLoading={creating} width={700}>
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}
-          initialValues={{ key_type: 'ec256', key_storage: 'database' }}>
+          initialValues={{ key_type: 'rsa2048', key_storage: 'database', digest_type: 'sha256' }}>
           <Divider plain style={{ fontSize: 13 }}>主体信息</Divider>
           <Row gutter={16}>
             <Col span={12}>
@@ -347,16 +388,51 @@ const CSRPage: React.FC = () => {
 
           <Divider plain style={{ fontSize: 13 }}>密钥参数</Divider>
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={8}>
               <Form.Item name="key_type" label="密钥类型" rules={[{ required: true }]}>
-                <Select options={KEY_TYPE_OPTIONS} />
+                <Select
+                  options={effectiveKeyTypeOptions}
+                  onChange={(v: string) => {
+                    setSelectedKeyType(v);
+                    // 切换密钥类型时，自动重置为该类型的默认摘要算法
+                    form.setFieldValue('digest_type', defaultDigestForKey(v));
+                  }}
+                />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={8}>
+              <Form.Item
+                name="digest_type"
+                label="摘要算法"
+                tooltip={
+                  selectedKeyType === 'ed25519'
+                    ? 'Ed25519 签名算法内部固定使用 SHA-512（调用两次），哈希函数与签名不可分离，无法选择其他摘要'
+                    : selectedKeyType === 'sm2'
+                    ? 'SM2 签名规范（GM/T 0009）要求固定使用 SM3，替换摘要会产生不符合国密标准的签名'
+                    : isHighSecurity
+                    ? '高安全等级智能卡（TPM）仅支持 SHA-256/384/512，不支持 SHA-1'
+                    : 'CSR 签名所用摘要算法，默认 SHA-256'
+                }
+              >
+                {getDigestOptions(selectedKeyType, isHighSecurity) ? (
+                  <Select options={getDigestOptions(selectedKeyType, isHighSecurity)!} />
+                ) : (
+                  <Select
+                    disabled
+                    options={[
+                      selectedKeyType === 'ed25519'
+                        ? { label: 'SHA-512（Ed25519 内置固定）', value: 'sha512' }
+                        : { label: 'SM3（SM2 国密标准固定）', value: 'sm3' },
+                    ]}
+                  />
+                )}
+              </Form.Item>
+            </Col>
+            <Col span={8}>
               <Form.Item name="key_storage" label="密钥存储位置" rules={[{ required: true }]}>
                 <Select onChange={(v) => setKeyStorage(v)} options={[
-                  { label: '存储到数据库（可导出私钥）', value: 'database' },
-                  { label: '片上生成（智能卡，不可导出）', value: 'smartcard' },
+                  { label: '数据库（可被导出）', value: 'database' },
+                  { label: '智能卡（依据策略）', value: 'smartcard' },
                 ]} />
               </Form.Item>
             </Col>
@@ -364,8 +440,30 @@ const CSRPage: React.FC = () => {
           {keyStorage === 'smartcard' && (
             <>
               <Form.Item name="card_uuid" label="目标智能卡" rules={[{ required: true, message: '请选择智能卡' }]}>
-                <Select placeholder="选择智能卡（密钥将在卡上生成）"
-                  options={cards.map((c) => ({ value: c.uuid, label: `${c.card_name} (${c.slot_type})` }))} />
+                <Select
+                  placeholder="选择智能卡（密钥将在卡上生成）"
+                  options={cards.map((c) => ({
+                    value: c.uuid,
+                    label: `${c.card_name} (${c.slot_type})${c.security_level === 'high' ? ' [高安全]' : ''}`,
+                  }))}
+                  onChange={(uuid: string) => {
+                    setSelectedCardUUID(uuid);
+                    const card = cards.find((c) => c.uuid === uuid);
+                    if (card?.security_level === 'high') {
+                      // 高安全等级：不支持 Ed25519/SM2/SHA1，自动重置为兼容值
+                      const currentKeyType = form.getFieldValue('key_type');
+                      if (currentKeyType === 'ed25519' || currentKeyType === 'sm2') {
+                        form.setFieldValue('key_type', 'rsa2048');
+                        setSelectedKeyType('rsa2048');
+                        form.setFieldValue('digest_type', 'sha256');
+                      }
+                      const currentDigest = form.getFieldValue('digest_type');
+                      if (currentDigest === 'sha1') {
+                        form.setFieldValue('digest_type', 'sha256');
+                      }
+                    }
+                  }}
+                />
               </Form.Item>
               <Form.Item name="card_password" label="卡片密码" rules={[{ required: true, message: '请输入卡片密码以解锁主密钥' }]}>
                 <Input.Password placeholder="输入卡片密码（用于加密存储密钥）" />
@@ -454,7 +552,13 @@ const CSRPage: React.FC = () => {
 
             <Divider plain style={{ fontSize: 13, margin: '8px 0 12px' }}>密钥信息</Divider>
             <Row gutter={[16, 8]} style={{ marginBottom: 16 }}>
-              <Col span={12}><Text type="secondary">密钥类型：</Text><Tag color="blue">{viewRecord.key_type}</Tag></Col>
+              <Col span={12}><Text type="secondary">密钥类型：</Text><Tag color="blue">{viewRecord.key_type?.toUpperCase()}</Tag></Col>
+              <Col span={12}><Text type="secondary">摘要算法：</Text>
+                {viewRecord.digest_type
+                  ? <Tag color="cyan">{viewRecord.digest_type.toUpperCase()}</Tag>
+                  : <Tag color="default">{viewRecord.key_type === 'ed25519' ? 'Ed25519（内置）' : viewRecord.key_type === 'sm2' ? 'SM2（内置）' : 'SHA-256（默认）'}</Tag>
+                }
+              </Col>
               <Col span={12}><Text type="secondary">存储位置：</Text>
                 <Tag color={viewRecord.key_storage === 'smartcard' ? 'purple' : 'green'}>
                   {viewRecord.key_storage === 'smartcard' ? '智能卡' : '数据库'}

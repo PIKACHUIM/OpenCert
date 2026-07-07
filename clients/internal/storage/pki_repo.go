@@ -29,11 +29,11 @@ func (r *CSRRepo) Create(ctx context.Context, c *CSRRecord) error {
 	c.CreatedAt = time.Now()
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO pki_csrs (uuid, common_name, organization, org_unit, country, state, locality, email,
-			key_type, key_storage, card_uuid, san_dns, san_ip, san_email, san_uri,
+			key_type, digest_type, key_storage, card_uuid, san_dns, san_ip, san_email, san_uri,
 			key_usage, ext_key_usage, extra_subject, csr_pem, has_private_key, private_key_enc, remark, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.UUID, c.CommonName, c.Organization, c.OrgUnit, c.Country, c.State, c.Locality, c.Email,
-		c.KeyType, string(c.KeyStorage), c.CardUUID, c.SANDN, c.SANIP, c.SANEmail, c.SANURI,
+		c.KeyType, c.DigestType, string(c.KeyStorage), c.CardUUID, c.SANDN, c.SANIP, c.SANEmail, c.SANURI,
 		c.KeyUsage, c.ExtKeyUsage, c.ExtraSubject, c.CSRPEM, boolToInt(c.HasPrivateKey), c.PrivateKeyEnc, c.Remark, c.CreatedAt,
 	)
 	if err != nil {
@@ -48,11 +48,11 @@ func (r *CSRRepo) GetByUUID(ctx context.Context, id string) (*CSRRecord, error) 
 	var hasKey int
 	err := r.db.QueryRowContext(ctx, `
 		SELECT uuid, common_name, organization, org_unit, country, state, locality, email,
-			key_type, key_storage, card_uuid, san_dns, san_ip, san_email, san_uri,
+			key_type, digest_type, key_storage, card_uuid, san_dns, san_ip, san_email, san_uri,
 			key_usage, ext_key_usage, extra_subject, csr_pem, has_private_key, private_key_enc, remark, created_at
 		FROM pki_csrs WHERE uuid=?`, id).
 		Scan(&c.UUID, &c.CommonName, &c.Organization, &c.OrgUnit, &c.Country, &c.State, &c.Locality, &c.Email,
-			&c.KeyType, &c.KeyStorage, &c.CardUUID, &c.SANDN, &c.SANIP, &c.SANEmail, &c.SANURI,
+			&c.KeyType, &c.DigestType, &c.KeyStorage, &c.CardUUID, &c.SANDN, &c.SANIP, &c.SANEmail, &c.SANURI,
 			&c.KeyUsage, &c.ExtKeyUsage, &c.ExtraSubject, &c.CSRPEM, &hasKey, &c.PrivateKeyEnc, &c.Remark, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -80,7 +80,7 @@ func (r *CSRRepo) List(ctx context.Context, page, pageSize int) ([]*CSRRecord, i
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT uuid, common_name, organization, org_unit, country, key_type, key_storage, card_uuid,
+		SELECT uuid, common_name, organization, org_unit, country, key_type, digest_type, key_storage, card_uuid,
 			san_dns, san_ip, san_email, san_uri, key_usage, ext_key_usage, csr_pem, has_private_key, remark, created_at
 		FROM pki_csrs ORDER BY created_at DESC LIMIT ? OFFSET ?`, pageSize, offset)
 	if err != nil {
@@ -93,7 +93,7 @@ func (r *CSRRepo) List(ctx context.Context, page, pageSize int) ([]*CSRRecord, i
 		c := &CSRRecord{}
 		var hasKey int
 		if err := rows.Scan(&c.UUID, &c.CommonName, &c.Organization, &c.OrgUnit, &c.Country,
-			&c.KeyType, &c.KeyStorage, &c.CardUUID,
+			&c.KeyType, &c.DigestType, &c.KeyStorage, &c.CardUUID,
 			&c.SANDN, &c.SANIP, &c.SANEmail, &c.SANURI,
 			&c.KeyUsage, &c.ExtKeyUsage, &c.CSRPEM, &hasKey, &c.Remark, &c.CreatedAt); err != nil {
 			return nil, 0, fmt.Errorf("扫描 CSR 数据失败: %w", err)

@@ -246,6 +246,7 @@ type CreateCSRRequest struct {
 	Locality     string            `json:"locality"`
 	Email        string            `json:"email"`
 	KeyType      string            `json:"key_type"`
+	DigestType   string            `json:"digest_type"`  // sha256/sha384/sha512；空值则按密钥类型取默认值
 	KeyStorage   storage.KeyStorage `json:"key_storage"` // database / smartcard
 	CardUUID     string            `json:"card_uuid"`
 	CardPassword string            `json:"card_password"` // smartcard 模式下需要卡片密码
@@ -279,6 +280,7 @@ func CreateAndSaveCSR(ctx context.Context, repo *storage.CSRRepo, certRepo *stor
 		Province:     req.State,
 		Locality:     req.Locality,
 		KeyType:      req.KeyType,
+		DigestType:   req.DigestType,
 		ExtraSubject: req.ExtraSubject,
 	}
 
@@ -307,6 +309,7 @@ func CreateAndSaveCSR(ctx context.Context, repo *storage.CSRRepo, certRepo *stor
 		Locality:     req.Locality,
 		Email:        req.Email,
 		KeyType:      req.KeyType,
+		DigestType:   req.DigestType,
 		KeyStorage:   req.KeyStorage,
 		CardUUID:     req.CardUUID,
 		SANDN:        req.SANDN,
