@@ -10,15 +10,44 @@ import (
 
 // ---- 证书订单与申请处理器 ----
 
+// createCertOrderRequest 是控制台创建证书订单的请求体。
+//
+// 只接受"选择什么"的字段：金额、状态、订单号、商品快照一律由服务端生成或回填，
+// 避免客户端构造已支付订单或篡改价格。
+type createCertOrderRequest struct {
+	CertApplyTmplUUID  string `json:"cert_apply_tmpl_uuid"`
+	TemplateUUID       string `json:"template_uuid"` // 兼容旧前端字段名
+	IssuanceTmplUUID   string `json:"issuance_tmpl_uuid"`
+	KeyStorageTmplUUID string `json:"key_storage_tmpl_uuid"`
+	ApplicantEmail     string `json:"applicant_email"`
+}
+
 func (s *Server) handleCreateCertOrder(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
-	var order storage.CertOrder
-	if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
+
+	var req createCertOrderRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	order.UserUUID = claims.UserUUID
-	if err := s.workflowSvc.CreateOrder(r.Context(), &order); err != nil {
+
+	applyTmpl := req.CertApplyTmplUUID
+	if applyTmpl == "" {
+		applyTmpl = req.TemplateUUID
+	}
+
+	order := &storage.CertOrder{
+		UserUUID:           claims.UserUUID,
+		CertApplyTmplUUID:  applyTmpl,
+		IssuanceTmplUUID:   req.IssuanceTmplUUID,
+		KeyStorageTmplUUID: req.KeyStorageTmplUUID,
+		ApplicantEmail:     req.ApplicantEmail,
+	}
+	if order.ApplicantEmail == "" {
+		order.ApplicantEmail = s.applicantEmailFromClaims(r)
+	}
+
+	if err := s.workflowSvc.CreateOrder(r.Context(), order); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -33,7 +62,7 @@ func (s *Server) handleListCertOrders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"orders": orders, "total": total})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": orders, "orders": orders, "total": total, "page": page})
 }
 
 func (s *Server) handleGetCertOrder(w http.ResponseWriter, r *http.Request) {
@@ -52,39 +81,72 @@ func (s *Server) handleGetCertOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, order)
 }
 
+// handlePayCertOrder 兼容旧接口：改为真实的余额扣款支付。
+// 历史实现只改状态不扣款，任何登录用户都能"免费支付"，已修复。
 func (s *Server) handlePayCertOrder(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
-	orderUUID := r.PathValue("uuid")
-	if err := s.workflowSvc.PayOrder(r.Context(), orderUUID, claims.UserUUID); err != nil {
+	if err := s.payCertOrderWithBalance(r, claims.UserUUID, r.PathValue("uuid")); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "订单已支付"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "订单已使用余额支付"})
 }
 
+// handleCancelCertOrder 兼容旧接口：仅可取消待支付订单，并归还库存。
 func (s *Server) handleCancelCertOrder(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
-	orderUUID := r.PathValue("uuid")
-	if err := s.workflowSvc.CancelOrder(r.Context(), orderUUID, claims.UserUUID); err != nil {
+	order, err := s.workflowSvc.GetOrder(r.Context(), r.PathValue("uuid"))
+	if err != nil || order.UserUUID != claims.UserUUID {
+		writeError(w, http.StatusNotFound, "订单不存在")
+		return
+	}
+	if order.OrderNo != "" && s.portalSvc != nil {
+		err = s.portalSvc.CancelOrder(r.Context(), order.OrderNo, claims.UserUUID)
+	} else {
+		err = s.workflowSvc.CancelOrder(r.Context(), order.UUID, claims.UserUUID)
+	}
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "订单已取消"})
 }
 
+// handleCreateCertApplication 兼容旧接口：统一走申请向导的校验逻辑。
+// 旧前端提交 subject_info_uuid / extension_info_uuids / order_uuid，这里一并映射。
 func (s *Server) handleCreateCertApplication(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
-	var app storage.CertApplication
-	if err := json.NewDecoder(r.Body).Decode(&app); err != nil {
+	var body struct {
+		submitApplicationRequest
+		OrderUUID string `json:"order_uuid"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	app.UserUUID = claims.UserUUID
-	if err := s.workflowSvc.CreateApplication(r.Context(), &app); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	req := body.submitApplicationRequest
+	if req.OrderNo == "" && body.OrderUUID != "" {
+		order, err := s.workflowSvc.GetOrder(r.Context(), body.OrderUUID)
+		if err != nil || order.UserUUID != claims.UserUUID {
+			writeError(w, http.StatusNotFound, "订单不存在")
+			return
+		}
+		req.OrderNo = order.OrderNo
+		if req.OrderNo == "" {
+			writeError(w, http.StatusBadRequest, "历史订单缺少对外单号，请重新下单")
+			return
+		}
+	}
+	app, autoIssued, issueErr, status, err := s.submitApplication(r, claims, &req)
+	if err != nil {
+		writeError(w, status, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, app)
+	resp := map[string]interface{}{"application": app, "auto_issued": autoIssued}
+	if issueErr != nil {
+		resp["issue_error"] = issueErr.Error()
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (s *Server) handleListCertApplications(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +162,7 @@ func (s *Server) handleListCertApplications(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"applications": apps, "total": total})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": apps, "applications": apps, "total": total, "page": page})
 }
 
 func (s *Server) handleApproveCertApplication(w http.ResponseWriter, r *http.Request) {

@@ -66,8 +66,10 @@ func Open(path, databaseURL string) (*DB, error) {
 // resolveDSN 根据 databaseURL 解析驱动类型和 DSN。
 func resolveDSN(path, databaseURL string) (DriverType, string, error) {
 	if databaseURL == "" {
-		// 默认 SQLite
-		dsn := path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+		// 默认 SQLite。
+		// 必须显式设置 busy_timeout：SQLite 同一时刻只允许一个写事务，
+		// 缺少忙等待时并发写会立即返回 SQLITE_BUSY 而不是短暂等待后重试。
+		dsn := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 		return DriverSQLite, dsn, nil
 	}
 
@@ -80,7 +82,7 @@ func resolveDSN(path, databaseURL string) (DriverType, string, error) {
 		return DriverMySQL, dsn, nil
 	default:
 		// 未知前缀，尝试作为 SQLite 路径
-		dsn := databaseURL + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+		dsn := databaseURL + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 		return DriverSQLite, dsn, nil
 	}
 }
@@ -196,7 +198,207 @@ func (db *DB) alterTables() error {
 	// T23：custom_oids 补 is_critical
 	db.execIgnoreError(`ALTER TABLE custom_oids ADD COLUMN is_critical INTEGER NOT NULL DEFAULT 0`)
 
+	// 门户：cert_orders 补对外单号与商品快照字段（兼容既有订单，历史行为空）
+	db.execIgnoreError(`ALTER TABLE cert_orders ADD COLUMN order_no TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cert_orders ADD COLUMN product_code TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cert_orders ADD COLUMN sku_code TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cert_orders ADD COLUMN spec_json TEXT NOT NULL DEFAULT '{}'`)
+	db.execIgnoreError(`ALTER TABLE cert_orders ADD COLUMN applicant_email TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cert_orders_order_no ON cert_orders(order_no) WHERE order_no <> ''`)
+
+	// 支付：退款工单支持业务订单（证书订单等）与渠道原路退款
+	db.execIgnoreError(`ALTER TABLE refund_requests ADD COLUMN biz_type TEXT NOT NULL DEFAULT 'recharge'`)
+	db.execIgnoreError(`ALTER TABLE refund_requests ADD COLUMN biz_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE refund_requests ADD COLUMN channel TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE refund_requests ADD COLUMN fail_reason TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE refund_requests ADD COLUMN refund_no TEXT NOT NULL DEFAULT ''`)
+
+	// 申请：支持用户自带 CSR（私钥不进入服务端）
+	db.execIgnoreError(`ALTER TABLE cert_applications ADD COLUMN csr_pem TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cert_applications ADD COLUMN applicant_email TEXT NOT NULL DEFAULT ''`)
+
+	// 证书：记录签发时的申请来源与下发目标，便于排障
+	db.execIgnoreError(`ALTER TABLE certificates ADD COLUMN csr_pem TEXT NOT NULL DEFAULT ''`)
+
+	// 门户：CA 是否对外公开发布（内部 CA 默认不进入公开信任目录）
+	db.execIgnoreError(`ALTER TABLE cas ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0`)
+
+	// 业务模式：卡片来源订单（销售模式下凭已支付订单开卡）与卡片类型
+	//   card_kind = user    用户智能卡（可远程签名/解密）
+	//   card_kind = hosting 系统证书托管容器（文件下载型证书的存放位置，不支持远程密码运算）
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN order_no TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN card_kind TEXT NOT NULL DEFAULT 'user'`)
+	db.execIgnoreError(`CREATE INDEX IF NOT EXISTS idx_cards_order_no ON cards(order_no)`)
+
+	// 申请：签发目标卡片（为空时按交付方式落到托管容器）
+	db.execIgnoreError(`ALTER TABLE cert_applications ADD COLUMN card_uuid TEXT NOT NULL DEFAULT ''`)
+
+	db.alterTablesV2()
 	return nil
+}
+
+// alterTablesV2 业务重构：OCSP 响应服务、证书策略、身份认证接口、模板职责调整、优惠与订阅。
+func (db *DB) alterTablesV2() {
+	// ---- 独立 OCSP 响应服务：一个签名证书可响应多个 CA 的证书状态 ----
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS ocsp_responders (
+	    uuid                TEXT PRIMARY KEY,
+	    name                TEXT NOT NULL,
+	    path                TEXT NOT NULL UNIQUE,
+	    signer_type         TEXT NOT NULL DEFAULT 'ca',
+	    signer_ref          TEXT NOT NULL DEFAULT '',
+	    ca_uuids            TEXT NOT NULL DEFAULT '[]',
+	    next_update_minutes INTEGER NOT NULL DEFAULT 60,
+	    enabled             INTEGER NOT NULL DEFAULT 1,
+	    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	// 未在本平台登记的序列号如何响应：unknown（RFC 6960 推荐）/ good（兼容未登记的外部签发）
+	db.execIgnoreError(`ALTER TABLE ocsp_responders ADD COLUMN unknown_policy TEXT NOT NULL DEFAULT 'unknown'`)
+
+	// ---- 证书策略（CP/CPS）页面 ----
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS cert_policies (
+	    uuid         TEXT PRIMARY KEY,
+	    name         TEXT NOT NULL,
+	    path         TEXT NOT NULL UNIQUE,
+	    content_type TEXT NOT NULL DEFAULT 'markdown',
+	    content      TEXT NOT NULL DEFAULT '',
+	    version      TEXT NOT NULL DEFAULT '',
+	    enabled      INTEGER NOT NULL DEFAULT 1,
+	    is_public    INTEGER NOT NULL DEFAULT 1,
+	    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+
+	// ---- 身份认证接口（邮件 / 实名）与实名认证会话 ----
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS verify_providers (
+	    uuid       TEXT PRIMARY KEY,
+	    name       TEXT NOT NULL,
+	    kind       TEXT NOT NULL,
+	    driver     TEXT NOT NULL,
+	    config_enc TEXT NOT NULL DEFAULT '',
+	    enabled    INTEGER NOT NULL DEFAULT 1,
+	    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS identity_sessions (
+	    uuid              TEXT PRIMARY KEY,
+	    provider_uuid     TEXT NOT NULL,
+	    subject_info_uuid TEXT NOT NULL,
+	    user_uuid         TEXT NOT NULL,
+	    external_id       TEXT NOT NULL DEFAULT '',
+	    status            TEXT NOT NULL DEFAULT 'pending',
+	    message           TEXT NOT NULL DEFAULT '',
+	    expires_at        DATETIME,
+	    created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.execIgnoreError(`CREATE INDEX IF NOT EXISTS idx_identity_sessions_subject ON identity_sessions(subject_info_uuid)`)
+
+	// 主体模板：字段级验证方式之外的模板级认证接口与有效期
+	db.execIgnoreError(`ALTER TABLE subject_templates ADD COLUMN verify_provider_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE subject_templates ADD COLUMN verify_validity TEXT NOT NULL DEFAULT '365d'`)
+	db.execIgnoreError(`ALTER TABLE subject_templates ADD COLUMN description TEXT NOT NULL DEFAULT ''`)
+	// 扩展信息模板：按类型的验证策略（方式、认证接口、有效期），数量限制迁移到商品规格
+	db.execIgnoreError(`ALTER TABLE extension_templates ADD COLUMN verify_policy TEXT NOT NULL DEFAULT '{}'`)
+	// 主体信息：有效期、驳回原因、验证方式
+	db.execIgnoreError(`ALTER TABLE subject_infos ADD COLUMN expires_at DATETIME`)
+	db.execIgnoreError(`ALTER TABLE subject_infos ADD COLUMN reject_reason TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE subject_infos ADD COLUMN verify_mode TEXT NOT NULL DEFAULT 'manual'`)
+	// 扩展信息：人工审核驳回原因、验证码错误次数（防暴力破解）
+	db.execIgnoreError(`ALTER TABLE extension_infos ADD COLUMN reject_reason TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE extension_infos ADD COLUMN verify_attempts INTEGER NOT NULL DEFAULT 0`)
+
+	// ---- 模板职责：开通模板绑定主体/扩展模板；规格承载 SAN 限制 ----
+	db.execIgnoreError(`ALTER TABLE cert_apply_templates ADD COLUMN subject_tmpl_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cert_apply_templates ADD COLUMN extension_tmpl_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE portal_product_skus ADD COLUMN san_policy TEXT NOT NULL DEFAULT '{}'`)
+
+	// ---- 优惠码、兑换码与订阅 ----
+	db.execIgnoreError(`ALTER TABLE cert_orders ADD COLUMN subscription_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cert_orders ADD COLUMN coupon_code TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cert_orders ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0`)
+	db.execIgnoreError(`CREATE INDEX IF NOT EXISTS idx_cert_orders_subscription ON cert_orders(subscription_uuid)`)
+
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS promo_coupons (
+	    uuid               TEXT PRIMARY KEY,
+	    code               TEXT NOT NULL UNIQUE,
+	    name               TEXT NOT NULL DEFAULT '',
+	    discount_type      TEXT NOT NULL DEFAULT 'amount',
+	    discount_value     INTEGER NOT NULL DEFAULT 0,
+	    min_amount_cents   INTEGER NOT NULL DEFAULT 0,
+	    max_discount_cents INTEGER NOT NULL DEFAULT 0,
+	    product_codes      TEXT NOT NULL DEFAULT '[]',
+	    total_limit        INTEGER NOT NULL DEFAULT -1,
+	    used_count         INTEGER NOT NULL DEFAULT 0,
+	    per_user_limit     INTEGER NOT NULL DEFAULT 1,
+	    valid_from         DATETIME,
+	    valid_until        DATETIME,
+	    enabled            INTEGER NOT NULL DEFAULT 1,
+	    created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS promo_coupon_usages (
+	    uuid           TEXT PRIMARY KEY,
+	    coupon_uuid    TEXT NOT NULL,
+	    user_uuid      TEXT NOT NULL,
+	    order_no       TEXT NOT NULL UNIQUE,
+	    discount_cents INTEGER NOT NULL DEFAULT 0,
+	    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.execIgnoreError(`CREATE INDEX IF NOT EXISTS idx_coupon_usages_user ON promo_coupon_usages(coupon_uuid, user_uuid)`)
+
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS promo_plans (
+	    uuid                 TEXT PRIMARY KEY,
+	    code                 TEXT NOT NULL UNIQUE,
+	    name                 TEXT NOT NULL,
+	    description          TEXT NOT NULL DEFAULT '',
+	    period_days          INTEGER NOT NULL DEFAULT 365,
+	    price_cents          INTEGER NOT NULL DEFAULT 0,
+	    items                TEXT NOT NULL DEFAULT '[]',
+	    allow_revoke         INTEGER NOT NULL DEFAULT 1,
+	    revoke_release_quota INTEGER NOT NULL DEFAULT 0,
+	    visible              INTEGER NOT NULL DEFAULT 1,
+	    enabled              INTEGER NOT NULL DEFAULT 1,
+	    sort_weight          INTEGER NOT NULL DEFAULT 0,
+	    created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS promo_subscriptions (
+	    uuid          TEXT PRIMARY KEY,
+	    user_uuid     TEXT NOT NULL,
+	    plan_uuid     TEXT NOT NULL,
+	    plan_snapshot TEXT NOT NULL DEFAULT '{}',
+	    source        TEXT NOT NULL,
+	    source_ref    TEXT NOT NULL,
+	    starts_at     DATETIME NOT NULL,
+	    ends_at       DATETIME NOT NULL,
+	    status        TEXT NOT NULL DEFAULT 'active',
+	    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.execIgnoreError(`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_source ON promo_subscriptions(source, source_ref)`)
+	db.execIgnoreError(`CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON promo_subscriptions(user_uuid)`)
+
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS promo_redeem_codes (
+	    uuid          TEXT PRIMARY KEY,
+	    code          TEXT NOT NULL UNIQUE,
+	    batch_name    TEXT NOT NULL DEFAULT '',
+	    grant_type    TEXT NOT NULL DEFAULT 'plan',
+	    plan_uuid     TEXT NOT NULL DEFAULT '',
+	    balance_cents INTEGER NOT NULL DEFAULT 0,
+	    max_uses      INTEGER NOT NULL DEFAULT 1,
+	    used_count    INTEGER NOT NULL DEFAULT 0,
+	    valid_until   DATETIME,
+	    enabled       INTEGER NOT NULL DEFAULT 1,
+	    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS promo_redeem_usages (
+	    uuid       TEXT PRIMARY KEY,
+	    code_uuid  TEXT NOT NULL,
+	    user_uuid  TEXT NOT NULL,
+	    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.execIgnoreError(`CREATE UNIQUE INDEX IF NOT EXISTS idx_redeem_usages_user ON promo_redeem_usages(code_uuid, user_uuid)`)
 }
 
 // createTables 创建所有基础表（幂等，IF NOT EXISTS）。
@@ -743,6 +945,93 @@ CREATE TABLE IF NOT EXISTS ct_entries (
 
 CREATE INDEX IF NOT EXISTS idx_ct_entries_cert ON ct_entries(cert_uuid);
 CREATE INDEX IF NOT EXISTS idx_ct_entries_hash ON ct_entries(cert_hash);
+
+-- ---- 门户（官网/商城）相关表 ----
+
+-- 门户商品表（决定"卖什么"）
+CREATE TABLE IF NOT EXISTS portal_products (
+    uuid           TEXT PRIMARY KEY,
+    code           TEXT NOT NULL UNIQUE,
+    name           TEXT NOT NULL,
+    category       TEXT NOT NULL DEFAULT 'ssl',
+    level          TEXT NOT NULL DEFAULT '',
+    summary        TEXT NOT NULL DEFAULT '',
+    description    TEXT NOT NULL DEFAULT '',
+    features       TEXT NOT NULL DEFAULT '[]',
+    highlights     TEXT NOT NULL DEFAULT '[]',
+    badge          TEXT NOT NULL DEFAULT '',
+    cover_image    TEXT NOT NULL DEFAULT '',
+    sort_weight    INTEGER NOT NULL DEFAULT 0,
+    visible        INTEGER NOT NULL DEFAULT 0,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_portal_products_category ON portal_products(category);
+CREATE INDEX IF NOT EXISTS idx_portal_products_visible ON portal_products(visible, enabled);
+
+-- 门户商品规格表（决定"按什么规格和价格卖"）
+CREATE TABLE IF NOT EXISTS portal_product_skus (
+    uuid                 TEXT PRIMARY KEY,
+    product_uuid         TEXT NOT NULL REFERENCES portal_products(uuid) ON DELETE CASCADE,
+    code                 TEXT NOT NULL UNIQUE,
+    name                 TEXT NOT NULL,
+    price_cents          INTEGER NOT NULL DEFAULT 0,
+    currency             TEXT NOT NULL DEFAULT 'CNY',
+    stock                INTEGER NOT NULL DEFAULT -1,
+    min_qty              INTEGER NOT NULL DEFAULT 1,
+    max_qty              INTEGER NOT NULL DEFAULT 10,
+    duration_months      INTEGER NOT NULL DEFAULT 12,
+    delivery_mode        TEXT NOT NULL DEFAULT 'cloud_card',
+    key_types            TEXT NOT NULL DEFAULT '["ec256","rsa2048"]',
+    san_included         INTEGER NOT NULL DEFAULT 1,
+    cert_apply_tmpl_uuid TEXT NOT NULL DEFAULT '',
+    cloud_card_tmpl_uuid TEXT NOT NULL DEFAULT '',
+    enabled              INTEGER NOT NULL DEFAULT 1,
+    sort_weight          INTEGER NOT NULL DEFAULT 0,
+    created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_portal_skus_product ON portal_product_skus(product_uuid);
+
+-- 站点配置表（门户可配置文案、联系方式、下载项等）
+CREATE TABLE IF NOT EXISTS site_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL DEFAULT '',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ---- 支付与退款 ----
+
+-- 支付尝试表：一次"以某个渠道支付某笔业务订单"的尝试。
+-- 金额、渠道与业务归属均在服务端持久化，回调据此校验，避免仅凭单号前缀判断。
+CREATE TABLE IF NOT EXISTS payment_attempts (
+    uuid            TEXT PRIMARY KEY,
+    biz_type        TEXT NOT NULL DEFAULT 'cert_order', -- cert_order / recharge
+    biz_uuid        TEXT NOT NULL DEFAULT '',
+    order_no        TEXT NOT NULL,
+    user_uuid       TEXT NOT NULL DEFAULT '',
+    channel         TEXT NOT NULL,
+    amount_cents    INTEGER NOT NULL DEFAULT 0,
+    currency        TEXT NOT NULL DEFAULT 'CNY',
+    status          TEXT NOT NULL DEFAULT 'pending',    -- pending/paid/failed/closed
+    transaction_id  TEXT NOT NULL DEFAULT '',           -- 渠道交易号
+    raw_callback    TEXT NOT NULL DEFAULT '',
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    paid_at         DATETIME,
+    expires_at      DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_attempts_order ON payment_attempts(order_no);
+CREATE INDEX IF NOT EXISTS idx_payment_attempts_biz ON payment_attempts(biz_type, biz_uuid);
+-- 同一业务订单同时只允许存在一笔待支付尝试（换渠道时先关闭旧尝试）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_attempts_pending
+    ON payment_attempts(biz_type, biz_uuid) WHERE status = 'pending';
+-- 渠道交易号全局唯一，防止同一笔渠道交易被重复入账
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_attempts_txn
+    ON payment_attempts(channel, transaction_id) WHERE transaction_id <> '';
 `
 	_, err := db.Exec(schema)
 	return err

@@ -16,5 +16,8 @@ clients/data/
 .idea
 .codebuddy/plan
 desktop/dist
-desktop/node_modules
 drivers/build/fido-int
+
+# 统一构建产物（scripts/build-clients.sh、build-server.sh）
+/dist/
+.codebuddy

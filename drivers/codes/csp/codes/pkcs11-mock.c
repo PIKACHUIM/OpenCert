@@ -1329,8 +1329,21 @@ CK_DEFINE_FUNCTION(CK_RV, C_CreateObject)(CK_SESSION_HANDLE hSession, CK_ATTRIBU
 	if (ipc_is_connected(fd)) {
 		json_buf_t req;
 		json_buf_init(&req);
-		json_buf_appendf(&req, "{\"session_id\":%lu,\"attr_count\":%lu}",
+		/* 除属性个数外，必须把模板内容（type + base64 value）一并传给后端，
+		   否则后端无法知道要创建什么对象（历史上只发 attr_count，导致创建必然失败）*/
+		json_buf_appendf(&req, "{\"session_id\":%lu,\"attr_count\":%lu,\"template\":[",
 			(unsigned long)hSession, (unsigned long)ulCount);
+
+		for (i = 0; i < ulCount; i++) {
+			if (i > 0) json_buf_append(&req, ",");
+			json_buf_appendf(&req, "{\"type\":%lu,\"value\":",
+				(unsigned long)pTemplate[i].type);
+			json_buf_append_b64(&req,
+				(const uint8_t *)pTemplate[i].pValue,
+				(size_t)pTemplate[i].ulValueLen);
+			json_buf_append(&req, "}");
+		}
+		json_buf_append(&req, "]}");
 
 		char *resp = NULL;
 		uint32_t rv = 0;

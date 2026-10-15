@@ -20,10 +20,10 @@ import (
 type State int
 
 const (
-	StateDisconnected State = iota // 未连接
-	StateConnecting               // 连接中
-	StateConnected                // 已连接（已登录）
-	StateBackendOffline           // 后端离线
+	StateDisconnected   State = iota // 未连接
+	StateConnecting                  // 连接中
+	StateConnected                   // 已连接（已登录）
+	StateBackendOffline              // 后端离线
 )
 
 // App 应用程序核心

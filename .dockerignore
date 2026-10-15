@@ -1,0 +1,19 @@
+# Docker 构建上下文裁剪（构建上下文 = 仓库根目录）
+#
+# 镜像只封装 dist/server/ 下的预编译二进制与 servers/web 的静态资源，
+# 其余内容（尤其 node_modules 与各平台构建产物）都不需要进入上下文。
+
+.git
+.github
+.idea
+.codebuddy
+roadmap
+docpage
+drivers
+natives
+desktop
+
+**/node_modules
+
+# 只保留 dist/server（client 产物不参与服务端镜像）
+dist/clients

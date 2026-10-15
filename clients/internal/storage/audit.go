@@ -13,16 +13,16 @@ import (
 // AuditLog 是带链式哈希的审计日志记录。
 type AuditLog struct {
 	ID         int64     `json:"id"`
-	LogType    string    `json:"log_type"`     // operation / security / error
+	LogType    string    `json:"log_type"` // operation / security / error
 	SlotType   string    `json:"slot_type"`
 	CardUUID   string    `json:"card_uuid"`
 	UserUUID   string    `json:"user_uuid"`
-	LogLevel   string    `json:"log_level"`    // debug / info / warn / error
+	LogLevel   string    `json:"log_level"` // debug / info / warn / error
 	RecordedAt time.Time `json:"recorded_at"`
 	Title      string    `json:"title"`
 	Content    string    `json:"content"`
-	PrevHash   string    `json:"prev_hash"`    // 前一条日志的哈希
-	Hash       string    `json:"hash"`         // 当前记录的哈希（含 PrevHash）
+	PrevHash   string    `json:"prev_hash"` // 前一条日志的哈希
+	Hash       string    `json:"hash"`      // 当前记录的哈希（含 PrevHash）
 }
 
 // AuditRepo 提供审计日志的数据库操作。
@@ -108,10 +108,10 @@ func (r *AuditRepo) Write(ctx context.Context, log *AuditLog) error {
 
 // AuditListResult 是审计日志列表查询结果。
 type AuditListResult struct {
-	Logs             []AuditLog `json:"logs"`
-	Total            int        `json:"total"`
-	IntegrityBroken  bool       `json:"integrity_broken"`
-	BrokenAtID       int64      `json:"broken_at_id,omitempty"`
+	Logs            []AuditLog `json:"logs"`
+	Total           int        `json:"total"`
+	IntegrityBroken bool       `json:"integrity_broken"`
+	BrokenAtID      int64      `json:"broken_at_id,omitempty"`
 }
 
 // List 查询审计日志列表，同时验证链式哈希完整性。

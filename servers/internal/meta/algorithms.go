@@ -2,12 +2,12 @@ package meta
 
 // AlgorithmInfo 描述一个密码学算法条目。
 type AlgorithmInfo struct {
-	Name        string `json:"name"`         // 算法标识（如 "ec256"、"sm2"）
-	Display     string `json:"display"`      // 中文显示名
-	Category    string `json:"category"`     // 分类：key / hash / cipher / signature
-	Available   bool   `json:"available"`    // 当前构建下是否可用（SM 系列受 build tag 影响）
-	Deprecated  bool   `json:"deprecated"`   // 是否已弃用（如 MD5、SHA1 不推荐）
-	Description string `json:"description"`  // 补充说明
+	Name        string `json:"name"`        // 算法标识（如 "ec256"、"sm2"）
+	Display     string `json:"display"`     // 中文显示名
+	Category    string `json:"category"`    // 分类：key / hash / cipher / signature
+	Available   bool   `json:"available"`   // 当前构建下是否可用（SM 系列受 build tag 影响）
+	Deprecated  bool   `json:"deprecated"`  // 是否已弃用（如 MD5、SHA1 不推荐）
+	Description string `json:"description"` // 补充说明
 }
 
 // supportedAlgorithms 返回当前已知的密码学算法清单。

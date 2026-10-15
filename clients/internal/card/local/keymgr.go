@@ -514,9 +514,9 @@ func (m *KeyManager) ImportCertificate(ctx context.Context, cardUUID string, cer
 //   - ImportCredential 同时写入公开元数据（PublicMeta）与加密私密内容（SecretData）
 //
 // 加密策略与 GenerateKeyPair 一致：
-//   1. 生成 32 字节临时密钥 tempKey
-//   2. 用 HMAC(masterKey, salt) 加密 tempKey 存入 TempKeyEnc
-//   3. 用 tempKey 加密 SecretData 存入 PrivateData
+//  1. 生成 32 字节临时密钥 tempKey
+//  2. 用 HMAC(masterKey, salt) 加密 tempKey 存入 TempKeyEnc
+//  3. 用 tempKey 加密 SecretData 存入 PrivateData
 type CredentialRequest struct {
 	CardUUID   string
 	CertType   storage.CertType
@@ -625,7 +625,7 @@ func (m *KeyManager) ImportCredential(ctx context.Context, req CredentialRequest
 //   - low    ：master 加密
 //   - medium ：master 加密 + TPM 证书密钥再加密
 //   - high   ：用 TPM 芯片内的"保护密钥"加密导入的私钥（混合加密：TPM RSA 加密 AES key → AES 加密 privDER）
-//              解密时必须经过 TPM 芯片解密 AES key，私钥受 TPM 硬件保护
+//     解密时必须经过 TPM 芯片解密 AES key，私钥受 TPM 硬件保护
 func (m *KeyManager) ImportPrivateKey(ctx context.Context, req KeyGenRequest, masterKey, privDER, pubDER []byte) (*KeyGenResult, error) {
 	card, err := m.cardRepo.GetByUUID(ctx, req.CardUUID)
 	if err != nil {
@@ -731,8 +731,8 @@ func importPrivateKeyWithTPMWrapping(ctx context.Context, certRepo *storage.Cert
 		CertType:       req.CertType,
 		KeyType:        req.KeyType,
 		CertContent:    pubPEM,
-		PrivateData:    encPrivDER,          // AES 加密的私钥
-		TPMPrivateBlob: encAESKey,           // TPM RSA 加密的 AES key
+		PrivateData:    encPrivDER, // AES 加密的私钥
+		TPMPrivateBlob: encAESKey,  // TPM RSA 加密的 AES key
 		TPMPlatform:    storage.TPMPlatform("high-import-v1"),
 		Remark:         req.Remark,
 	}
@@ -790,8 +790,8 @@ func importPrivateKeyWithTPM2Import(ctx context.Context, certRepo *storage.CertR
 		CertType:       req.CertType,
 		KeyType:        req.KeyType,
 		CertContent:    pubPEM,
-		PrivateData:    nil,             // 私钥在 TPM 内部，不存储密文
-		TPMWrappedBlob: wrappedJSON,     // SRK 包装的导入密钥 blob
+		PrivateData:    nil,         // 私钥在 TPM 内部，不存储密文
+		TPMWrappedBlob: wrappedJSON, // SRK 包装的导入密钥 blob
 		TPMPlatform:    storage.TPMPlatform(tpmPlatformHighImportTPM),
 		Remark:         req.Remark,
 	}

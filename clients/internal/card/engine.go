@@ -54,15 +54,15 @@ type Session struct {
 	mu       sync.Mutex // 保护 Session 内部状态的互斥锁
 	Handle   pkcs11types.SessionHandle
 	SlotID   pkcs11types.SlotID
-	Flags    uint32                    // CKF_RW_SESSION | CKF_SERIAL_SESSION 等
-	State    pkcs11types.SessionState  // 5 种会话状态
+	Flags    uint32                   // CKF_RW_SESSION | CKF_SERIAL_SESSION 等
+	State    pkcs11types.SessionState // 5 种会话状态
 	Provider SlotProvider
 
 	// 当前进行中的操作（查找/签名/加密/解密）
-	FindTemplate  []pkcs11types.Attribute
-	FindResults   []pkcs11types.ObjectHandle
-	FindPos       int
-	FindActive    bool // FindObjectsInit 是否已调用
+	FindTemplate []pkcs11types.Attribute
+	FindResults  []pkcs11types.ObjectHandle
+	FindPos      int
+	FindActive   bool // FindObjectsInit 是否已调用
 
 	SignHandle    pkcs11types.ObjectHandle
 	SignMechanism pkcs11types.Mechanism

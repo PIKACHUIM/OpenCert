@@ -29,47 +29,47 @@ type CertPolicy struct {
 
 // CertDetail 是解析后的 X.509 证书详细信息。
 type CertDetail struct {
-	CommonName        string   `json:"common_name"`
-	Organization      string   `json:"organization,omitempty"`
-	OrgUnit           string   `json:"org_unit,omitempty"`
-	Country           string   `json:"country,omitempty"`
-	State             string   `json:"state,omitempty"`
-	Locality          string   `json:"locality,omitempty"`
-	Street            string   `json:"street,omitempty"`            // 管辖地/街道地址
-	SubjectSerial     string   `json:"subject_serial,omitempty"`    // 主体序列号（公司序列号）
-	Description       string   `json:"description,omitempty"`       // 描述
-	IssuerCN          string   `json:"issuer_cn"`
-	IssuerOrg         string   `json:"issuer_org,omitempty"`
-	IssuerOU          string   `json:"issuer_ou,omitempty"`
-	IssuerCountry     string   `json:"issuer_country,omitempty"`
-	IssuerState       string   `json:"issuer_state,omitempty"`      // 颁发者省/州
-	IssuerLocality    string   `json:"issuer_locality,omitempty"`   // 颁发者城市
-	IssuerStreet      string   `json:"issuer_street,omitempty"`     // 颁发者管辖地/街道地址
-	IssuerSerial      string   `json:"issuer_serial,omitempty"`     // 颁发者序列号
-	IssuerDescription string   `json:"issuer_description,omitempty"` // 颁发者描述
-	NotBefore         string   `json:"not_before"`
-	NotAfter          string   `json:"not_after"`
-	SerialNumber      string   `json:"serial_number"`
-	SHA1Fingerprint   string   `json:"sha1_fingerprint"`
-	SHA256Fingerprint string   `json:"sha256_fingerprint"`
-	KeyUsage          []string `json:"key_usage"`
-	ExtKeyUsage       []string `json:"ext_key_usage"`
-	IsCA              bool     `json:"is_ca"`
-	MaxPathLen        int      `json:"max_path_len"`
-	MaxPathLenZero    bool     `json:"max_path_len_zero"` // 区分 pathLen=0 和未设置
-	KeyBits           int      `json:"key_bits,omitempty"`           // 密钥长度（位）
-	SANDNSNames       []string `json:"san_dns,omitempty"`
-	SANIPAddresses    []string `json:"san_ip,omitempty"`
-	SANEmailAddresses []string `json:"san_email,omitempty"`
-	SANURIs           []string `json:"san_uri,omitempty"`
-	CRLDistPoints     []string `json:"crl_dist_points,omitempty"`
-	OCSPServers       []string `json:"ocsp_servers,omitempty"`
-	IssuingCertURL    []string `json:"issuing_cert_url,omitempty"` // AIA
-	CPSURLs           []string `json:"cps_urls,omitempty"`
+	CommonName        string       `json:"common_name"`
+	Organization      string       `json:"organization,omitempty"`
+	OrgUnit           string       `json:"org_unit,omitempty"`
+	Country           string       `json:"country,omitempty"`
+	State             string       `json:"state,omitempty"`
+	Locality          string       `json:"locality,omitempty"`
+	Street            string       `json:"street,omitempty"`         // 管辖地/街道地址
+	SubjectSerial     string       `json:"subject_serial,omitempty"` // 主体序列号（公司序列号）
+	Description       string       `json:"description,omitempty"`    // 描述
+	IssuerCN          string       `json:"issuer_cn"`
+	IssuerOrg         string       `json:"issuer_org,omitempty"`
+	IssuerOU          string       `json:"issuer_ou,omitempty"`
+	IssuerCountry     string       `json:"issuer_country,omitempty"`
+	IssuerState       string       `json:"issuer_state,omitempty"`       // 颁发者省/州
+	IssuerLocality    string       `json:"issuer_locality,omitempty"`    // 颁发者城市
+	IssuerStreet      string       `json:"issuer_street,omitempty"`      // 颁发者管辖地/街道地址
+	IssuerSerial      string       `json:"issuer_serial,omitempty"`      // 颁发者序列号
+	IssuerDescription string       `json:"issuer_description,omitempty"` // 颁发者描述
+	NotBefore         string       `json:"not_before"`
+	NotAfter          string       `json:"not_after"`
+	SerialNumber      string       `json:"serial_number"`
+	SHA1Fingerprint   string       `json:"sha1_fingerprint"`
+	SHA256Fingerprint string       `json:"sha256_fingerprint"`
+	KeyUsage          []string     `json:"key_usage"`
+	ExtKeyUsage       []string     `json:"ext_key_usage"`
+	IsCA              bool         `json:"is_ca"`
+	MaxPathLen        int          `json:"max_path_len"`
+	MaxPathLenZero    bool         `json:"max_path_len_zero"`  // 区分 pathLen=0 和未设置
+	KeyBits           int          `json:"key_bits,omitempty"` // 密钥长度（位）
+	SANDNSNames       []string     `json:"san_dns,omitempty"`
+	SANIPAddresses    []string     `json:"san_ip,omitempty"`
+	SANEmailAddresses []string     `json:"san_email,omitempty"`
+	SANURIs           []string     `json:"san_uri,omitempty"`
+	CRLDistPoints     []string     `json:"crl_dist_points,omitempty"`
+	OCSPServers       []string     `json:"ocsp_servers,omitempty"`
+	IssuingCertURL    []string     `json:"issuing_cert_url,omitempty"` // AIA
+	CPSURLs           []string     `json:"cps_urls,omitempty"`
 	CertPolicies      []CertPolicy `json:"cert_policies,omitempty"` // 证书策略 OID
-	SignatureAlgo     string   `json:"signature_algo"`
-	PublicKeyAlgo     string   `json:"public_key_algo"`
-	IsSelfSigned      bool     `json:"is_self_signed"`
+	SignatureAlgo     string       `json:"signature_algo"`
+	PublicKeyAlgo     string       `json:"public_key_algo"`
+	IsSelfSigned      bool         `json:"is_self_signed"`
 }
 
 // ExtractPublicKeyDER 从 CertContent（可能是 PEM 证书或 PEM 公钥）中提取 PKIX 格式的公钥 DER。
@@ -996,8 +996,8 @@ var knownPolicyOIDs = map[string]string{
 	"2.23.140.1.1":   "EV (Extended Validation)",
 	"2.23.140.1.2.3": "IV (Individual Validated)",
 	// 常见 CA 的 EV OID
-	"1.3.6.1.4.1.44947.1.1.1": "ISRG EV",
-	"2.16.840.1.114412.2.1":   "DigiCert EV",
+	"1.3.6.1.4.1.44947.1.1.1":    "ISRG EV",
+	"2.16.840.1.114412.2.1":      "DigiCert EV",
 	"2.16.840.1.113733.1.7.23.6": "VeriSign EV",
 	"1.3.6.1.4.1.6449.1.2.1.5.1": "Comodo EV",
 	"2.16.840.1.114028.10.1.2":   "Entrust EV",

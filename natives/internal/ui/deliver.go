@@ -23,11 +23,11 @@ type DeliverDialog struct {
 	cert     api.Certificate
 	cardUUID string
 
-	targetSelect  *widget.Select
-	cardSelect    *widget.Select
-	cardPassword  *widget.Entry
-	remark        *widget.Entry
-	cards         []api.Card
+	targetSelect *widget.Select
+	cardSelect   *widget.Select
+	cardPassword *widget.Entry
+	remark       *widget.Entry
+	cards        []api.Card
 }
 
 // NewDeliverDialog 创建云端下发对话框
@@ -107,9 +107,9 @@ func (dd *DeliverDialog) Show() {
 
 func (dd *DeliverDialog) doDeliver() {
 	req := &api.DeliverRequest{
-		CertUUID:   dd.cert.UUID,
+		CertUUID:    dd.cert.UUID,
 		SourceCloud: dd.cardUUID,
-		Remark:     dd.remark.Text,
+		Remark:      dd.remark.Text,
 	}
 
 	if dd.targetSelect.SelectedIndex() == 0 {

@@ -376,7 +376,7 @@ const TOTPPage: React.FC = () => {
               <Button
                 type="text" size="small" icon={<EyeOutlined />}
                 onClick={handleReveal}
-                style={{ color: '#1677ff' }}
+                style={{ color: 'var(--accent)' }}
               >
                 查看
               </Button>
@@ -392,7 +392,7 @@ const TOTPPage: React.FC = () => {
                 size="large"
                 style={{
                   fontSize: 22, fontWeight: 700, letterSpacing: 4,
-                  color: isUrgent ? '#ff4d4f' : '#1677ff',
+                  color: isUrgent ? '#ff4d4f' : 'var(--accent)',
                 }}
                 icon={<CopyOutlined style={{ fontSize: 14 }} />}
                 onClick={() => record.code && handleCopy(record.code)}
@@ -405,7 +405,7 @@ const TOTPPage: React.FC = () => {
               percent={percent}
               size={28}
               format={() => `${remaining}`}
-              strokeColor={isUrgent ? '#ff4d4f' : '#1677ff'}
+              strokeColor={isUrgent ? '#ff4d4f' : 'var(--accent)'}
               railColor="#f0f0f0"
             />
           </Space>

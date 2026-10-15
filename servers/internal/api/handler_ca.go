@@ -298,10 +298,10 @@ type IssueCertRequest struct {
 	DNSNames         []string `json:"dns_names"`
 	IPAddresses      []string `json:"ip_addresses"`
 	EmailAddrs       []string `json:"email_addresses"`
-	URIs             []string `json:"uris"`                  // SAN URI 列表
-	PolicyOIDs       []string `json:"certificate_policies"`  // 证书策略 OID 列表
-	CardUUID         string   `json:"card_uuid"`          // 签发后存入的卡片 UUID（可选）
-	IssuanceTmplUUID string   `json:"issuance_tmpl_uuid"` // 颁发模板 UUID（可选）
+	URIs             []string `json:"uris"`                 // SAN URI 列表
+	PolicyOIDs       []string `json:"certificate_policies"` // 证书策略 OID 列表
+	CardUUID         string   `json:"card_uuid"`            // 签发后存入的卡片 UUID（可选）
+	IssuanceTmplUUID string   `json:"issuance_tmpl_uuid"`   // 颁发模板 UUID（可选）
 }
 
 func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
@@ -376,26 +376,26 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 	if req.CardUUID != "" {
 		certRepo := storage.NewCertRepo(s.db)
 		cert := &storage.Certificate{
-			CardUUID:         req.CardUUID,
-			UserUUID:         claims.UserUUID,
-			CertType:         "x509",
-			KeyType:          req.KeyType,
-			CertContent:      []byte(resp.CertPEM),
-			PrivateData:      resp.PrivateEnc,
-			CAUUID:           caUUID,
-			SerialNumber:     resp.SerialNumber,
-			SerialHex:        resp.SerialNumber,
-			SubjectDN:        resp.SubjectDN,
-			IssuerDN:         resp.IssuerDN,
-			NotBefore:        &resp.NotBefore,
-			NotAfter:         &resp.NotAfter,
-			SANDNS:           jsonStrArray(req.DNSNames),
-			SANIP:            jsonStrArray(req.IPAddresses),
-			SANEmail:         jsonStrArray(req.EmailAddrs),
-			SANURI:           jsonStrArray(req.URIs),
+			CardUUID:            req.CardUUID,
+			UserUUID:            claims.UserUUID,
+			CertType:            "x509",
+			KeyType:             req.KeyType,
+			CertContent:         []byte(resp.CertPEM),
+			PrivateData:         resp.PrivateEnc,
+			CAUUID:              caUUID,
+			SerialNumber:        resp.SerialNumber,
+			SerialHex:           resp.SerialNumber,
+			SubjectDN:           resp.SubjectDN,
+			IssuerDN:            resp.IssuerDN,
+			NotBefore:           &resp.NotBefore,
+			NotAfter:            &resp.NotAfter,
+			SANDNS:              jsonStrArray(req.DNSNames),
+			SANIP:               jsonStrArray(req.IPAddresses),
+			SANEmail:            jsonStrArray(req.EmailAddrs),
+			SANURI:              jsonStrArray(req.URIs),
 			CertificatePolicies: jsonStrArray(req.PolicyOIDs),
-			IssuanceTmplUUID: req.IssuanceTmplUUID,
-			RevocationStatus: "active",
+			IssuanceTmplUUID:    req.IssuanceTmplUUID,
+			RevocationStatus:    "active",
 		}
 		if err := certRepo.Create(r.Context(), cert); err != nil {
 			writeError(w, http.StatusInternalServerError, "保存证书失败: "+err.Error())
@@ -465,9 +465,9 @@ func (s *Server) handlePublicCRL(w http.ResponseWriter, r *http.Request) {
 
 // handlePublicOCSP 处理 OCSP 查询请求。
 // 支持 RFC 6960 三种调用方式：
-//   1. POST application/ocsp-request + DER body → binary 响应
-//   2. GET /ocsp/{caUUID}/{base64OcspReq} → binary 响应
-//   3. GET /ocsp/{caUUID}?serial=xxx&format=json → JSON 调试响应（旧方式，保留）
+//  1. POST application/ocsp-request + DER body → binary 响应
+//  2. GET /ocsp/{caUUID}/{base64OcspReq} → binary 响应
+//  3. GET /ocsp/{caUUID}?serial=xxx&format=json → JSON 调试响应（旧方式，保留）
 func (s *Server) handlePublicOCSP(w http.ResponseWriter, r *http.Request) {
 	caUUID := r.PathValue("caUUID")
 	if s.revocationSvc == nil {

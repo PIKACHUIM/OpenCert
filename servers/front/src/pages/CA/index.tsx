@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import {
   Table, Button, Modal, Form, Input, Select, InputNumber, Space,
-  Tag, Typography, Drawer, message, Popconfirm,
+  Tag, Typography, Drawer, message, Popconfirm, Switch, Tooltip,
 } from 'antd';
 import { PlusOutlined, DownloadOutlined, ImportOutlined, UnorderedListOutlined, SafetyCertificateOutlined, DeleteOutlined } from '@ant-design/icons';
-import { listCAs, createCA, deleteCA, importCAChain, listRevokedCerts, revokeCAcert, issueCert, downloadCRL } from '../../api';
+import { listCAs, createCA, deleteCA, importCAChain, listRevokedCerts, revokeCAcert, issueCert, downloadCRL, publishCA } from '../../api';
 import type { CA, RevokedCert } from '../../types';
 
 const { Title, Text } = Typography;
@@ -121,12 +121,33 @@ const CAPage: React.FC = () => {
   const statusColor: Record<string, string> = { active: 'green', revoked: 'red', expired: 'orange' };
   const statusText: Record<string, string> = { active: '有效', revoked: '已吊销', expired: '已过期' };
 
+  /** 切换 CA 是否在门户公开信任目录中展示 */
+  const handleTogglePublish = async (ca: CA, next: boolean) => {
+    try {
+      await publishCA(ca.uuid, next);
+      message.success(next ? '已在门户公开' : '已从门户撤下');
+      loadCAs(page);
+    } catch (err: any) { message.error(err.message); }
+  };
+
   const columns = [
     { title: 'CA 名称', dataIndex: 'name', key: 'name', render: (v: string) => <Text strong>{v}</Text> },
     { title: '状态', dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={statusColor[v]}>{statusText[v] || v}</Tag> },
     { title: '密钥类型', dataIndex: 'key_type', key: 'key_type' },
     { title: '有效期', key: 'validity', render: (_: any, r: CA) => <Text style={{ fontSize: 12 }}>{r.not_before?.slice(0, 10)} ~ {r.not_after?.slice(0, 10)}</Text> },
     { title: '已签发', dataIndex: 'issued_count', key: 'issued_count' },
+    {
+      title: '门户公开', dataIndex: 'is_public', key: 'is_public', width: 110,
+      render: (v: boolean, r: CA) => (
+        <Tooltip title={r.status === 'active' ? '在门户「信任服务」中展示该 CA 及其 CRL/OCSP 地址' : '仅 active 状态的 CA 可公开'}>
+          <Switch
+            size="small" checked={!!v}
+            disabled={r.status !== 'active'}
+            onChange={(checked) => handleTogglePublish(r, checked)}
+          />
+        </Tooltip>
+      ),
+    },
     {
       title: '操作', key: 'action', width: 340,
       render: (_: any, r: CA) => (

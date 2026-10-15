@@ -16,17 +16,17 @@ import (
 
 // certListItem 是证书列表返回的单项，包含解析出的 CN 和 Issuer。
 type certListItem struct {
-	UUID        string             `json:"uuid"`
-	SlotType    storage.SlotType   `json:"slot_type"`
-	CardUUID    string             `json:"card_uuid"`
-	CertType    storage.CertType   `json:"cert_type"`
-	KeyType     string             `json:"key_type"`
+	UUID        string              `json:"uuid"`
+	SlotType    storage.SlotType    `json:"slot_type"`
+	CardUUID    string              `json:"card_uuid"`
+	CertType    storage.CertType    `json:"cert_type"`
+	KeyType     string              `json:"key_type"`
 	CertContent storage.Base64Bytes `json:"cert_content"`
-	Remark      string             `json:"remark"`
-	CreatedAt   string             `json:"created_at"`
-	UpdatedAt   string             `json:"updated_at"`
-	CommonName  string             `json:"common_name"`
-	IssuerCN    string             `json:"issuer_cn"`
+	Remark      string              `json:"remark"`
+	CreatedAt   string              `json:"created_at"`
+	UpdatedAt   string              `json:"updated_at"`
+	CommonName  string              `json:"common_name"`
+	IssuerCN    string              `json:"issuer_cn"`
 }
 
 // handleListCerts GET /api/cards/{card_uuid}/certs

@@ -3,8 +3,8 @@
 // 设计要点：
 //   - 仅依赖标准库；不引入 stripe-go 三方 SDK
 //   - 接口：POST /v1/checkout/sessions（创建支付会话，返回托管 URL）
-//          GET  /v1/checkout/sessions/{id}（查询）
-//          POST /v1/refunds（退款）
+//     GET  /v1/checkout/sessions/{id}（查询）
+//     POST /v1/refunds（退款）
 //   - Webhook：HMAC-SHA256(t={timestamp},v1={signature}) 签名校验
 //
 // 配置项（PaymentPlugin.Config 中的 JSON 字段）：

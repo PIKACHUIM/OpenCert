@@ -19,7 +19,7 @@ import (
 
 // CertChainNode 是证书链中单个节点的结构化描述。
 type CertChainNode struct {
-	Level        int    `json:"level"`         // 0=叶子；1、2 … 依次向上到根
+	Level        int    `json:"level"`          // 0=叶子；1、2 … 依次向上到根
 	UUID         string `json:"uuid,omitempty"` // 本系统内部 UUID（外部 CA 可能为空）
 	Subject      string `json:"subject"`
 	Issuer       string `json:"issuer"`
@@ -29,7 +29,7 @@ type CertChainNode struct {
 	IsCA         bool   `json:"is_ca"`
 	IsRoot       bool   `json:"is_root"`
 	IsSelfSigned bool   `json:"is_self_signed"`
-	Status       string `json:"status,omitempty"` // active/revoked/expired，仅本系统内证书/CA 有效
+	Status       string `json:"status,omitempty"`  // active/revoked/expired，仅本系统内证书/CA 有效
 	CAUUID       string `json:"ca_uuid,omitempty"` // 签发 CA 的 UUID（若已知）
 }
 

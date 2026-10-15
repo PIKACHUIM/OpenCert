@@ -3,6 +3,8 @@ package ipc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/globaltrusts/client-card/internal/card"
@@ -13,7 +15,7 @@ import (
 
 // PKCSHandler 处理所有 PKCS#11 和扩展 IPC 命令。
 type PKCSHandler struct {
-	manager  *card.Manager
+	manager *card.Manager
 	// FIDO2 CCID 扩展字段
 	fidoStore *fido.Store
 	cardRepo  *storage.CardRepo
@@ -66,6 +68,8 @@ func (h *PKCSHandler) Register(s *Server) {
 	s.Register(CmdGetAttributeValue, h.handleGetAttributeValue)
 	s.Register(CmdCreateObject, h.handleCreateObject)
 	s.Register(CmdDestroyObject, h.handleDestroyObject)
+	s.Register(CmdSetAttributeValue, h.handleSetAttributeValue)
+	s.Register(CmdGetObjectSize, h.handleGetObjectSize)
 	s.Register(CmdSignInit, h.handleSignInit)
 	s.Register(CmdSign, h.handleSign)
 	s.Register(CmdDecryptInit, h.handleDecryptInit)
@@ -90,6 +94,7 @@ type getSlotListReq struct {
 
 type getSlotListResp struct {
 	SlotIDs []uint32 `json:"slot_ids"`
+	Count   uint32   `json:"count"` // C 驱动依据 count 决定读取多少个 slot_id
 }
 
 func (h *PKCSHandler) handleGetSlotList(ctx context.Context, req *Frame) (interface{}, uint32) {
@@ -104,13 +109,25 @@ func (h *PKCSHandler) handleGetSlotList(ctx context.Context, req *Frame) (interf
 	for i, id := range ids {
 		result[i] = uint32(id)
 	}
-	return &getSlotListResp{SlotIDs: result}, uint32(pkcs11types.CKR_OK)
+	return &getSlotListResp{SlotIDs: result, Count: uint32(len(result))}, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- GetSlotInfo ----
 
 type slotIDReq struct {
 	SlotID uint32 `json:"slot_id"`
+}
+
+// slotInfoResp 的键名与 C 驱动解析逻辑严格一致：
+// slot_description / manufacturer_id / flags / hw_major / hw_minor / fw_major / fw_minor。
+type slotInfoResp struct {
+	SlotDescription string `json:"slot_description"`
+	ManufacturerID  string `json:"manufacturer_id"`
+	Flags           uint32 `json:"flags"`
+	HWVersionMajor  uint8  `json:"hw_major"`
+	HWVersionMinor  uint8  `json:"hw_minor"`
+	FWVersionMajor  uint8  `json:"fw_major"`
+	FWVersionMinor  uint8  `json:"fw_minor"`
 }
 
 func (h *PKCSHandler) handleGetSlotInfo(ctx context.Context, req *Frame) (interface{}, uint32) {
@@ -123,10 +140,27 @@ func (h *PKCSHandler) handleGetSlotInfo(ctx context.Context, req *Frame) (interf
 	if err != nil {
 		return nil, uint32(pkcs11types.CKR_SLOT_ID_INVALID)
 	}
-	return &info, uint32(pkcs11types.CKR_OK)
+	return &slotInfoResp{
+		SlotDescription: info.Description,
+		ManufacturerID:  info.Manufacturer,
+		Flags:           info.Flags,
+		HWVersionMajor:  1,
+		HWVersionMinor:  0,
+		FWVersionMajor:  1,
+		FWVersionMinor:  0,
+	}, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- GetTokenInfo ----
+
+// tokenInfoResp 的键名与 C 驱动解析逻辑一致（厂商字段名为 manufacturer_id）。
+type tokenInfoResp struct {
+	Label          string `json:"label"`
+	ManufacturerID string `json:"manufacturer_id"`
+	Model          string `json:"model"`
+	SerialNumber   string `json:"serial_number"`
+	Flags          uint32 `json:"flags"`
+}
 
 func (h *PKCSHandler) handleGetTokenInfo(ctx context.Context, req *Frame) (interface{}, uint32) {
 	var r slotIDReq
@@ -138,13 +172,20 @@ func (h *PKCSHandler) handleGetTokenInfo(ctx context.Context, req *Frame) (inter
 	if err != nil {
 		return nil, uint32(pkcs11types.CKR_SLOT_ID_INVALID)
 	}
-	return &info, uint32(pkcs11types.CKR_OK)
+	return &tokenInfoResp{
+		Label:          info.Label,
+		ManufacturerID: info.Manufacturer,
+		Model:          info.Model,
+		SerialNumber:   info.SerialNumber,
+		Flags:          info.Flags,
+	}, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- GetMechanismList ----
 
 type getMechListResp struct {
 	Mechanisms []uint32 `json:"mechanisms"`
+	Count      uint32   `json:"count"` // C 驱动依据 count 决定读取多少个 mechanism
 }
 
 func (h *PKCSHandler) handleGetMechanismList(ctx context.Context, req *Frame) (interface{}, uint32) {
@@ -161,7 +202,7 @@ func (h *PKCSHandler) handleGetMechanismList(ctx context.Context, req *Frame) (i
 	for i, m := range mechs {
 		result[i] = uint32(m)
 	}
-	return &getMechListResp{Mechanisms: result}, uint32(pkcs11types.CKR_OK)
+	return &getMechListResp{Mechanisms: result, Count: uint32(len(result))}, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- OpenSession ----
@@ -172,7 +213,7 @@ type openSessionReq struct {
 }
 
 type openSessionResp struct {
-	SessionHandle uint32 `json:"session_handle"`
+	SessionHandle uint32 `json:"session_id"`
 }
 
 func (h *PKCSHandler) handleOpenSession(ctx context.Context, req *Frame) (interface{}, uint32) {
@@ -191,7 +232,7 @@ func (h *PKCSHandler) handleOpenSession(ctx context.Context, req *Frame) (interf
 // ---- CloseSession ----
 
 type sessionReq struct {
-	SessionHandle uint32 `json:"session_handle"`
+	SessionHandle uint32 `json:"session_id"`
 }
 
 func (h *PKCSHandler) handleCloseSession(ctx context.Context, req *Frame) (interface{}, uint32) {
@@ -220,7 +261,7 @@ func (h *PKCSHandler) handleCloseAllSessions(ctx context.Context, req *Frame) (i
 // ---- Login ----
 
 type loginReq struct {
-	SessionHandle uint32 `json:"session_handle"`
+	SessionHandle uint32 `json:"session_id"`
 	UserType      uint32 `json:"user_type"`
 	PIN           string `json:"pin"`
 }
@@ -235,11 +276,9 @@ func (h *PKCSHandler) handleLogin(ctx context.Context, req *Frame) (interface{},
 		pkcs11types.UserType(r.UserType), r.PIN)
 	if err != nil {
 		slog.Warn("Login 失败", "session", r.SessionHandle, "error", err)
-		// 将特定的 CKR 错误码直接返回
-		if ckr, ok := err.(pkcs11types.CKRv); ok {
-			return nil, uint32(ckr)
-		}
-		return nil, uint32(pkcs11types.CKR_PIN_INCORRECT)
+		// 直接返回具体 CKR：错误可能被 fmt.Errorf("%w") 包装，必须用 errors.As 解包，
+		// 否则 PIN 锁定/已登录等语义都会退化成 PIN_INCORRECT。
+		return nil, ckrFromError(err, uint32(pkcs11types.CKR_PIN_INCORRECT))
 	}
 	return nil, uint32(pkcs11types.CKR_OK)
 }
@@ -253,10 +292,7 @@ func (h *PKCSHandler) handleLogout(ctx context.Context, req *Frame) (interface{}
 	}
 
 	if err := h.manager.Logout(ctx, pkcs11types.SessionHandle(r.SessionHandle)); err != nil {
-		if ckr, ok := err.(pkcs11types.CKRv); ok {
-			return nil, uint32(ckr)
-		}
-		return nil, uint32(pkcs11types.CKR_SESSION_HANDLE_INVALID)
+		return nil, ckrFromError(err, uint32(pkcs11types.CKR_SESSION_HANDLE_INVALID))
 	}
 	return nil, uint32(pkcs11types.CKR_OK)
 }
@@ -264,7 +300,7 @@ func (h *PKCSHandler) handleLogout(ctx context.Context, req *Frame) (interface{}
 // ---- FindObjectsInit ----
 
 type findObjectsInitReq struct {
-	SessionHandle uint32 `json:"session_handle"`
+	SessionHandle uint32 `json:"session_id"`
 	Template      []struct {
 		Type  uint32 `json:"type"`
 		Value []byte `json:"value"`
@@ -308,17 +344,25 @@ func (h *PKCSHandler) handleFindObjectsInit(ctx context.Context, req *Frame) (in
 	s.FindResults = handles
 	s.FindPos = 0
 	s.FindActive = true
-	return nil, uint32(pkcs11types.CKR_OK)
+
+	// C 驱动期望 {"count":N,"handles":[h1,h2,...]}，否则会解析出 0 个对象
+	result := make([]uint32, len(handles))
+	for i, h := range handles {
+		result[i] = uint32(h)
+	}
+	return &findObjectsInitResp{Count: uint32(len(result)), Handles: result}, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- FindObjects ----
 
 type findObjectsReq struct {
-	SessionHandle uint32 `json:"session_handle"`
+	SessionHandle uint32 `json:"session_id"`
 	MaxCount      uint32 `json:"max_count"`
 }
 
-type findObjectsResp struct {
+// findObjectsInitResp 对应 FindObjectsInit：C 驱动读取 count 与 "handles":[...] 数组。
+type findObjectsInitResp struct {
+	Count   uint32   `json:"count"`
 	Handles []uint32 `json:"handles"`
 }
 
@@ -346,13 +390,16 @@ func (h *PKCSHandler) handleFindObjects(ctx context.Context, req *Frame) (interf
 		count = len(remaining)
 	}
 
-	result := make([]uint32, count)
+	// C 驱动按 count + "handles[i]" 索引键逐个读取句柄，
+	// 因此这里返回 {"count":N,"handles[0]":h0,"handles[1]":h1,...}
+	body := make(map[string]interface{}, count+1)
+	body["count"] = uint32(count)
 	for i := 0; i < count; i++ {
-		result[i] = uint32(remaining[i])
+		body[fmt.Sprintf("handles[%d]", i)] = uint32(remaining[i])
 	}
 	s.FindPos += count
 
-	return &findObjectsResp{Handles: result}, uint32(pkcs11types.CKR_OK)
+	return body, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- FindObjectsFinal ----
@@ -383,17 +430,21 @@ func (h *PKCSHandler) handleFindObjectsFinal(ctx context.Context, req *Frame) (i
 
 // ---- GetAttributeValue ----
 
+// getAttrReq 对应 C 驱动 C_GetAttributeValue 的请求：
+// {"session_id":N,"object_handle":M,"types":[t1,t2,...]}
 type getAttrReq struct {
-	SessionHandle uint32   `json:"session_handle"`
+	SessionHandle uint32   `json:"session_id"`
 	ObjectHandle  uint32   `json:"object_handle"`
-	AttrTypes     []uint32 `json:"attr_types"`
+	AttrTypes     []uint32 `json:"types"`
 }
 
+// getAttrResp 的 JSON 键名必须为 attrs：C 驱动通过 strstr(resp, "\"attrs\":[")
+// 定位属性数组，随后逐个匹配 "type":N 并读取 value。
 type getAttrResp struct {
 	Attributes []struct {
 		Type  uint32 `json:"type"`
 		Value []byte `json:"value"`
-	} `json:"attributes"`
+	} `json:"attrs"`
 }
 
 func (h *PKCSHandler) handleGetAttributeValue(ctx context.Context, req *Frame) (interface{}, uint32) {
@@ -430,8 +481,8 @@ func (h *PKCSHandler) handleGetAttributeValue(ctx context.Context, req *Frame) (
 // ---- SignInit ----
 
 type signInitReq struct {
-	SessionHandle uint32 `json:"session_handle"`
-	MechanismType uint32 `json:"mechanism_type"`
+	SessionHandle uint32 `json:"session_id"`
+	MechanismType uint32 `json:"mechanism"`
 	MechParam     []byte `json:"mech_param,omitempty"`
 	KeyHandle     uint32 `json:"key_handle"`
 }
@@ -467,7 +518,7 @@ func (h *PKCSHandler) handleSignInit(ctx context.Context, req *Frame) (interface
 // ---- Sign ----
 
 type signReq struct {
-	SessionHandle uint32 `json:"session_handle"`
+	SessionHandle uint32 `json:"session_id"`
 	Data          []byte `json:"data"`
 }
 
@@ -512,8 +563,8 @@ func (h *PKCSHandler) handleSign(ctx context.Context, req *Frame) (interface{}, 
 // ---- DecryptInit ----
 
 type cryptInitReq struct {
-	SessionHandle uint32 `json:"session_handle"`
-	MechanismType uint32 `json:"mechanism_type"`
+	SessionHandle uint32 `json:"session_id"`
+	MechanismType uint32 `json:"mechanism"`
 	MechParam     []byte `json:"mech_param,omitempty"`
 	KeyHandle     uint32 `json:"key_handle"`
 }
@@ -547,9 +598,10 @@ func (h *PKCSHandler) handleDecryptInit(ctx context.Context, req *Frame) (interf
 
 // ---- Decrypt ----
 
+// decryptReq 对应 C 驱动 C_Decrypt：{"session_id","key_handle","mechanism","data":<b64>}
 type decryptReq struct {
-	SessionHandle uint32 `json:"session_handle"`
-	Ciphertext    []byte `json:"ciphertext"`
+	SessionHandle uint32 `json:"session_id"`
+	Data          []byte `json:"data"`
 }
 
 type decryptResp struct {
@@ -581,7 +633,7 @@ func (h *PKCSHandler) handleDecrypt(ctx context.Context, req *Frame) (interface{
 	s.DecryptActive = false
 	s.Unlock()
 
-	plain, err := s.Provider.Decrypt(ctx, decryptHandle, decryptMech, r.Ciphertext)
+	plain, err := s.Provider.Decrypt(ctx, decryptHandle, decryptMech, r.Data)
 	if err != nil {
 		slog.Error("Decrypt 失败", "error", err)
 		return nil, uint32(pkcs11types.CKR_FUNCTION_FAILED)
@@ -620,9 +672,10 @@ func (h *PKCSHandler) handleEncryptInit(ctx context.Context, req *Frame) (interf
 
 // ---- Encrypt ----
 
+// encryptReq 对应 C 驱动 C_Encrypt：{"session_id","key_handle","mechanism","data":<b64>}
 type encryptReq struct {
-	SessionHandle uint32 `json:"session_handle"`
-	Plaintext     []byte `json:"plaintext"`
+	SessionHandle uint32 `json:"session_id"`
+	Data          []byte `json:"data"`
 }
 
 type encryptResp struct {
@@ -650,7 +703,7 @@ func (h *PKCSHandler) handleEncrypt(ctx context.Context, req *Frame) (interface{
 	s.EncryptActive = false
 	s.Unlock()
 
-	cipher, err := s.Provider.Encrypt(ctx, encryptHandle, encryptMech, r.Plaintext)
+	cipher, err := s.Provider.Encrypt(ctx, encryptHandle, encryptMech, r.Data)
 	if err != nil {
 		slog.Error("Encrypt 失败", "error", err)
 		return nil, uint32(pkcs11types.CKR_FUNCTION_FAILED)
@@ -689,30 +742,27 @@ func (h *PKCSHandler) handleHandshake(_ context.Context, req *Frame) (interface{
 
 // ---- GetInfo ----
 
+// getInfoResp 的键名与 C 驱动解析逻辑一致：
+// manufacturer_id / library_description / library_version_major / library_version_minor。
 type getInfoResp struct {
-	CryptokiVersion struct {
-		Major uint8 `json:"major"`
-		Minor uint8 `json:"minor"`
-	} `json:"cryptoki_version"`
-	ManufacturerID  string `json:"manufacturer_id"`
-	Flags           uint32 `json:"flags"`
-	LibraryDesc     string `json:"library_desc"`
-	LibraryVersion  struct {
-		Major uint8 `json:"major"`
-		Minor uint8 `json:"minor"`
-	} `json:"library_version"`
+	ManufacturerID       string `json:"manufacturer_id"`
+	Flags                uint32 `json:"flags"`
+	LibraryDescription   string `json:"library_description"`
+	LibraryVersionMajor  uint8  `json:"library_version_major"`
+	LibraryVersionMinor  uint8  `json:"library_version_minor"`
+	CryptokiVersionMajor uint8  `json:"cryptoki_version_major"`
+	CryptokiVersionMinor uint8  `json:"cryptoki_version_minor"`
 }
 
 func (h *PKCSHandler) handleGetInfo(_ context.Context, _ *Frame) (interface{}, uint32) {
-	resp := &getInfoResp{
-		ManufacturerID: "OpenCert Project",
-		LibraryDesc:    "OpenCert PKCS#11 Driver",
-	}
-	resp.CryptokiVersion.Major = 2
-	resp.CryptokiVersion.Minor = 40
-	resp.LibraryVersion.Major = 1
-	resp.LibraryVersion.Minor = 0
-	return resp, uint32(pkcs11types.CKR_OK)
+	return &getInfoResp{
+		ManufacturerID:       "OpenCert Project",
+		LibraryDescription:   "OpenCert PKCS#11 Driver",
+		LibraryVersionMajor:  1,
+		LibraryVersionMinor:  0,
+		CryptokiVersionMajor: 2,
+		CryptokiVersionMinor: 40,
+	}, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- GetSessionInfo ----
@@ -750,7 +800,7 @@ func (h *PKCSHandler) handleGetSessionInfo(_ context.Context, req *Frame) (inter
 
 type getMechInfoReq struct {
 	SlotID        uint32 `json:"slot_id"`
-	MechanismType uint32 `json:"mechanism_type"`
+	MechanismType uint32 `json:"mechanism"`
 }
 
 type getMechInfoResp struct {
@@ -761,10 +811,10 @@ type getMechInfoResp struct {
 
 // 机制信息标志位。
 const (
-	CKF_ENCRYPT  uint32 = 0x00000100
-	CKF_DECRYPT  uint32 = 0x00000200
-	CKF_SIGN     uint32 = 0x00000800
-	CKF_VERIFY   uint32 = 0x00002000
+	CKF_ENCRYPT           uint32 = 0x00000100
+	CKF_DECRYPT           uint32 = 0x00000200
+	CKF_SIGN              uint32 = 0x00000800
+	CKF_VERIFY            uint32 = 0x00002000
 	CKF_GENERATE_KEY_PAIR uint32 = 0x00010000
 )
 
@@ -799,43 +849,43 @@ var mechanismInfoMap = map[pkcs11types.MechanismType]getMechInfoResp{
 	pkcs11types.CKM_SHA384_RSA_PKCS_PSS:   {MinKeySize: 1024, MaxKeySize: 8192, Flags: CKF_SIGN | CKF_VERIFY},
 	pkcs11types.CKM_SHA512_RSA_PKCS_PSS:   {MinKeySize: 1024, MaxKeySize: 8192, Flags: CKF_SIGN | CKF_VERIFY},
 	// EC
-	pkcs11types.CKM_EC_KEY_PAIR_GEN:       {MinKeySize: 256, MaxKeySize: 521, Flags: CKF_GENERATE_KEY_PAIR},
-	pkcs11types.CKM_ECDSA:                 {MinKeySize: 256, MaxKeySize: 521, Flags: CKF_SIGN | CKF_VERIFY},
-	pkcs11types.CKM_ECDSA_SHA256:          {MinKeySize: 256, MaxKeySize: 521, Flags: CKF_SIGN | CKF_VERIFY},
-	pkcs11types.CKM_ECDSA_SHA384:          {MinKeySize: 256, MaxKeySize: 521, Flags: CKF_SIGN | CKF_VERIFY},
-	pkcs11types.CKM_ECDSA_SHA512:          {MinKeySize: 256, MaxKeySize: 521, Flags: CKF_SIGN | CKF_VERIFY},
+	pkcs11types.CKM_EC_KEY_PAIR_GEN: {MinKeySize: 256, MaxKeySize: 521, Flags: CKF_GENERATE_KEY_PAIR},
+	pkcs11types.CKM_ECDSA:           {MinKeySize: 256, MaxKeySize: 521, Flags: CKF_SIGN | CKF_VERIFY},
+	pkcs11types.CKM_ECDSA_SHA256:    {MinKeySize: 256, MaxKeySize: 521, Flags: CKF_SIGN | CKF_VERIFY},
+	pkcs11types.CKM_ECDSA_SHA384:    {MinKeySize: 256, MaxKeySize: 521, Flags: CKF_SIGN | CKF_VERIFY},
+	pkcs11types.CKM_ECDSA_SHA512:    {MinKeySize: 256, MaxKeySize: 521, Flags: CKF_SIGN | CKF_VERIFY},
 	// EdDSA (Ed25519)
-	pkcs11types.CKM_EDDSA:                 {MinKeySize: 256, MaxKeySize: 256, Flags: CKF_SIGN | CKF_VERIFY},
+	pkcs11types.CKM_EDDSA: {MinKeySize: 256, MaxKeySize: 256, Flags: CKF_SIGN | CKF_VERIFY},
 	// AES
-	pkcs11types.CKM_AES_CBC:               {MinKeySize: 128, MaxKeySize: 256, Flags: CKF_ENCRYPT | CKF_DECRYPT},
-	pkcs11types.CKM_AES_GCM:               {MinKeySize: 128, MaxKeySize: 256, Flags: CKF_ENCRYPT | CKF_DECRYPT},
+	pkcs11types.CKM_AES_CBC: {MinKeySize: 128, MaxKeySize: 256, Flags: CKF_ENCRYPT | CKF_DECRYPT},
+	pkcs11types.CKM_AES_GCM: {MinKeySize: 128, MaxKeySize: 256, Flags: CKF_ENCRYPT | CKF_DECRYPT},
 	// ChaCha20
-	pkcs11types.CKM_CHACHA20_POLY1305:     {MinKeySize: 256, MaxKeySize: 256, Flags: CKF_ENCRYPT | CKF_DECRYPT},
+	pkcs11types.CKM_CHACHA20_POLY1305: {MinKeySize: 256, MaxKeySize: 256, Flags: CKF_ENCRYPT | CKF_DECRYPT},
 	// 摘要算法
-	pkcs11types.CKM_SHA_1:                 {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
-	pkcs11types.CKM_SHA256:                {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
-	pkcs11types.CKM_SHA384:                {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
-	pkcs11types.CKM_SHA512:                {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
-	pkcs11types.CKM_SHA3_256:              {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
-	pkcs11types.CKM_SHA3_384:              {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
-	pkcs11types.CKM_SHA3_512:              {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
-	pkcs11types.CKM_MD5:                   {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
+	pkcs11types.CKM_SHA_1:    {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
+	pkcs11types.CKM_SHA256:   {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
+	pkcs11types.CKM_SHA384:   {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
+	pkcs11types.CKM_SHA512:   {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
+	pkcs11types.CKM_SHA3_256: {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
+	pkcs11types.CKM_SHA3_384: {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
+	pkcs11types.CKM_SHA3_512: {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
+	pkcs11types.CKM_MD5:      {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
 	// 国密
-	pkcs11types.CKM_SM2_KEY_PAIR_GEN:      {MinKeySize: 256, MaxKeySize: 256, Flags: CKF_GENERATE_KEY_PAIR},
-	pkcs11types.CKM_SM2:                   {MinKeySize: 256, MaxKeySize: 256, Flags: CKF_SIGN | CKF_VERIFY | CKF_ENCRYPT | CKF_DECRYPT},
-	pkcs11types.CKM_SM3:                   {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
-	pkcs11types.CKM_SM4_CBC:               {MinKeySize: 128, MaxKeySize: 128, Flags: CKF_ENCRYPT | CKF_DECRYPT},
-	pkcs11types.CKM_SM4_GCM:               {MinKeySize: 128, MaxKeySize: 128, Flags: CKF_ENCRYPT | CKF_DECRYPT},
+	pkcs11types.CKM_SM2_KEY_PAIR_GEN: {MinKeySize: 256, MaxKeySize: 256, Flags: CKF_GENERATE_KEY_PAIR},
+	pkcs11types.CKM_SM2:              {MinKeySize: 256, MaxKeySize: 256, Flags: CKF_SIGN | CKF_VERIFY | CKF_ENCRYPT | CKF_DECRYPT},
+	pkcs11types.CKM_SM3:              {MinKeySize: 0, MaxKeySize: 0, Flags: 0},
+	pkcs11types.CKM_SM4_CBC:          {MinKeySize: 128, MaxKeySize: 128, Flags: CKF_ENCRYPT | CKF_DECRYPT},
+	pkcs11types.CKM_SM4_GCM:          {MinKeySize: 128, MaxKeySize: 128, Flags: CKF_ENCRYPT | CKF_DECRYPT},
 }
 
 // ---- InitPIN ----
 
 type initPINReq struct {
-	SessionHandle uint32 `json:"session_handle"`
+	SessionHandle uint32 `json:"session_id"`
 	PIN           string `json:"pin"`
 }
 
-func (h *PKCSHandler) handleInitPIN(_ context.Context, req *Frame) (interface{}, uint32) {
+func (h *PKCSHandler) handleInitPIN(ctx context.Context, req *Frame) (interface{}, uint32) {
 	var r initPINReq
 	if err := ParseRequest(req.Payload, &r); err != nil {
 		return nil, uint32(pkcs11types.CKR_ARGUMENTS_BAD)
@@ -847,27 +897,34 @@ func (h *PKCSHandler) handleInitPIN(_ context.Context, req *Frame) (interface{},
 	}
 
 	s.Lock()
-	defer s.Unlock()
-
 	// InitPIN 只能在 RW_SO 状态下调用
-	if s.State != pkcs11types.CKS_RW_SO_FUNCTIONS {
+	isSO := s.State == pkcs11types.CKS_RW_SO_FUNCTIONS
+	provider := s.Provider
+	s.Unlock()
+	if !isSO {
 		return nil, uint32(pkcs11types.CKR_USER_NOT_LOGGED_IN)
 	}
 
-	// TODO: 实际的 PIN 初始化逻辑（设置 Token 的 User PIN）
-	slog.Info("InitPIN 调用", "session", r.SessionHandle)
+	pinMgr, ok := provider.(card.PINManager)
+	if !ok {
+		return nil, uint32(pkcs11types.CKR_FUNCTION_NOT_SUPPORTED)
+	}
+	if err := pinMgr.SetUserPIN(ctx, r.PIN); err != nil {
+		slog.Warn("InitPIN 失败", "session", r.SessionHandle, "error", err)
+		return nil, ckrFromError(err, uint32(pkcs11types.CKR_FUNCTION_FAILED))
+	}
 	return nil, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- SetPIN ----
 
 type setPINReq struct {
-	SessionHandle uint32 `json:"session_handle"`
+	SessionHandle uint32 `json:"session_id"`
 	OldPIN        string `json:"old_pin"`
 	NewPIN        string `json:"new_pin"`
 }
 
-func (h *PKCSHandler) handleSetPIN(_ context.Context, req *Frame) (interface{}, uint32) {
+func (h *PKCSHandler) handleSetPIN(ctx context.Context, req *Frame) (interface{}, uint32) {
 	var r setPINReq
 	if err := ParseRequest(req.Payload, &r); err != nil {
 		return nil, uint32(pkcs11types.CKR_ARGUMENTS_BAD)
@@ -879,30 +936,40 @@ func (h *PKCSHandler) handleSetPIN(_ context.Context, req *Frame) (interface{}, 
 	}
 
 	s.Lock()
-	defer s.Unlock()
-
 	// SetPIN 需要在 RW_USER 或 RW_SO 状态下调用
-	if s.State != pkcs11types.CKS_RW_USER_FUNCTIONS && s.State != pkcs11types.CKS_RW_SO_FUNCTIONS {
+	rw := s.State == pkcs11types.CKS_RW_USER_FUNCTIONS || s.State == pkcs11types.CKS_RW_SO_FUNCTIONS
+	provider := s.Provider
+	s.Unlock()
+	if !rw {
 		return nil, uint32(pkcs11types.CKR_SESSION_READ_ONLY)
 	}
 
-	// TODO: 实际的 PIN 修改逻辑
-	slog.Info("SetPIN 调用", "session", r.SessionHandle)
+	pinMgr, ok := provider.(card.PINManager)
+	if !ok {
+		return nil, uint32(pkcs11types.CKR_FUNCTION_NOT_SUPPORTED)
+	}
+	if err := pinMgr.SetPIN(ctx, r.OldPIN, r.NewPIN); err != nil {
+		slog.Warn("SetPIN 失败", "session", r.SessionHandle, "error", err)
+		return nil, ckrFromError(err, uint32(pkcs11types.CKR_FUNCTION_FAILED))
+	}
 	return nil, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- CreateObject ----
 
+// createObjectReq 对应 C 驱动 C_CreateObject：
+// {"session_id":N,"attr_count":M,"template":[{"type":T,"value":"<base64>"},...]}
 type createObjectReq struct {
-	SessionHandle uint32 `json:"session_handle"`
+	SessionHandle uint32 `json:"session_id"`
 	Template      []struct {
 		Type  uint32 `json:"type"`
 		Value []byte `json:"value"`
 	} `json:"template"`
 }
 
+// createObjectResp 的键名 handle 与 C 驱动 json_get_int(resp, "handle", ...) 一致。
 type createObjectResp struct {
-	ObjectHandle uint32 `json:"object_handle"`
+	ObjectHandle uint32 `json:"handle"`
 }
 
 func (h *PKCSHandler) handleCreateObject(ctx context.Context, req *Frame) (interface{}, uint32) {
@@ -917,14 +984,22 @@ func (h *PKCSHandler) handleCreateObject(ctx context.Context, req *Frame) (inter
 	}
 
 	s.Lock()
-	// 创建对象需要 RW 会话
-	if !s.IsRW() {
-		s.Unlock()
+	rw := s.IsRW()
+	provider := s.Provider
+	s.Unlock()
+	if !rw {
 		return nil, uint32(pkcs11types.CKR_SESSION_READ_ONLY)
 	}
-	s.Unlock()
 
-	// 转换模板
+	objMgr, ok := provider.(card.ObjectManager)
+	if !ok {
+		return nil, uint32(pkcs11types.CKR_FUNCTION_NOT_SUPPORTED)
+	}
+	if len(r.Template) == 0 {
+		// C 驱动旧版本只发送 attr_count、不发送模板内容
+		return nil, uint32(pkcs11types.CKR_TEMPLATE_INCOMPLETE)
+	}
+
 	template := make([]pkcs11types.Attribute, len(r.Template))
 	for i, t := range r.Template {
 		template[i] = pkcs11types.Attribute{
@@ -933,16 +1008,20 @@ func (h *PKCSHandler) handleCreateObject(ctx context.Context, req *Frame) (inter
 		}
 	}
 
-	// TODO: 实际的对象创建逻辑（通过 Provider 接口）
-	slog.Info("CreateObject 调用", "session", r.SessionHandle, "attrs", len(template))
-	return &createObjectResp{ObjectHandle: 0}, uint32(pkcs11types.CKR_OK)
+	handle, err := objMgr.CreateObject(ctx, template)
+	if err != nil {
+		slog.Warn("CreateObject 失败", "session", r.SessionHandle, "error", err)
+		return nil, ckrFromError(err, uint32(pkcs11types.CKR_FUNCTION_FAILED))
+	}
+	return &createObjectResp{ObjectHandle: uint32(handle)}, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- DestroyObject ----
 
+// destroyObjectReq 对应 C 驱动 C_DestroyObject：{"session_id":N,"handle":H}
 type destroyObjectReq struct {
-	SessionHandle uint32 `json:"session_handle"`
-	ObjectHandle  uint32 `json:"object_handle"`
+	SessionHandle uint32 `json:"session_id"`
+	ObjectHandle  uint32 `json:"handle"`
 }
 
 func (h *PKCSHandler) handleDestroyObject(ctx context.Context, req *Frame) (interface{}, uint32) {
@@ -957,22 +1036,116 @@ func (h *PKCSHandler) handleDestroyObject(ctx context.Context, req *Frame) (inte
 	}
 
 	s.Lock()
-	if !s.IsRW() {
-		s.Unlock()
+	rw := s.IsRW()
+	provider := s.Provider
+	s.Unlock()
+	if !rw {
 		return nil, uint32(pkcs11types.CKR_SESSION_READ_ONLY)
 	}
-	s.Unlock()
 
-	// TODO: 实际的对象删除逻辑（通过 Provider 接口）
-	slog.Info("DestroyObject 调用", "session", r.SessionHandle, "object", r.ObjectHandle)
+	objMgr, ok := provider.(card.ObjectManager)
+	if !ok {
+		return nil, uint32(pkcs11types.CKR_FUNCTION_NOT_SUPPORTED)
+	}
+	if err := objMgr.DestroyObject(ctx, pkcs11types.ObjectHandle(r.ObjectHandle)); err != nil {
+		slog.Warn("DestroyObject 失败", "session", r.SessionHandle, "error", err)
+		return nil, ckrFromError(err, uint32(pkcs11types.CKR_FUNCTION_FAILED))
+	}
 	return nil, uint32(pkcs11types.CKR_OK)
+}
+
+// ---- SetAttributeValue ----
+
+// setAttributeValueReq 对应 C 驱动 C_SetAttributeValue：
+// {"session_id":N,"object_handle":H,"attrs":[{"type":T,"value":"<base64>"},...]}
+type setAttributeValueReq struct {
+	SessionHandle uint32 `json:"session_id"`
+	ObjectHandle  uint32 `json:"object_handle"`
+	Attrs         []struct {
+		Type  uint32 `json:"type"`
+		Value []byte `json:"value"`
+	} `json:"attrs"`
+}
+
+func (h *PKCSHandler) handleSetAttributeValue(ctx context.Context, req *Frame) (interface{}, uint32) {
+	var r setAttributeValueReq
+	if err := ParseRequest(req.Payload, &r); err != nil {
+		return nil, uint32(pkcs11types.CKR_ARGUMENTS_BAD)
+	}
+
+	s, err := h.manager.GetSession(pkcs11types.SessionHandle(r.SessionHandle))
+	if err != nil {
+		return nil, uint32(pkcs11types.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	s.Lock()
+	rw := s.IsRW()
+	provider := s.Provider
+	s.Unlock()
+	if !rw {
+		return nil, uint32(pkcs11types.CKR_SESSION_READ_ONLY)
+	}
+
+	objMgr, ok := provider.(card.ObjectManager)
+	if !ok {
+		return nil, uint32(pkcs11types.CKR_FUNCTION_NOT_SUPPORTED)
+	}
+
+	attrs := make([]pkcs11types.Attribute, len(r.Attrs))
+	for i, a := range r.Attrs {
+		attrs[i] = pkcs11types.Attribute{
+			Type:  pkcs11types.AttributeType(a.Type),
+			Value: a.Value,
+		}
+	}
+	if err := objMgr.SetAttributes(ctx, pkcs11types.ObjectHandle(r.ObjectHandle), attrs); err != nil {
+		slog.Warn("SetAttributeValue 失败", "session", r.SessionHandle, "error", err)
+		return nil, ckrFromError(err, uint32(pkcs11types.CKR_FUNCTION_FAILED))
+	}
+	return nil, uint32(pkcs11types.CKR_OK)
+}
+
+// ---- GetObjectSize ----
+
+// getObjectSizeReq 对应 C 驱动 C_GetObjectSize：{"session_id":N,"object_handle":H}
+type getObjectSizeReq struct {
+	SessionHandle uint32 `json:"session_id"`
+	ObjectHandle  uint32 `json:"object_handle"`
+}
+
+type getObjectSizeResp struct {
+	Size uint32 `json:"size"`
+}
+
+func (h *PKCSHandler) handleGetObjectSize(ctx context.Context, req *Frame) (interface{}, uint32) {
+	var r getObjectSizeReq
+	if err := ParseRequest(req.Payload, &r); err != nil {
+		return nil, uint32(pkcs11types.CKR_ARGUMENTS_BAD)
+	}
+
+	s, err := h.manager.GetSession(pkcs11types.SessionHandle(r.SessionHandle))
+	if err != nil {
+		return nil, uint32(pkcs11types.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	objMgr, ok := s.Provider.(card.ObjectManager)
+	if !ok {
+		return nil, uint32(pkcs11types.CKR_FUNCTION_NOT_SUPPORTED)
+	}
+	size, err := objMgr.ObjectSize(ctx, pkcs11types.ObjectHandle(r.ObjectHandle))
+	if err != nil {
+		return nil, ckrFromError(err, uint32(pkcs11types.CKR_FUNCTION_FAILED))
+	}
+	return &getObjectSizeResp{Size: size}, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- GenerateKeyPair ----
 
+// generateKeyPairReq 对应 C 驱动 C_GenerateKeyPair：{"session_id":N,"mechanism":M}。
+// C 驱动不传递密钥模板，因此密钥规格由机制决定（RSA→2048、EC→P-256）。
 type generateKeyPairReq struct {
-	SessionHandle uint32 `json:"session_handle"`
-	MechanismType uint32 `json:"mechanism_type"`
+	SessionHandle uint32 `json:"session_id"`
+	MechanismType uint32 `json:"mechanism"`
 	MechParam     []byte `json:"mech_param,omitempty"`
 	PubTemplate   []struct {
 		Type  uint32 `json:"type"`
@@ -984,9 +1157,10 @@ type generateKeyPairReq struct {
 	} `json:"priv_template"`
 }
 
+// generateKeyPairResp 的键名与 C 驱动 json_get_int(resp, "pub_handle"/"priv_handle") 一致。
 type generateKeyPairResp struct {
-	PubKeyHandle  uint32 `json:"pub_key_handle"`
-	PrivKeyHandle uint32 `json:"priv_key_handle"`
+	PubKeyHandle  uint32 `json:"pub_handle"`
+	PrivKeyHandle uint32 `json:"priv_handle"`
 }
 
 func (h *PKCSHandler) handleGenerateKeyPair(ctx context.Context, req *Frame) (interface{}, uint32) {
@@ -1001,17 +1175,39 @@ func (h *PKCSHandler) handleGenerateKeyPair(ctx context.Context, req *Frame) (in
 	}
 
 	s.Lock()
-	if !s.IsRW() {
-		s.Unlock()
+	rw := s.IsRW()
+	loggedIn := s.Provider.IsLoggedIn()
+	provider := s.Provider
+	s.Unlock()
+	if !rw {
 		return nil, uint32(pkcs11types.CKR_SESSION_READ_ONLY)
 	}
-	if !s.Provider.IsLoggedIn() {
-		s.Unlock()
+	if !loggedIn {
 		return nil, uint32(pkcs11types.CKR_USER_NOT_LOGGED_IN)
 	}
-	s.Unlock()
 
-	// TODO: 实际的密钥对生成逻辑（复用现有 keygen 逻辑）
-	slog.Info("GenerateKeyPair 调用", "session", r.SessionHandle, "mechanism", r.MechanismType)
-	return &generateKeyPairResp{PubKeyHandle: 0, PrivKeyHandle: 0}, uint32(pkcs11types.CKR_OK)
+	gen, ok := provider.(card.KeyPairGenerator)
+	if !ok {
+		return nil, uint32(pkcs11types.CKR_FUNCTION_NOT_SUPPORTED)
+	}
+	pub, priv, err := gen.GenerateKeyPair(ctx, pkcs11types.MechanismType(r.MechanismType))
+	if err != nil {
+		slog.Warn("GenerateKeyPair 失败", "session", r.SessionHandle, "error", err)
+		return nil, ckrFromError(err, uint32(pkcs11types.CKR_FUNCTION_FAILED))
+	}
+	return &generateKeyPairResp{
+		PubKeyHandle:  uint32(pub),
+		PrivKeyHandle: uint32(priv),
+	}, uint32(pkcs11types.CKR_OK)
+}
+
+// ckrFromError 把 Provider 返回的错误还原为 PKCS#11 错误码。
+// 各 Slot 实现以 pkcs11types.CKRv 作为错误值包装（fmt.Errorf("%w: ...")），
+// 因此可用 errors.As 精确提取；无法识别时返回 fallback。
+func ckrFromError(err error, fallback uint32) uint32 {
+	var ckr pkcs11types.CKRv
+	if errors.As(err, &ckr) {
+		return uint32(ckr)
+	}
+	return fallback
 }

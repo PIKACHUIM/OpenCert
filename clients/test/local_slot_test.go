@@ -57,8 +57,16 @@ func TestCreateCardAndLogin(t *testing.T) {
 	if card.UUID == "" {
 		t.Fatal("卡片 UUID 为空")
 	}
-	if len(card.CardKeys) != 1 {
-		t.Fatalf("CardKeys 数量错误: got %d, want 1", len(card.CardKeys))
+	// CreateCard 未指定 PUK/AdminKey 时会自动生成，
+	// 因此 CardKeys 至少包含 pin / puk / admin 三类条目。
+	countByType := map[string]int{}
+	for _, e := range card.CardKeys {
+		countByType[e.KeyType]++
+	}
+	for _, kt := range []string{"pin", "puk", "admin"} {
+		if countByType[kt] != 1 {
+			t.Fatalf("期望 %s 条目 1 条, 实际 %d (all=%v)", kt, countByType[kt], countByType)
+		}
 	}
 
 	// 创建 Slot 并登录

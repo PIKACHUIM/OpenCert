@@ -36,28 +36,48 @@ const StatCard: React.FC<{
   darkMode: boolean;
 }> = ({ label, value, icon, color, bgColor, darkMode }) => (
   <div style={{
-    background: darkMode ? '#161b22' : '#fff',
-    border: darkMode ? '1px solid #21262d' : '1px solid #f0f0f0',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)',
     borderLeft: `3px solid ${color}`,
     borderRadius: 10,
-    padding: '16px 18px',
+    padding: '14px 16px',
     display: 'flex',
     alignItems: 'center',
-    gap: 14,
+    gap: 12,
     height: '100%',
-  }}>
+    transition: `transform var(--t-fast) var(--ease-out-expo), box-shadow var(--t-fast) var(--ease-out-expo)`,
+    cursor: 'default',
+    boxShadow: 'var(--shadow-sm)',
+  }}
+    onMouseEnter={e => {
+      (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-2px)';
+      (e.currentTarget as HTMLDivElement).style.boxShadow = 'var(--shadow-md)';
+    }}
+    onMouseLeave={e => {
+      (e.currentTarget as HTMLDivElement).style.transform = '';
+      (e.currentTarget as HTMLDivElement).style.boxShadow = 'var(--shadow-sm)';
+    }}
+  >
     <div style={{
-      width: 44, height: 44, borderRadius: 10,
+      width: 42, height: 42, borderRadius: 10,
       background: bgColor,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontSize: 20, color,
+      fontSize: 19, color,
       flexShrink: 0,
     }}>
       {icon}
     </div>
     <div>
-      <div style={{ fontSize: 11, color: darkMode ? '#8b949e' : '#999', marginBottom: 2 }}>{label}</div>
-      <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1, color: darkMode ? '#e6edf3' : '#1a1a2e' }}>{value}</div>
+      <div style={{
+        fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
+        color: 'var(--text-3)', marginBottom: 3,
+      }}>{label}</div>
+      <div style={{
+        fontSize: 24, fontWeight: 700, lineHeight: 1,
+        color: 'var(--text-1)',
+        fontFamily: 'var(--font-mono)',
+        fontVariantNumeric: 'tabular-nums',
+      }}>{value}</div>
     </div>
   </div>
 );
@@ -70,25 +90,34 @@ const SmartCardItem: React.FC<{ card: CardType; darkMode: boolean }> = ({ card, 
     low: { color: '#52c41a', bg: 'rgba(82,196,26,0.1)', label: '低' },
   };
   const cfg = securityConfig[card.security_level] || securityConfig.low;
-  const slotColors: Record<string, string> = { cloud: '#722ed1', tpm2: '#13c2c2', tpmsc: '#1677ff', local: '#52c41a' };
+  const slotColors: Record<string, string> = { cloud: 'var(--accent)', tpm2: '#06b6d4', tpmsc: '#0284c7', local: 'var(--success)' };
   const slotLabels: Record<string, string> = { cloud: '云端', tpm2: 'TPM2', tpmsc: 'TPM卡', local: '本地' };
   const totalCreds = (card.cert_stats?.x509 || 0) + (card.cert_stats?.fido || 0) + (card.cert_stats?.totp || 0) + (card.cert_stats?.creds || 0);
   const slotColor = slotColors[card.slot_type] || slotColors.local;
 
   return (
     <div style={{
-      background: darkMode ? '#0d1117' : '#fafafa',
-      border: darkMode ? '1px solid #21262d' : '1px solid #eee',
+      background: 'var(--surface-2)',
+      border: '1px solid var(--border)',
       borderRadius: 10,
       padding: '14px 16px',
       minWidth: 200,
       maxWidth: 240,
       flexShrink: 0,
       cursor: 'pointer',
-      transition: 'all 0.2s',
+      transition: `all var(--t-fast) var(--ease-out-expo)`,
+      boxShadow: 'var(--shadow-sm)',
     }}
-      onMouseEnter={e => (e.currentTarget.style.borderColor = slotColor)}
-      onMouseLeave={e => (e.currentTarget.style.borderColor = darkMode ? '#21262d' : '#eee')}
+      onMouseEnter={e => {
+        (e.currentTarget as HTMLDivElement).style.borderColor = slotColor;
+        (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-2px)';
+        (e.currentTarget as HTMLDivElement).style.boxShadow = 'var(--shadow-md)';
+      }}
+      onMouseLeave={e => {
+        (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)';
+        (e.currentTarget as HTMLDivElement).style.transform = '';
+        (e.currentTarget as HTMLDivElement).style.boxShadow = 'var(--shadow-sm)';
+      }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <div style={{
@@ -179,7 +208,7 @@ const TOTPGridCard = memo<{ item: TOTPRowData; darkMode: boolean }>(({ item, dar
         <Text style={{ fontSize: 10, color: darkMode ? '#6e7681' : '#bbb' }}>{item.account}</Text>
         <Progress
           type="circle" size={16} percent={pct} showInfo={false}
-          strokeColor={isExpiring ? '#ff4d4f' : '#1677ff'}
+          strokeColor={isExpiring ? '#ff4d4f' : 'var(--accent)'}
           railColor={darkMode ? '#21262d' : '#f0f0f0'}
         />
         <Text style={{ fontSize: 10, color: isExpiring ? '#ff4d4f' : (darkMode ? '#6e7681' : '#bbb'), fontWeight: isExpiring ? 600 : 400 }}>
@@ -347,10 +376,10 @@ const Dashboard: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [totpItems.length, unlockedPins]);
 
-  const bg = darkMode ? '#0d1117' : '#f5f7fa';
-  const cardBg = darkMode ? '#161b22' : '#fff';
-  const cardBorder = darkMode ? '1px solid #21262d' : '1px solid #eef0f3';
-  const textMuted = darkMode ? '#8b949e' : '#8c8c8c';
+  const bg = darkMode ? '#080c14' : '#f0f4fc';
+  const cardBg = darkMode ? '#0d1525' : '#ffffff';
+  const cardBorder = '1px solid var(--border)';
+  const textMuted = darkMode ? '#7e93b8' : '#64748b';
 
   const certTypeLabels: Record<string, string> = {
     x509: 'X509', ssh: 'SSH', gpg: 'GPG', totp: 'TOTP',
@@ -392,8 +421,8 @@ const Dashboard: React.FC = () => {
         <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
           {[
             { label: '用户数', value: accounts.length, icon: <UserOutlined />, color: '#eb2f96', bg: 'rgba(235,47,150,0.1)' },
-            { label: '智能卡', value: stats.cards, icon: <CreditCardOutlined />, color: '#1677ff', bg: 'rgba(22,119,255,0.1)' },
-            { label: '证书', value: stats.certs, icon: <SafetyCertificateOutlined />, color: '#722ed1', bg: 'rgba(114,46,209,0.1)' },
+            { label: '智能卡', value: stats.cards, icon: <CreditCardOutlined />, color: '#0ea5e9', bg: 'rgba(14,165,233,0.1)' },
+            { label: '证书', value: stats.certs, icon: <SafetyCertificateOutlined />, color: '#0891b2', bg: 'rgba(8,145,178,0.1)' },
             { label: 'TOTP 条目', value: stats.totp, icon: <ClockCircleOutlined />, color: '#fa8c16', bg: 'rgba(250,140,22,0.1)' },
             { label: 'FIDO 凭据', value: stats.fido, icon: <IdcardOutlined />, color: '#13c2c2', bg: 'rgba(19,194,194,0.1)' },
             { label: '安全凭据', value: stats.creds, icon: <LockOutlined />, color: '#52c41a', bg: 'rgba(82,196,26,0.1)' },
@@ -416,7 +445,7 @@ const Dashboard: React.FC = () => {
                 background: 'rgba(22,119,255,0.1)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
-                <CreditCardOutlined style={{ color: '#1677ff', fontSize: 14 }} />
+                <CreditCardOutlined style={{ color: '#0ea5e9', fontSize: 14 }} />
               </div>
               <Text strong style={{ fontSize: 14, color: darkMode ? '#e6edf3' : '#1a1a2e' }}>最近智能卡</Text>
               <Tag color="blue" style={{ fontSize: 10, borderRadius: 4 }}>{cards.length}</Tag>
@@ -499,7 +528,7 @@ const Dashboard: React.FC = () => {
                               style={{ fontSize: 15, fontWeight: 700, letterSpacing: 2, fontFamily: 'monospace', color: isExpiring ? '#ff4d4f' : (darkMode ? '#e6edf3' : '#1a1a2e'), cursor: 'pointer' }}
                               onClick={() => { if (item.code) navigator.clipboard.writeText(item.code).then(() => message.success('已复制')); }}
                             >{item.code || '------'}</Text>
-                            <Progress type="circle" size={16} percent={((item.remaining ?? 30) / (item.period || 30)) * 100} showInfo={false} strokeColor={isExpiring ? '#ff4d4f' : '#1677ff'} />
+                            <Progress type="circle" size={16} percent={((item.remaining ?? 30) / (item.period || 30)) * 100} showInfo={false} strokeColor={isExpiring ? '#ff4d4f' : 'var(--accent)'} />
                             <Tooltip title="复制">
                               <Button type="text" size="small" icon={<CopyOutlined />} onClick={() => { if (item.code) navigator.clipboard.writeText(item.code).then(() => message.success('已复制')); }} />
                             </Tooltip>
@@ -520,10 +549,10 @@ const Dashboard: React.FC = () => {
                 <Space size={8}>
                   <div style={{
                     width: 28, height: 28, borderRadius: 7,
-                    background: 'rgba(114,46,209,0.1)',
+                    background: 'rgba(8,145,178,0.1)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}>
-                    <SafetyCertificateOutlined style={{ color: '#722ed1', fontSize: 14 }} />
+                    <SafetyCertificateOutlined style={{ color: '#0891b2', fontSize: 14 }} />
                   </div>
                   <Text strong style={{ fontSize: 14, color: darkMode ? '#e6edf3' : '#1a1a2e' }}>最近证书</Text>
                   {certItems.length > 0 && (

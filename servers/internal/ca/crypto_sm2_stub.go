@@ -6,8 +6,8 @@
 // SM2 相关调用返回明确错误，提示开发者如何启用真实实现。
 //
 // 启用方式：
-//   1. 引入依赖：`go get github.com/tjfoc/gmsm/sm2`
-//   2. 以 `-tags gmsm` 构建：`go build -tags gmsm ./...`
+//  1. 引入依赖：`go get github.com/tjfoc/gmsm/sm2`
+//  2. 以 `-tags gmsm` 构建：`go build -tags gmsm ./...`
 //
 // 启用后，将链接 crypto_sm2_gmsm.go 中的真实 SM2 密钥生成、签名、验签实现。
 package ca

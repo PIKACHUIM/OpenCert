@@ -1,22 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Tabs, Table, Button, Modal, Form, Select, Space,
-  Tag, Typography, message, Card, Row, Col,
+  Tabs, Table, Button, Modal, Space,
+  Tag, Typography, message, Card, Input,
 } from 'antd';
+import { useNavigate } from 'react-router-dom';
 import { ShoppingCartOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 import {
-  listIssuanceTemplates, createCertOrder, listCertOrders,
-  createCertApplication, listCertApplications,
+  listCertOrders,
+  listCertApplications,
   approveCertApplication, rejectCertApplication,
-  listSubjectInfos, listExtensionInfos,
+  requestPortalRefund,
 } from '../../api';
 import { useAuthStore } from '../../store/auth';
-import type { IssuanceTemplate, CertOrder, CertApplication, SubjectInfo, ExtensionInfo } from '../../types';
+import type { CertOrder, CertApplication } from '../../types';
 
 const { Title, Text } = Typography;
-const { Option } = Select;
-
-const KEY_TYPES = ['ec256', 'ec384', 'rsa2048', 'rsa4096'];
 
 const orderStatusColor: Record<string, string> = {
   pending_payment: 'orange', paid: 'blue', applying: 'cyan',
@@ -31,118 +29,95 @@ const orderStatusText: Record<string, string> = {
 const appStatusColor: Record<string, string> = { pending: 'orange', approved: 'green', rejected: 'red' };
 const appStatusText: Record<string, string> = { pending: '待审批', approved: '已通过', rejected: '已拒绝' };
 
-// ---- 证书商店 Tab ----
+// ---- 选购入口 Tab ----
+//
+// 商品（SKU、价格、库存、开通模板）统一由门户与管理端的「商品管理」维护，
+// 控制台不再保留第二套选购流程，避免同一商品出现两套价格与规则。
 const StoreTab: React.FC = () => {
-  const [templates, setTemplates] = useState<IssuanceTemplate[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [buyOpen, setBuyOpen] = useState(false);
-  const [buying, setBuying] = useState(false);
-  const [selected, setSelected] = useState<IssuanceTemplate | null>(null);
-  const [form] = Form.useForm();
-
-  useEffect(() => {
-    setLoading(true);
-    listIssuanceTemplates({ page: 1, page_size: 50 })
-      .then(r => setTemplates((Array.isArray(r?.items) ? r.items : []).filter((t: IssuanceTemplate) => t.enabled)))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
-
-  const handleBuy = async (values: { validity_days: number; key_type: string }) => {
-    if (!selected) return;
-    setBuying(true);
-    try {
-      await createCertOrder({ template_uuid: selected.uuid, ...values });
-      message.success('订单已创建，请前往「我的订单」完成支付');
-      setBuyOpen(false); form.resetFields();
-    } catch (e: any) { message.error(e.message); }
-    finally { setBuying(false); }
-  };
+  const navigate = useNavigate();
 
   return (
-    <>
-      {loading ? <div>加载中...</div> : (
-        <Row gutter={[16, 16]}>
-          {templates.map(t => (
-            <Col xs={24} sm={12} lg={8} key={t.uuid}>
-              <Card hoverable style={{ height: '100%' }}
-                actions={[
-                  <Button type="primary" icon={<ShoppingCartOutlined />} onClick={() => { setSelected(t); setBuyOpen(true); }}>立即购买</Button>
-                ]}>
-                <Tag color={{ ssl: 'blue', code_sign: 'purple', email: 'green', custom: 'orange' }[t.category] || 'default'} style={{ marginBottom: 8 }}>{t.category}</Tag>
-                <Title level={5} style={{ margin: '0 0 8px' }}>{t.name}</Title>
-                <Text type="secondary" style={{ fontSize: 13 }}>价格：{t.price === 0 ? '免费' : `¥${(t.price / 100).toFixed(2)}`}</Text><br />
-                <Text type="secondary" style={{ fontSize: 13 }}>有效期：{t.validity_options?.join(' / ')} 天</Text><br />
-                <Text type="secondary" style={{ fontSize: 13 }}>密钥类型：{t.allowed_key_types?.join(', ')}</Text>
-              </Card>
-            </Col>
-          ))}
-          {templates.length === 0 && <Col span={24}><Text type="secondary">暂无可购买的证书模板</Text></Col>}
-        </Row>
-      )}
-      <Modal title={`购买证书 — ${selected?.name}`} open={buyOpen} onCancel={() => setBuyOpen(false)} footer={null}>
-        <Form form={form} layout="vertical" onFinish={handleBuy} style={{ marginTop: 16 }}>
-          <Form.Item label="有效期" name="validity_days" rules={[{ required: true }]}>
-            <Select>{(selected?.validity_options || []).map(d => <Option key={d} value={d}>{d} 天</Option>)}</Select>
-          </Form.Item>
-          <Form.Item label="密钥类型" name="key_type" rules={[{ required: true }]}>
-            <Select>{(selected?.allowed_key_types || KEY_TYPES).map(k => <Option key={k} value={k}>{k}</Option>)}</Select>
-          </Form.Item>
-          <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
-            <Space><Button onClick={() => setBuyOpen(false)}>取消</Button><Button type="primary" htmlType="submit" loading={buying}>确认购买</Button></Space>
-          </Form.Item>
-        </Form>
-      </Modal>
-    </>
+    <Card style={{ maxWidth: 720 }}>
+      <Title level={5} style={{ marginTop: 0 }}>选购证书与云卡</Title>
+      <Text type="secondary">
+        产品目录、价格与规格由管理员在「商品与定价 → 商品管理」中配置，
+        购买流程在门户官网完成（选购 → 支付 → 提交申请 → 签发/交付）。
+      </Text>
+      <div style={{ marginTop: 20 }}>
+        <Space>
+          <Button type="primary" icon={<ShoppingCartOutlined />} onClick={() => navigate('/products')}>
+            前往产品中心选购
+          </Button>
+          <Button onClick={() => navigate('/console/products')}>商品管理</Button>
+        </Space>
+      </div>
+    </Card>
   );
 };
 
 // ---- 我的订单 Tab ----
 const OrdersTab: React.FC = () => {
+  const navigate = useNavigate();
   const [orders, setOrders] = useState<CertOrder[]>([]);
+  const [refundOpen, setRefundOpen] = useState(false);
+  const [refundOrder, setRefundOrder] = useState<CertOrder | null>(null);
+  const [refundReason, setRefundReason] = useState('');
   const [loading, setLoading] = useState(false);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [applyOpen, setApplyOpen] = useState(false);
-  const [applying, setApplying] = useState(false);
-  const [selectedOrder, setSelectedOrder] = useState<CertOrder | null>(null);
-  const [subjectInfos, setSubjectInfos] = useState<SubjectInfo[]>([]);
-  const [extensionInfos, setExtensionInfos] = useState<ExtensionInfo[]>([]);
-  const [form] = Form.useForm();
-
   const load = async (p = 1) => {
     setLoading(true);
     try { const res = await listCertOrders({ page: p, page_size: 20 }); setOrders(Array.isArray(res?.items) ? res.items : []); setTotal(res?.total ?? 0); }
     catch (e: any) { message.error(e.message); } finally { setLoading(false); }
   };
 
-  useEffect(() => {
-    load();
-    listSubjectInfos({ page: 1, page_size: 100 }).then(r => setSubjectInfos((Array.isArray(r?.items) ? r.items : []).filter((s: SubjectInfo) => s.status === 'approved'))).catch(() => {});
-    listExtensionInfos({ page: 1, page_size: 100 }).then(r => setExtensionInfos((Array.isArray(r?.items) ? r.items : []).filter((e: ExtensionInfo) => e.status === 'verified'))).catch(() => {});
-  }, []);
+  // 证书申请统一走「申请证书」向导（选择订单 → 主体 → 扩展信息 → 确认），此处不再内嵌表单
+  useEffect(() => { load(); }, []);
 
-  const handleApply = async (values: any) => {
-    if (!selectedOrder) return;
-    setApplying(true);
+  /** 从规格快照中取出可读的商品名 */
+  const specName = (o: CertOrder): string => {
+    if (!o.spec_json) return '-';
     try {
-      await createCertApplication({ order_uuid: selectedOrder.uuid, subject_info_uuid: values.subject_info_uuid, extension_info_uuids: values.extension_info_uuids || [], key_type: values.key_type });
-      message.success('申请已提交，等待管理员审批');
-      setApplyOpen(false); form.resetFields(); load();
-    } catch (e: any) { message.error(e.message); } finally { setApplying(false); }
+      const spec = JSON.parse(o.spec_json);
+      return spec.sku_name || spec.product_name || '-';
+    } catch { return '-'; }
   };
 
   const columns = [
-    { title: '订单 UUID', dataIndex: 'uuid', key: 'uuid', render: (v: string) => <Text code style={{ fontSize: 11 }}>{v.slice(0, 16)}...</Text> },
-    { title: '关联模板', dataIndex: 'template_name', key: 'template_name', render: (v: string) => v || '-' },
-    { title: '金额', dataIndex: 'amount', key: 'amount', render: (v: number) => v === 0 ? '免费' : `¥${(v / 100).toFixed(2)}` },
-    { title: '状态', dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={orderStatusColor[v]}>{orderStatusText[v] || v}</Tag> },
-    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', render: (v: string) => v?.slice(0, 19) },
     {
-      title: '操作', key: 'action', render: (_: any, r: CertOrder) => (
-        r.status === 'paid' ? (
-          <Button size="small" type="primary" onClick={() => { setSelectedOrder(r); setApplyOpen(true); }}>提交申请</Button>
-        ) : null
+      title: '订单号', dataIndex: 'order_no', key: 'order_no', width: 190,
+      render: (v: string, r: CertOrder) => (
+        v ? <Text copyable style={{ fontSize: 12 }}>{v}</Text>
+          : <Text code style={{ fontSize: 11 }}>{r.uuid.slice(0, 12)}…</Text>
+      ),
+    },
+    { title: '商品', key: 'spec', render: (_: any, r: CertOrder) => specName(r) },
+    {
+      title: '金额', key: 'amount', width: 110,
+      render: (_: any, r: CertOrder) => {
+        const cents = r.amount_cents ?? r.amount ?? 0;
+        return cents === 0 ? <Tag color="green">免费</Tag> : `¥${(cents / 100).toFixed(2)}`;
+      },
+    },
+    {
+      title: '状态', dataIndex: 'status', key: 'status', width: 100,
+      render: (v: string) => <Tag color={orderStatusColor[v]}>{orderStatusText[v] || v}</Tag>,
+    },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 160, render: (v: string) => v?.slice(0, 19) },
+    {
+      title: '操作', key: 'action', width: 200,
+      render: (_: any, r: CertOrder) => (
+        <Space size={4}>
+          {r.status === 'pending_payment' && r.order_no && (
+            <Button size="small" type="primary" onClick={() => navigate(`/checkout/${r.order_no}`)}>去支付</Button>
+          )}
+          {r.status === 'paid' && (
+            <>
+              <Button size="small" type="primary" onClick={() => navigate(`/console/apply?order_no=${r.order_no}`)}>提交申请</Button>
+              <Button size="small" onClick={() => { setRefundOrder(r); setRefundOpen(true); }}>退款</Button>
+            </>
+          )}
+        </Space>
       ),
     },
   ];
@@ -151,25 +126,31 @@ const OrdersTab: React.FC = () => {
     <>
       <Table rowKey="uuid" columns={columns} dataSource={orders} loading={loading}
         pagination={{ current: page, total, pageSize: 20, onChange: (p) => { setPage(p); load(p); } }} />
-      <Modal title="提交证书申请" open={applyOpen} onCancel={() => setApplyOpen(false)} footer={null} width={520}>
-        <Form form={form} layout="vertical" onFinish={handleApply} style={{ marginTop: 16 }}>
-          <Form.Item label="选择主体信息（已审核通过）" name="subject_info_uuid" rules={[{ required: true }]}>
-            <Select placeholder="请选择主体信息">
-              {subjectInfos.map(s => <Option key={s.uuid} value={s.uuid}>{s.template_name} — {Object.values(s.fields || {}).slice(0, 2).join(', ')}</Option>)}
-            </Select>
-          </Form.Item>
-          <Form.Item label="选择扩展信息（已验证，可多选）" name="extension_info_uuids">
-            <Select mode="multiple" placeholder="请选择已验证的域名/邮箱/IP">
-              {extensionInfos.map(e => <Option key={e.uuid} value={e.uuid}>{e.type}: {e.value}</Option>)}
-            </Select>
-          </Form.Item>
-          <Form.Item label="密钥类型" name="key_type" rules={[{ required: true }]}>
-            <Select>{KEY_TYPES.map(k => <Option key={k} value={k}>{k}</Option>)}</Select>
-          </Form.Item>
-          <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
-            <Space><Button onClick={() => setApplyOpen(false)}>取消</Button><Button type="primary" htmlType="submit" loading={applying}>提交申请</Button></Space>
-          </Form.Item>
-        </Form>
+      <Modal
+        title="申请退款"
+        open={refundOpen}
+        onCancel={() => { setRefundOpen(false); setRefundReason(''); }}
+        onOk={async () => {
+          if (!refundOrder?.order_no) return;
+          try {
+            await requestPortalRefund(refundOrder.order_no, refundReason || '用户申请退款');
+            message.success('退款申请已提交，等待管理员审批');
+            setRefundOpen(false); setRefundReason(''); load();
+          } catch (e: any) { message.error(e.message); }
+        }}
+        okText="提交申请"
+      >
+        <div style={{ marginTop: 12 }}>
+          <Text type="secondary" style={{ fontSize: 13 }}>
+            订单 {refundOrder?.order_no} 金额 ¥{(((refundOrder?.amount_cents ?? 0)) / 100).toFixed(2)}。
+            已进入签发的订单需先取消申请后再退款。
+          </Text>
+          <Input.TextArea
+            style={{ marginTop: 12 }} rows={3} maxLength={200}
+            placeholder="请填写退款原因（可选）"
+            value={refundReason} onChange={(e) => setRefundReason(e.target.value)}
+          />
+        </div>
       </Modal>
     </>
   );

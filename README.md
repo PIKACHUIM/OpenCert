@@ -48,7 +48,7 @@ pkcs11-mock (C DLL)  ←→  client-card (Go + Electron)  ←→  server-card (G
 └──────────────────────┬──────────────────────────────────┘
                        │ IPC 二进制帧协议
 ┌──────────────────────▼──────────────────────────────────┐
-│              client-card（Go + React + Electron）         │
+│              client-card（Go + React + Wails v2）         │
 │   ┌──────────────┐ ┌──────────────┐ ┌────────────────┐  │
 │   │  Local Slot  │ │  TPM2 Slot   │ │   Cloud Slot   │  │
 │   │ SQLite+AES256│ │ TPM芯片+AES  │ │  REST 转发     │  │
@@ -70,6 +70,7 @@ pkcs11-mock (C DLL)  ←→  client-card (Go + Electron)  ←→  server-card (G
 |------|------|------|
 | [`drivers/`](./drivers) | C / CMake | PKCS#11 v2.40 标准驱动，注册到操作系统 |
 | [`clients/`](./clients) | Go 1.22+ | 本地管理端后端，监听 `:1026`，管理三种虚拟智能卡 |
+| [`desktop/`](./desktop/README.md) | Go + Wails v2 | 桌面客户端（内嵌 `clients` 后端），Windows x64 / arm64 |
 | [`servers/`](./servers) | Go 1.22+ | 云端 CA 平台后端，监听 `:1027`，提供完整 PKI 服务 |
 | [`docpage/`](./docpage) | React + Vite | 项目文档站点 |
 
@@ -209,46 +210,57 @@ modutil -dbdir ~/.mozilla/firefox/<profile> \
 echo "PKCS11Provider /usr/lib/pkcs11/libpkcs11-mock.so" >> ~/.ssh/config
 ```
 
-### 使用 Makefile 一键构建
+### 使用构建脚本一键构建
 
 ```bash
-make build          # 完整构建（前端 + 后端）
-make build-frontend # 仅构建前端
-make build-backend  # 仅构建后端
-make test           # 运行所有测试
-make dev            # 启动前端开发服务器（:5173）
-make clean          # 清理构建产物
+# 客户端：Windows x64 / arm64
+#   产物 dist/clients/：OpenCertManager-*.exe（桌面端）+ client-card-*.exe（本地管理端后端）
+./scripts/build-clients.sh v2.1.0
+
+# 服务端：Linux x64 / arm64 二进制
+#   产物 dist/server/：server-card-linux-{amd64,arm64}（含运行时 web/ 与 SHA256SUMS）
+./scripts/build-server.sh v2.1.0
+
+# 服务端容器镜像：直接封装上面已构建的二进制（多架构）
+./scripts/build-docker.sh v2.1.0                 # 本地单架构构建
+PUSH=1 ALSO_LATEST=1 ./scripts/build-docker.sh v2.1.0   # 推送多架构到镜像仓库
 ```
+
+两个 Go 模块（`clients`、`servers`）在 Windows/Linux 下均无需 cgo，
+因此都可以在任意平台交叉编译；CI 直接在 ubuntu runner 上产出 Windows 产物。
 
 ### Docker 快速部署（云端平台）
 
 ```yaml
 # docker-compose.yml
-version: '3.8'
 services:
-  opencert-platform:
-    image: opencert-platform:latest
+  server-card:
+    image: ghcr.io/<owner>/<repo>/server-card:latest
     ports:
       - "1027:1027"
-    volumes:
-      - ./config.yaml:/etc/opencert/config.yaml
-    depends_on:
-      - db
-  db:
-    image: postgres:16
     environment:
-      POSTGRES_USER: opencert
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: opencert
+      # 必须替换：JWT 签名密钥
+      SERVER_CARD_JWT_SECRET: "please-change-me-in-production"
+      # 可选：固定服务端主密钥（Base64 编码的 32 字节）。
+      # 不设置时首次启动会在 /data 下自动生成 server.masterkey
+      # SERVER_CARD_MASTER_KEY: "...."
+      # 可选：改用外部数据库（默认使用 /data/server.db 的 SQLite）
+      # DATABASE_URL: "postgres://opencert:password@db:5432/opencert"
+      SERVER_CARD_LOG_LEVEL: info
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # 数据库与主密钥都在 /data 下，必须持久化
+      - server-data:/data
 volumes:
-  pgdata:
+  server-data:
 ```
 
 ```bash
-docker-compose up -d
+docker compose up -d
+curl http://localhost:1027/api/health
 ```
+
+> 服务端配置完全由环境变量驱动（前缀 `SERVER_CARD_`），不使用配置文件；
+> 容器内已监听 `0.0.0.0:1027`，镜像健康检查为 `GET /api/health`。
 
 ---
 
@@ -330,7 +342,7 @@ PKCS11Driver/
 | PKCS#11 驱动 | C11 / CMake / Named Pipe / Unix Socket |
 | 前端框架 | React 18 + TypeScript + Ant Design 5.x |
 | 状态管理 | Zustand |
-| 桌面端 | Electron |
+| 桌面端 | Go + Wails v2（[`desktop/wails`](./desktop/README.md)，内嵌后端，单文件交付） |
 | 构建工具 | Vite |
 | 国际化 | i18next（中/英双语） |
 | TPM 支持 | go-tpm（Win/Linux）/ Security.framework（macOS） |

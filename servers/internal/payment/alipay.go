@@ -37,11 +37,11 @@ import (
 
 // AlipayProvider 实现 PaymentProvider。
 type AlipayProvider struct {
-	AppID         string
-	PrivateKey    *rsa.PrivateKey
-	AlipayPubKey  *rsa.PublicKey
-	Gateway       string
-	httpClient    *http.Client
+	AppID        string
+	PrivateKey   *rsa.PrivateKey
+	AlipayPubKey *rsa.PublicKey
+	Gateway      string
+	httpClient   *http.Client
 }
 
 // AlipayConfig 是从 PaymentPlugin.Config JSON 反序列化的结构。

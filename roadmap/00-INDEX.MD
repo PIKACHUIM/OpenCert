@@ -2,7 +2,7 @@
 
 > 项目名称：OpenCert Manager  
 > 文档版本：v2.1.0  
-> 最后更新：2026-05-26
+> 最后更新：2026-09-22
 
 ---
 
@@ -26,6 +26,8 @@
 | 13 | **修复路线图** | `13-FIX-ROADMAP.MD` | 修复计划与优先级排序 |
 | 14 | **审计报告** | `14-AUDIT-REPORT.md` | 安全审计报告 |
 | 15 | **变更日志 R4** | `15-CHANGELOG-ROUND4.md` | 第四轮开发变更记录 |
+| 17 | **客户端与服务端对齐报告** | [`17-CLIENT-SERVER-ALIGNMENT.md`](17-CLIENT-SERVER-ALIGNMENT.md) | 跨端契约、PIN/TOTP、凭据下发与功能边界 |
+| 18 | **门户与交易交付方案** | [`18-PORTAL-COMMERCE-DELIVERY-PLAN.md`](18-PORTAL-COMMERCE-DELIVERY-PLAN.md) | 待确认：官网、商品支付、证书申请、云卡交付、后台与客户端协同 |
 
 ### 附录
 

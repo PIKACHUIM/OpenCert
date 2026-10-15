@@ -34,18 +34,18 @@ type SelfSignRequest struct {
 	IPAddresses []string `json:"ip_addresses"`
 	Emails      []string `json:"emails"`
 	// 密钥用途
-	IsCA          bool `json:"is_ca"`
-	KeyUsage      x509.KeyUsage `json:"-"`
-	ExtKeyUsage   []x509.ExtKeyUsage `json:"-"`
-	PathLenConstraint int `json:"path_len_constraint"`
+	IsCA              bool               `json:"is_ca"`
+	KeyUsage          x509.KeyUsage      `json:"-"`
+	ExtKeyUsage       []x509.ExtKeyUsage `json:"-"`
+	PathLenConstraint int                `json:"path_len_constraint"`
 }
 
 // SelfSignResult 是自签名证书生成结果。
 type SelfSignResult struct {
-	CertPEM    []byte `json:"cert_pem"`
-	KeyPEM     []byte `json:"key_pem"`
-	CertDER    []byte `json:"cert_der"`
-	KeyDER     []byte `json:"key_der"`
+	CertPEM []byte `json:"cert_pem"`
+	KeyPEM  []byte `json:"key_pem"`
+	CertDER []byte `json:"cert_der"`
+	KeyDER  []byte `json:"key_der"`
 }
 
 // GenerateSelfSigned 生成自签名证书。

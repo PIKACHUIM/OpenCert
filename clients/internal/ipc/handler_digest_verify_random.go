@@ -13,7 +13,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
-	"crypto/md5"  //nolint:gosec // PKCS#11 兼容
+	"crypto/md5" //nolint:gosec // PKCS#11 兼容
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1" //nolint:gosec // PKCS#11 兼容
@@ -32,35 +32,38 @@ import (
 
 // PKCS#11 mechanism 常量（与 cryptoki/pkcs11t.h 一致，仅列出本文件需要的）。
 const (
-	ckmRSAPKCS         uint32 = 0x00000001
-	ckmMD5             uint32 = 0x00000210
-	ckmSHA1            uint32 = 0x00000220
-	ckmSHA256          uint32 = 0x00000250
-	ckmSHA384          uint32 = 0x00000260
-	ckmSHA512          uint32 = 0x00000270
-	ckmSHA1RSAPKCS     uint32 = 0x00000006
-	ckmSHA256RSAPKCS   uint32 = 0x00000040
-	ckmSHA384RSAPKCS   uint32 = 0x00000041
-	ckmSHA512RSAPKCS   uint32 = 0x00000042
-	ckmECDSA           uint32 = 0x00001041
-	ckmECDSASHA1       uint32 = 0x00001042
-	ckmECDSASHA256     uint32 = 0x00001044
-	ckmECDSASHA384     uint32 = 0x00001045
-	ckmECDSASHA512     uint32 = 0x00001046
-	ckmEdDSA           uint32 = 0x00001057
+	ckmRSAPKCS       uint32 = 0x00000001
+	ckmMD5           uint32 = 0x00000210
+	ckmSHA1          uint32 = 0x00000220
+	ckmSHA256        uint32 = 0x00000250
+	ckmSHA384        uint32 = 0x00000260
+	ckmSHA512        uint32 = 0x00000270
+	ckmSHA1RSAPKCS   uint32 = 0x00000006
+	ckmSHA256RSAPKCS uint32 = 0x00000040
+	ckmSHA384RSAPKCS uint32 = 0x00000041
+	ckmSHA512RSAPKCS uint32 = 0x00000042
+	ckmECDSA         uint32 = 0x00001041
+	ckmECDSASHA1     uint32 = 0x00001042
+	ckmECDSASHA256   uint32 = 0x00001044
+	ckmECDSASHA384   uint32 = 0x00001045
+	ckmECDSASHA512   uint32 = 0x00001046
+	ckmEdDSA         uint32 = 0x00001057
 )
 
 // digestVerifySession 是不能直接放进 card.Session（避免修改公共结构）的辅助状态，
 // 通过会话句柄索引；handler 持有全局 map 并自行加锁。
 type digestVerifySession struct {
-	digestMech    uint32
-	digestData    []byte
-	digestActive  bool
+	digestMech   uint32
+	digestData   []byte
+	digestActive bool
 
-	verifyMech    uint32
-	verifyKey     pkcs11types.ObjectHandle
-	verifyData    []byte
-	verifyActive  bool
+	verifyMech   uint32
+	verifyKey    pkcs11types.ObjectHandle
+	verifyData   []byte
+	verifyActive bool
+
+	// signData 累积 C_SignUpdate 分片，供 C_SignFinal 一次性签名
+	signData []byte
 }
 
 var (
@@ -93,6 +96,88 @@ func (h *PKCSHandler) RegisterDigestVerifyRandom(s *Server) {
 	s.Register(CmdVerifyFinal, h.handleVerifyFinal)
 	s.Register(CmdGenerateRandom, h.handleGenerateRandom)
 	s.Register(CmdSeedRandom, h.handleSeedRandom)
+	// 多段签名：C 驱动把 C_SignUpdate 的分片转发到后端累积，C_SignFinal 出结果
+	s.Register(CmdSignUpdate, h.handleSignUpdate)
+	s.Register(CmdSignFinal, h.handleSignFinal)
+}
+
+// ---- SignUpdate / SignFinal（多段签名） ----
+
+type signUpdateReq struct {
+	SessionHandle uint32 `json:"session_id"`
+	Part          []byte `json:"part"`
+}
+
+type signFinalReq struct {
+	SessionHandle uint32 `json:"session_id"`
+}
+
+// handleSignUpdate 累积签名数据分片。
+func (h *PKCSHandler) handleSignUpdate(ctx context.Context, req *Frame) (interface{}, uint32) {
+	var r signUpdateReq
+	if err := ParseRequest(req.Payload, &r); err != nil {
+		return nil, uint32(pkcs11types.CKR_ARGUMENTS_BAD)
+	}
+
+	s, err := h.manager.GetSession(pkcs11types.SessionHandle(r.SessionHandle))
+	if err != nil {
+		return nil, uint32(pkcs11types.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	s.Lock()
+	active := s.SignActive
+	s.Unlock()
+	if !active {
+		return nil, uint32(pkcs11types.CKR_OPERATION_NOT_INITIALIZED)
+	}
+
+	st := dvGet(r.SessionHandle)
+	dvMu.Lock()
+	st.signData = append(st.signData, r.Part...)
+	dvMu.Unlock()
+
+	return nil, uint32(pkcs11types.CKR_OK)
+}
+
+// handleSignFinal 用 SignInit 选定的句柄/机制对累积数据签名。
+func (h *PKCSHandler) handleSignFinal(ctx context.Context, req *Frame) (interface{}, uint32) {
+	var r signFinalReq
+	if err := ParseRequest(req.Payload, &r); err != nil {
+		return nil, uint32(pkcs11types.CKR_ARGUMENTS_BAD)
+	}
+
+	s, err := h.manager.GetSession(pkcs11types.SessionHandle(r.SessionHandle))
+	if err != nil {
+		return nil, uint32(pkcs11types.CKR_SESSION_HANDLE_INVALID)
+	}
+
+	s.Lock()
+	if !s.SignActive {
+		s.Unlock()
+		return nil, uint32(pkcs11types.CKR_OPERATION_NOT_INITIALIZED)
+	}
+	if !s.Provider.IsLoggedIn() {
+		s.Unlock()
+		return nil, uint32(pkcs11types.CKR_USER_NOT_LOGGED_IN)
+	}
+	signHandle := s.SignHandle
+	signMech := s.SignMechanism
+	s.SignActive = false
+	provider := s.Provider
+	s.Unlock()
+
+	st := dvGet(r.SessionHandle)
+	dvMu.Lock()
+	data := append([]byte(nil), st.signData...)
+	st.signData = st.signData[:0]
+	dvMu.Unlock()
+
+	sig, err := provider.Sign(ctx, signHandle, signMech, data)
+	if err != nil {
+		slog.Error("SignFinal 失败", "error", err)
+		return nil, uint32(pkcs11types.CKR_FUNCTION_FAILED)
+	}
+	return &signResp{Signature: sig}, uint32(pkcs11types.CKR_OK)
 }
 
 // ---- Digest ----

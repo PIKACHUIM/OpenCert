@@ -15,6 +15,11 @@ import (
 	"github.com/globaltrusts/client-card/internal/storage"
 )
 
+// testAPIToken 保存最近一次 setupAPIServer 生成的本地 API Token。
+// 认证中间件要求受保护的 /api/ 路由必须携带 Bearer Token，
+// apiReq 会自动附加该 Token（代表本机系统调用方，角色为 system）。
+var testAPIToken string
+
 // setupAPIServer 创建测试用 API 服务器（内存 SQLite + 空 Manager）。
 func setupAPIServer(t *testing.T) (*httptest.Server, func()) {
 	t.Helper()
@@ -32,8 +37,15 @@ func setupAPIServer(t *testing.T) (*httptest.Server, func()) {
 	}
 
 	mgr := card.NewManager()
-	cfg := &config.APIConfig{Host: "127.0.0.1", Port: 0}
-	srv := api.NewServer(cfg, mgr, db)
+	// DataDir 指向临时目录：既保证认证 Token 初始化成功，也避免污染工作目录。
+	cfg := &config.APIConfig{Host: "127.0.0.1", Port: 0, DataDir: t.TempDir()}
+	srv, err := api.NewServer(cfg, mgr, db)
+	if err != nil {
+		db.Close()
+		os.Remove(f.Name())
+		t.Fatal(err)
+	}
+	testAPIToken = srv.AuthToken()
 
 	ts := httptest.NewServer(srv.Handler())
 	return ts, func() {
@@ -57,6 +69,9 @@ func apiReq(t *testing.T, ts *httptest.Server, method, path string, body interfa
 		t.Fatalf("创建请求失败: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if testAPIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+testAPIToken)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("发送请求失败: %v", err)
@@ -88,6 +103,95 @@ func TestAPIHealth(t *testing.T) {
 	decodeResp(t, resp, &result)
 	if result["data"] == nil {
 		t.Error("健康检查响应缺少 data 字段")
+	}
+}
+
+// ---- 认证与公开路径 ----
+
+// TestAPILogin 回归测试：认证之后的 RBAC 采用 fail-closed 策略，
+// 但公开路径（登录/注册/健康检查/前端静态资源）必须仍然可达。
+func TestAPILogin(t *testing.T) {
+	ts, cleanup := setupAPIServer(t)
+	defer cleanup()
+
+	resp := apiReq(t, ts, http.MethodPost, "/api/auth/login", map[string]interface{}{
+		"username": "root",
+		"password": "root",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("登录状态码错误: got %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var result struct {
+		Data struct {
+			Token string `json:"token"`
+			Role  string `json:"role"`
+		} `json:"data"`
+	}
+	decodeResp(t, resp, &result)
+	if result.Data.Token == "" {
+		t.Fatal("登录响应缺少 token")
+	}
+	if result.Data.Role != "admin" {
+		t.Errorf("默认 root 用户角色应为 admin，实际 %q", result.Data.Role)
+	}
+}
+
+// TestAPIPublicPathsNotBlockedByRBAC 验证公开路径不会因缺少用户角色被拒绝。
+func TestAPIPublicPathsNotBlockedByRBAC(t *testing.T) {
+	ts, cleanup := setupAPIServer(t)
+	defer cleanup()
+
+	// 健康检查属于公开 API
+	healthResp := apiReq(t, ts, http.MethodGet, "/api/health", nil)
+	if healthResp.StatusCode != http.StatusOK {
+		t.Errorf("健康检查状态码错误: got %d, want %d", healthResp.StatusCode, http.StatusOK)
+	}
+	healthResp.Body.Close()
+
+	// 非 /api/ 路径是前端静态资源，不能返回 403
+	spaResp := apiReq(t, ts, http.MethodGet, "/", nil)
+	if spaResp.StatusCode == http.StatusForbidden {
+		t.Error("前端静态资源被 RBAC 拒绝（403）")
+	}
+	spaResp.Body.Close()
+}
+
+// ---- 应用指标鉴权 ----
+
+// TestAPIMetricsRequiresToken 验证 /metrics 位于 /api/ 前缀之外，
+// 仍需本地 API Token 才能访问（否则指标对同机任意进程开放）。
+func TestAPIMetricsRequiresToken(t *testing.T) {
+	ts, cleanup := setupAPIServer(t)
+	defer cleanup()
+
+	// 不带 Token → 401
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("无 Token 访问 /metrics 应返回 401，实际 %d", resp.StatusCode)
+	}
+
+	// 带本地 API Token → 200
+	req2, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req2.Header.Set("Authorization", "Bearer "+testAPIToken)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("带 Token 访问 /metrics 应返回 200，实际 %d", resp2.StatusCode)
 	}
 }
 
@@ -134,8 +238,9 @@ func TestAPIUserCRUD(t *testing.T) {
 		Data []interface{} `json:"data"`
 	}
 	decodeResp(t, listResp, &listResult)
-	if len(listResult.Data) != 1 {
-		t.Errorf("用户数量错误: got %d, want 1", len(listResult.Data))
+	// 数据库初始化时会 seed 默认 root 用户，因此期望 2 个（root + 本次创建）
+	if len(listResult.Data) != 2 {
+		t.Errorf("用户数量错误: got %d, want 2", len(listResult.Data))
 	}
 
 	// 更新用户
@@ -187,17 +292,21 @@ func TestAPICardCRUD(t *testing.T) {
 		"card_name":     "API 测试卡片",
 		"user_uuid":     userUUID,
 		"user_password": "cardpass123",
+		"pin":           "123456",
 		"remark":        "测试",
 	})
 	if createCardResp.StatusCode != http.StatusCreated {
 		t.Fatalf("创建卡片状态码错误: got %d, want %d", createCardResp.StatusCode, http.StatusCreated)
 	}
 
+	// 响应结构为 {data: {card: {...}, puk, admin_key, pin}}
 	var cardResult struct {
-		Data map[string]interface{} `json:"data"`
+		Data struct {
+			Card map[string]interface{} `json:"card"`
+		} `json:"data"`
 	}
 	decodeResp(t, createCardResp, &cardResult)
-	cardUUID, _ := cardResult.Data["uuid"].(string)
+	cardUUID, _ := cardResult.Data.Card["uuid"].(string)
 	if cardUUID == "" {
 		t.Fatal("创建卡片响应缺少 uuid")
 	}
@@ -231,8 +340,11 @@ func TestAPICardCRUD(t *testing.T) {
 	}
 	updateCardResp.Body.Close()
 
-	// 删除卡片
-	deleteCardResp := apiReq(t, ts, http.MethodDelete, "/api/cards/"+cardUUID, nil)
+	// 删除卡片（需要用户身份二次校验）
+	deleteCardResp := apiReq(t, ts, http.MethodDelete, "/api/cards/"+cardUUID, map[string]interface{}{
+		"user_uuid":     userUUID,
+		"user_password": "cardpass123",
+	})
 	if deleteCardResp.StatusCode != http.StatusOK {
 		t.Errorf("删除卡片状态码错误: got %d, want %d", deleteCardResp.StatusCode, http.StatusOK)
 	}
@@ -304,9 +416,10 @@ func TestAPIValidation(t *testing.T) {
 		"card_name":     "测试卡",
 		"user_uuid":     userUUID,
 		"user_password": "wrongpassword",
+		"pin":           "123456",
 	})
-	if resp3.StatusCode != http.StatusUnauthorized {
-		t.Errorf("密码错误应返回 401: got %d", resp3.StatusCode)
+	if resp3.StatusCode != http.StatusForbidden {
+		t.Errorf("密码错误应返回 403: got %d", resp3.StatusCode)
 	}
 	resp3.Body.Close()
 }

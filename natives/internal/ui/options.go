@@ -15,8 +15,8 @@ type OptionsDialog struct {
 	appCore *appcore.App
 	window  fyne.Window
 
-	backendURLEntry *widget.Entry
-	languageSelect  *widget.Select
+	backendURLEntry  *widget.Entry
+	languageSelect   *widget.Select
 	hideExpiredCheck *widget.Check
 }
 

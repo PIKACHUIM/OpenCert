@@ -19,11 +19,11 @@ import (
 
 // TOTPPage TOTP 管理页面
 type TOTPPage struct {
-	appCore     *appcore.App
-	window      fyne.Window
-	scroll      *container.Scroll
-	totpBox     *fyne.Container
-	cardUUID    string
+	appCore      *appcore.App
+	window       fyne.Window
+	scroll       *container.Scroll
+	totpBox      *fyne.Container
+	cardUUID     string
 	refreshTimer *time.Timer
 }
 

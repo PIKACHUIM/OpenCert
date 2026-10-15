@@ -94,7 +94,7 @@ const Users: React.FC = () => {
       width: 130,
       render: (v: string) => (
         <Space>
-          <UserOutlined style={{ color: '#1677ff' }} />
+          <UserOutlined style={{ color: 'var(--accent)' }} />
           <Text strong style={{ color: darkMode ? '#c9d1d9' : undefined }}>{v}</Text>
         </Space>
       ),

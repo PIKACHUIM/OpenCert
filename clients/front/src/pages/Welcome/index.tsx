@@ -78,11 +78,14 @@ const WelcomePage: React.FC = () => {
           <div style={{ textAlign: 'center', marginBottom: 40 }}>
             <div style={{
               width: 72, height: 72, borderRadius: 20,
-              background: 'linear-gradient(135deg, #1677ff, #722ed1)',
+              background: 'rgba(14,165,233,0.08)',
+              border: '1.5px solid rgba(14,165,233,0.20)',
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 8px 24px rgba(22,119,255,0.4)', marginBottom: 16,
+              boxShadow: '0 8px 24px rgba(14,165,233,0.30)', marginBottom: 16,
             }}>
-              <SafetyCertificateOutlined style={{ fontSize: 36, color: '#fff' }} />
+              <div style={{ width: 52, height: 52, borderRadius: 14, background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 14px rgba(14,165,233,0.45)' }}>
+                <SafetyCertificateOutlined style={{ fontSize: 28, color: '#fff' }} />
+              </div>
             </div>
             <Title level={2} style={{ margin: 0, color: darkMode ? '#c9d1d9' : '#1a1a2e' }}>
               欢迎使用 OpenCert Manager
@@ -101,7 +104,7 @@ const WelcomePage: React.FC = () => {
               >
                 <div style={{
                   width: 56, height: 56, borderRadius: 14,
-                  background: 'linear-gradient(135deg, #722ed1, #eb2f96)',
+                  background: '#eb2f96',
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                   marginBottom: 16,
                 }}>
@@ -119,7 +122,7 @@ const WelcomePage: React.FC = () => {
               >
                 <div style={{
                   width: 56, height: 56, borderRadius: 14,
-                  background: 'linear-gradient(135deg, #1677ff, #13c2c2)',
+                  background: 'var(--accent)',
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                   marginBottom: 16,
                 }}>
@@ -163,7 +166,7 @@ const WelcomePage: React.FC = () => {
             </Form.Item>
             <Form.Item style={{ marginBottom: 8 }}>
               <Button type="primary" htmlType="submit" size="large" block loading={loading}
-                style={{ background: 'linear-gradient(135deg, #722ed1, #eb2f96)', border: 'none', height: 44, fontWeight: 600 }}>
+                style={{ background: '#eb2f96', border: 'none', height: 44, fontWeight: 600 }}>
                 注册并开始使用
               </Button>
             </Form.Item>
@@ -196,7 +199,7 @@ const WelcomePage: React.FC = () => {
           </Form.Item>
           <Form.Item style={{ marginBottom: 8 }}>
             <Button type="primary" htmlType="submit" size="large" block loading={loading}
-              style={{ background: 'linear-gradient(135deg, #1677ff, #13c2c2)', border: 'none', height: 44, fontWeight: 600 }}>
+              style={{ background: 'var(--accent)', border: 'none', height: 44, fontWeight: 600 }}>
               云端登录
             </Button>
           </Form.Item>

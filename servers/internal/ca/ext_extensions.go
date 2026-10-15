@@ -23,14 +23,14 @@ import (
 
 // 预定义 OID（Netscape）
 var (
-	oidNetscapeCertType     = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 1}
-	oidNetscapeBaseURL      = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 2}
-	oidNetscapeRevocationURL = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 3}
+	oidNetscapeCertType        = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 1}
+	oidNetscapeBaseURL         = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 2}
+	oidNetscapeRevocationURL   = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 3}
 	oidNetscapeCARevocationURL = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 4}
-	oidNetscapeCertRenewalURL = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 7}
-	oidNetscapeCAPolicyURL  = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 8}
-	oidNetscapeSSLServerName = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 12}
-	oidNetscapeComment      = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 13}
+	oidNetscapeCertRenewalURL  = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 7}
+	oidNetscapeCAPolicyURL     = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 8}
+	oidNetscapeSSLServerName   = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 12}
+	oidNetscapeComment         = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 13}
 
 	// Microsoft CSP / AD CS
 	oidMSCertTemplateName = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 20, 2}
@@ -42,14 +42,14 @@ type NetscapeConfig struct {
 	// cert_type 位图：bit0=SSL Client, bit1=SSL Server, bit2=S/MIME,
 	// bit3=Object Signing, bit5=SSL CA, bit6=S/MIME CA, bit7=Object Signing CA
 	// 典型值：client=128(0x80)、server=64(0x40)、ca=176(0xB0)。
-	CertType         *int   `json:"cert_type"`
-	Comment          string `json:"comment"`
-	BaseURL          string `json:"base_url"`
-	RevocationURL    string `json:"revocation_url"`
-	CARevocationURL  string `json:"ca_revocation_url"`
-	CertRenewalURL   string `json:"cert_renewal_url"`
-	CAPolicyURL      string `json:"ca_policy_url"`
-	SSLServerName    string `json:"ssl_server_name"`
+	CertType        *int   `json:"cert_type"`
+	Comment         string `json:"comment"`
+	BaseURL         string `json:"base_url"`
+	RevocationURL   string `json:"revocation_url"`
+	CARevocationURL string `json:"ca_revocation_url"`
+	CertRenewalURL  string `json:"cert_renewal_url"`
+	CAPolicyURL     string `json:"ca_policy_url"`
+	SSLServerName   string `json:"ssl_server_name"`
 }
 
 // CSPConfig 描述 Microsoft CSP / AD CS 证书模板扩展。

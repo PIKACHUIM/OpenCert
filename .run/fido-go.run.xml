@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="fido-go" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="PKCS11Driver" />
+    <working_directory value="$PROJECT_DIR$/drivers/codes/fido-go" />
+    <parameters value="--usbip-dir G:\Codes\GlobalTrusts\PKCS11Driver\drivers\build\FidoUsbIpVhci" />
+    <sudo value="true" />
+    <kind value="FILE" />
+    <package value="github.com/globaltrusts/fido-go" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/drivers/codes/fido-go/cmd/fido-go/main.go" />
+    <method v="2" />
+  </configuration>
+</component>

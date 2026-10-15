@@ -4,7 +4,7 @@ import {
   Segmented, Table, Modal, Select, InputNumber, Switch, Popconfirm, message,
 } from 'antd';
 import {
-  SaveOutlined, ApiOutlined, BulbOutlined, DesktopOutlined, MoonOutlined, SunOutlined,
+  SaveOutlined, DesktopOutlined, MoonOutlined, SunOutlined,
   PlusOutlined, DeleteOutlined,
 } from '@ant-design/icons';
 import { useThemeStore } from '../../store/theme';
@@ -257,16 +257,9 @@ const ACMETab: React.FC = () => {
 
 // ---- 主页面 ----
 const Settings: React.FC = () => {
-  const { themeMode, setThemeMode, darkMode } = useThemeStore();
+  const { themeMode, setThemeMode } = useThemeStore();
   const { role } = useAuthStore();
   const [apiBase, setApiBase] = useState(localStorage.getItem('platform_apiBase') || 'http://localhost:1027');
-
-  const cardStyle = {
-    background: darkMode ? '#161b22' : '#fff',
-    border: darkMode ? '1px solid #21262d' : '1px solid #f0f0f0',
-    borderRadius: 12,
-    marginBottom: 16,
-  };
 
   const baseTabs = [
     {

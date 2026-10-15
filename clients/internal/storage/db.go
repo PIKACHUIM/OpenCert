@@ -49,8 +49,11 @@ func OpenWithOptions(opts OpenOptions) (*DB, error) {
 		return nil, fmt.Errorf("创建数据库目录失败: %w", err)
 	}
 
-	// 启用 WAL 模式和外键约束
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000", opts.Path)
+	// 启用 WAL 模式、忙等待与外键约束。
+	// 注意：modernc.org/sqlite 只识别 _pragma / _time_format / _txlock，
+	// 使用 mattn/go-sqlite3 风格的 _journal_mode / _busy_timeout / _foreign_keys 会被静默忽略，
+	// 导致 WAL 未开启、并发写入直接返回 SQLITE_BUSY。
+	dsn := fmt.Sprintf("%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)", opts.Path)
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
@@ -182,6 +185,10 @@ func (db *DB) migrate() error {
 	_, _ = db.conn.Exec(`ALTER TABLE users ADD COLUMN two_fa_enabled INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.conn.Exec(`ALTER TABLE users ADD COLUMN two_fa_secret TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.conn.Exec(`ALTER TABLE users ADD COLUMN passwordless_enabled INTEGER NOT NULL DEFAULT 0`)
+
+	// 云卡证书元数据（来自服务端同步）：主体/颁发者/有效期/吊销状态/证书链 CA
+	// 使用单个 JSON 列承载，避免为展示型字段反复扩列与改动大量 SELECT。
+	_, _ = db.conn.Exec(`ALTER TABLE certificates ADD COLUMN cloud_meta TEXT NOT NULL DEFAULT ''`)
 
 	// 迁移旧 BLOB 数据为 base64 TEXT
 	db.migrateBlobToBase64()

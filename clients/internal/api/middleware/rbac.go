@@ -14,6 +14,7 @@ const (
 	RoleAdmin    Role = "admin"
 	RoleUser     Role = "user"
 	RoleReadonly Role = "readonly"
+	RoleSystem   Role = "system"
 )
 
 // contextKey 是上下文键类型。
@@ -75,11 +76,18 @@ func RequireRole(roles ...Role) func(http.Handler) http.Handler {
 // admin 角色拥有所有权限。
 func RBACMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 公开路径（健康检查、登录注册等）与前端静态资源不经过认证，
+		// 因此没有用户角色可言，直接放行给对应 Handler 处理。
+		if IsPublicPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		role := GetUserRole(r.Context())
 
-		// 如果没有角色信息（未认证），跳过 RBAC 检查（由 auth 中间件处理）
+		// 受保护的 API 路径：认证中间件必须先注入角色，缺少角色时拒绝请求。
 		if role == "" {
-			next.ServeHTTP(w, r)
+			writeForbidden(w, "未设置用户角色")
 			return
 		}
 

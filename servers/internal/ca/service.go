@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/globaltrusts/server-card/internal/storage"
+	"github.com/google/uuid"
 )
 
 // Service 是 CA 管理服务。
@@ -231,11 +231,13 @@ func (s *Service) IncrementIssuedCount(ctx context.Context, caUUID string) error
 // ImportChain 导入证书链（PEM 格式，包含多个证书）。
 //
 // 实现方式：
-//   为兼容 SQLite（`||`）、MySQL（`CONCAT`）、PostgreSQL（`||`）三种数据库的字符串拼接差异，
-//   这里采用「应用层读 → 拼接 → 写」的方式实现，避免使用 SQL 方言特有的运算符。
+//
+//	为兼容 SQLite（`||`）、MySQL（`CONCAT`）、PostgreSQL（`||`）三种数据库的字符串拼接差异，
+//	这里采用「应用层读 → 拼接 → 写」的方式实现，避免使用 SQL 方言特有的运算符。
 //
 // 幂等性：
-//   如果输入的 chainPEM 已经完整包含在 ca.CertPEM 中，则不做任何修改，保证重复导入幂等。
+//
+//	如果输入的 chainPEM 已经完整包含在 ca.CertPEM 中，则不做任何修改，保证重复导入幂等。
 func (s *Service) ImportChain(ctx context.Context, caUUID string, chainPEM string) error {
 	// 1. 先读取 CA
 	ca, err := s.GetByUUID(ctx, caUUID)
@@ -295,9 +297,9 @@ type ImportCAParams struct {
 
 // ImportCA 导入外部 CA 证书和私钥。
 // 校验：
-//   1. PEM 解析成功，证书必须是 CA（BasicConstraints.IsCA=true）；
-//   2. 私钥与证书公钥匹配；
-//   3. 加密存储私钥。
+//  1. PEM 解析成功，证书必须是 CA（BasicConstraints.IsCA=true）；
+//  2. 私钥与证书公钥匹配；
+//  3. 加密存储私钥。
 func (s *Service) ImportCA(ctx context.Context, p *ImportCAParams) (*storage.CA, error) {
 	if p.Name == "" {
 		return nil, fmt.Errorf("CA 名称不能为空")

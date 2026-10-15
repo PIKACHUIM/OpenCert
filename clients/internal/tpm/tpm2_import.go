@@ -461,11 +461,11 @@ func buildRSAImportParams(key *rsa.PrivateKey, authValue []byte) (tpm2.TPMTPubli
 		NameAlg: tpm2.TPMAlgSHA256,
 		ObjectAttributes: tpm2.TPMAObject{
 			SignEncrypt:         true,
-			Decrypt:            true,
-			FixedTPM:           false, // 导入的密钥不绑定 TPM
-			FixedParent:        false,
+			Decrypt:             true,
+			FixedTPM:            false, // 导入的密钥不绑定 TPM
+			FixedParent:         false,
 			SensitiveDataOrigin: false, // 外部生成
-			UserWithAuth:       true,
+			UserWithAuth:        true,
 		},
 		Parameters: tpm2.NewTPMUPublicParms(tpm2.TPMAlgRSA, &tpm2.TPMSRSAParms{
 			Symmetric: tpm2.TPMTSymDefObject{Algorithm: tpm2.TPMAlgNull},
@@ -519,10 +519,10 @@ func buildECCImportParams(key *ecdsa.PrivateKey, authValue []byte) (tpm2.TPMTPub
 		NameAlg: tpm2.TPMAlgSHA256,
 		ObjectAttributes: tpm2.TPMAObject{
 			SignEncrypt:         true,
-			FixedTPM:           false,
-			FixedParent:        false,
+			FixedTPM:            false,
+			FixedParent:         false,
 			SensitiveDataOrigin: false,
-			UserWithAuth:       true,
+			UserWithAuth:        true,
 		},
 		Parameters: tpm2.NewTPMUPublicParms(tpm2.TPMAlgECC, &tpm2.TPMSECCParms{
 			Symmetric: tpm2.TPMTSymDefObject{Algorithm: tpm2.TPMAlgNull},

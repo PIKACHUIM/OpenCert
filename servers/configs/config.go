@@ -18,6 +18,15 @@ type Config struct {
 	CT             CTConfig
 	AllowedOrigins []string // CORS 允许的来源列表
 	MasterKeyFile  string   // 主密钥文件路径（优先使用环境变量 SERVER_CARD_MASTER_KEY）
+	WebRoot        string   // 门户/控制台前端静态资源目录（默认：程序目录下 web）
+}
+
+// ResolveWebRoot 返回前端静态资源目录，未配置时回退到程序目录下的 web。
+func (c *Config) ResolveWebRoot() string {
+	if c.WebRoot != "" {
+		return c.WebRoot
+	}
+	return defaultWebRoot()
 }
 
 // CTConfig 是证书透明度（CT）配置。
@@ -112,6 +121,7 @@ func Load() *Config {
 		},
 		AllowedOrigins: allowedOrigins,
 		MasterKeyFile:  getEnv("SERVER_CARD_MASTER_KEY_FILE", ""),
+		WebRoot:        getEnv("SERVER_CARD_WEB_ROOT", ""),
 	}
 
 	// BaseURL 未设置时，回退到 http://Host:Port
@@ -195,6 +205,15 @@ func defaultDBPath() string {
 		return "data/server.db"
 	}
 	return filepath.Join(filepath.Dir(exe), "data", "server.db")
+}
+
+// defaultWebRoot 返回默认的前端静态资源目录（程序所在目录的 web 子目录）。
+func defaultWebRoot() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "web"
+	}
+	return filepath.Join(filepath.Dir(exe), "web")
 }
 
 func getEnv(key, defaultVal string) string {

@@ -122,7 +122,7 @@ const ImportCertPage: React.FC = () => {
                     return false;
                   }}
                 >
-                  <p className="ant-upload-drag-icon"><LockOutlined style={{ fontSize: 36, color: '#1677ff' }} /></p>
+                  <p className="ant-upload-drag-icon"><LockOutlined style={{ fontSize: 36, color: 'var(--accent)' }} /></p>
                   <p className="ant-upload-text">拖拽 .p12/.pfx 文件到此处</p>
                 </Upload.Dragger>
               </Form.Item>

@@ -19,9 +19,9 @@ import (
 // 用于在 PUT /api/settings 时把新配置写回 YAML 而不丢失其它段。
 // 进程启动时由 NewServer 负责调用 BindFullConfig 注入完整 Config 引用。
 var (
-	fullCfgMu   sync.RWMutex
-	fullCfg     *config.Config
-	configPath  string
+	fullCfgMu  sync.RWMutex
+	fullCfg    *config.Config
+	configPath string
 )
 
 // BindFullConfig 由 main() 在启动阶段调用，把完整配置 + 配置文件路径

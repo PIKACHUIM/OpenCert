@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/globaltrusts/server-card/internal/auth"
 	"github.com/globaltrusts/server-card/internal/storage"
+	"github.com/google/uuid"
 )
 
 // ---- 云端 TOTP 处理器 ----

@@ -24,13 +24,14 @@ const (
 	encodingDefault  = x509ASNEncoding | pkcs7ASNEncoding
 
 	// 存储标志
-	certStoreProvSystem       = 10
-	certSystemStoreCurrentUser = 0x00010000
+	certStoreProvSystem         = 10
+	certSystemStoreCurrentUser  = 0x00010000
 	certStoreAddReplaceExisting = 3
 
 	// 证书属性 ID
-	certKeyProvInfoPropID = 2
+	certKeyProvInfoPropID  = 2
 	certFriendlyNamePropID = 11
+	certSHA1HashPropID     = 3 // CERT_SHA1_HASH_PROP_ID
 
 	// 密钥规格
 	atKeyExchange = 1
@@ -48,17 +49,17 @@ const (
 )
 
 var (
-	crypt32                          = syscall.NewLazyDLL("crypt32.dll")
-	procCertOpenStore                = crypt32.NewProc("CertOpenStore")
-	procCertCloseStore               = crypt32.NewProc("CertCloseStore")
-	procCertAddEncodedCertToStore    = crypt32.NewProc("CertAddEncodedCertificateToStore")
-	procCertSetCertContextProperty   = crypt32.NewProc("CertSetCertificateContextProperty")
-	procCertFindCertInStore          = crypt32.NewProc("CertFindCertificateInStore")
-	procCertDeleteCertFromStore      = crypt32.NewProc("CertDeleteCertificateFromStore")
-	procCertFreeCertContext          = crypt32.NewProc("CertFreeCertificateContext")
-	procCertEnumCertsInStore         = crypt32.NewProc("CertEnumCertificatesInStore")
-	procCertGetCertContextProperty   = crypt32.NewProc("CertGetCertificateContextProperty")
-	procCertDuplicateCertContext     = crypt32.NewProc("CertDuplicateCertificateContext")
+	crypt32                        = syscall.NewLazyDLL("crypt32.dll")
+	procCertOpenStore              = crypt32.NewProc("CertOpenStore")
+	procCertCloseStore             = crypt32.NewProc("CertCloseStore")
+	procCertAddEncodedCertToStore  = crypt32.NewProc("CertAddEncodedCertificateToStore")
+	procCertSetCertContextProperty = crypt32.NewProc("CertSetCertificateContextProperty")
+	procCertFindCertInStore        = crypt32.NewProc("CertFindCertificateInStore")
+	procCertDeleteCertFromStore    = crypt32.NewProc("CertDeleteCertificateFromStore")
+	procCertFreeCertContext        = crypt32.NewProc("CertFreeCertificateContext")
+	procCertEnumCertsInStore       = crypt32.NewProc("CertEnumCertificatesInStore")
+	procCertGetCertContextProperty = crypt32.NewProc("CertGetCertificateContextProperty")
+	procCertDuplicateCertContext   = crypt32.NewProc("CertDuplicateCertificateContext")
 )
 
 // 证书查找类型
@@ -421,11 +422,11 @@ func setCertKeyProvInfo(certCtx uintptr, containerName string, keyType string) e
 	info := cryptKeyProvInfo{
 		ContainerName: containerUTF16,
 		ProvName:      provNameUTF16,
-		ProvType:      0,                  // KSP 模式下 ProvType 必须为 0
+		ProvType:      0, // KSP 模式下 ProvType 必须为 0
 		Flags:         0,
 		ParamCount:    0,
 		Params:        0,
-		KeySpec:       certNCryptKeySpec,   // CERT_NCRYPT_KEY_SPEC = 0xFFFFFFFF
+		KeySpec:       certNCryptKeySpec, // CERT_NCRYPT_KEY_SPEC = 0xFFFFFFFF
 	}
 
 	ret, _, lastErr := procCertSetCertContextProperty.Call(
@@ -475,24 +476,35 @@ func getCertContainerName(certCtx uintptr) string {
 }
 
 // getCertThumbprint 获取证书的 SHA1 指纹（十六进制）。
+// 直接读取 CERT_SHA1_HASH_PROP_ID 属性，而不是手工解引用 CERT_CONTEXT 的内存布局：
+// 后者需要把 Win32 句柄（uintptr）转成 unsafe.Pointer，既脆弱又会被 go vet 判为
+// possible misuse of unsafe.Pointer。
 func getCertThumbprint(certCtx uintptr) string {
-	// CERT_CONTEXT 结构体前几个字段：
-	// DWORD dwCertEncodingType
-	// BYTE* pbCertEncoded
-	// DWORD cbCertEncoded
-	type certContext struct {
-		EncodingType uint32
-		EncodedCert  *byte
-		EncodedLen   uint32
-	}
-	ctx := (*certContext)(unsafe.Pointer(certCtx))
-	if ctx.EncodedCert == nil || ctx.EncodedLen == 0 {
+	var size uint32
+	ret, _, _ := procCertGetCertContextProperty.Call(
+		certCtx,
+		uintptr(certSHA1HashPropID),
+		0,
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if ret == 0 || size == 0 {
 		return ""
 	}
 
-	certBytes := unsafe.Slice(ctx.EncodedCert, ctx.EncodedLen)
-	hash := sha1.Sum(certBytes)
-	return fmt.Sprintf("%X", hash[:])
+	buf := make([]byte, size)
+	ret, _, _ = procCertGetCertContextProperty.Call(
+		certCtx,
+		uintptr(certSHA1HashPropID),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if ret == 0 {
+		return ""
+	}
+	if int(size) > len(buf) {
+		size = uint32(len(buf))
+	}
+	return fmt.Sprintf("%X", buf[:size])
 }
 
 // ---- 工具函数 ----

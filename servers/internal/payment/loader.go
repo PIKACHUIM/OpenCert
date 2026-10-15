@@ -52,6 +52,11 @@ func (l *Loader) Reload(ctx context.Context) ([]string, error) {
 	}
 	defer rows.Close()
 
+	// 先构建完整的新注册表再整体替换：停用/删除的插件会立即下线。
+	// 同一类型存在多个启用插件时，按 sort_weight 降序取第一个生效。
+	next := map[string]PaymentProvider{}
+	defer func() { l.registry.Replace(next) }()
+
 	var loaded []string
 	for rows.Next() {
 		var uuidStr, name, pluginType string
@@ -79,15 +84,30 @@ func (l *Loader) Reload(ctx context.Context) ([]string, error) {
 				"uuid", uuidStr, "type", pluginType, "name", name, "error", err)
 			continue
 		}
-		l.registry.Register(provider)
+		if _, exists := next[pluginType]; exists {
+			slog.Warn("同类型支付插件已启用，按排序权重仅保留优先级最高的一个",
+				"type", pluginType, "skipped", name)
+			continue
+		}
+		next[pluginType] = provider
 		loaded = append(loaded, pluginType)
 		slog.Info("已注册支付渠道", "type", pluginType, "name", name)
 	}
 	return loaded, rows.Err()
 }
 
+// ValidateProviderConfig 校验插件类型与配置是否可用（管理端保存前调用）。
+func ValidateProviderConfig(pluginType string, rawConfig []byte) error {
+	_, err := buildProvider(pluginType, rawConfig)
+	return err
+}
+
 // buildProvider 按 pluginType 调度到具体的 NewXxxProvider 构造函数。
+// 优先使用 RegisterFactory 注册的扩展插件，便于新增渠道而不修改本文件。
 func buildProvider(pluginType string, rawConfig []byte) (PaymentProvider, error) {
+	if f, ok := lookupFactory(pluginType); ok {
+		return f(rawConfig)
+	}
 	switch pluginType {
 	case "alipay":
 		return NewAlipayProvider(rawConfig)

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Card, Table, Button, Space, Tag, Typography, Modal, Form, Input, InputNumber,
-  message, Popconfirm, Drawer, Descriptions, Select, Tabs, Alert,
+  message, Popconfirm, Drawer, Descriptions, Select, Tabs, Alert, Tooltip,
 } from 'antd';
 import {
   CreditCardOutlined, PlusOutlined, DeleteOutlined, LockOutlined, UnlockOutlined,
@@ -10,9 +10,12 @@ import {
 import {
   listCards, createCard, deleteCard, getCard, listCardCerts,
   verifyCardPIN, logoutCardPINSession, unlockCardWithPUK, resetCardWithAdminKey,
-  listStorageZones,
+  listStorageZones, getCapabilities, listAdminCards, adminUnlockCard, adminDeleteCard,
 } from '../../api';
-import type { Card as CardModel, Certificate, StorageZone } from '../../types';
+import type { Card as CardModel, Capabilities, Certificate, StorageZone } from '../../types';
+import HelpLink from '../../components/HelpLink';
+import { useNavigate } from 'react-router-dom';
+import { useAuthStore } from '../../store/auth';
 
 const { Title, Text } = Typography;
 
@@ -22,9 +25,18 @@ const { Title, Text } = Typography;
  * - 详情抽屉：展示卡片信息、证书列表、PIN/PUK/AdminKey 操作
  */
 const CardsPage: React.FC = () => {
+  const navigate = useNavigate();
+  const { role } = useAuthStore();
+  const isAdmin = role === 'admin' || role === 'super_admin';
+  const [tab, setTab] = useState('mine');
+  const [allCards, setAllCards] = useState<(CardModel & { username?: string; cert_count?: number })[]>([]);
+  const [allLoading, setAllLoading] = useState(false);
+  const [allTotal, setAllTotal] = useState(0);
+  const [allPage, setAllPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [cards, setCards] = useState<CardModel[]>([]);
   const [zones, setZones] = useState<StorageZone[]>([]);
+  const [caps, setCaps] = useState<Capabilities | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [form] = Form.useForm();
 
@@ -57,7 +69,26 @@ const CardsPage: React.FC = () => {
     } catch { /* ignore */ }
   };
 
-  useEffect(() => { fetchCards(); fetchZones(); }, []);
+  const fetchAllCards = async (p = 1) => {
+    setAllLoading(true);
+    try {
+      const r = await listAdminCards({ page: p, page_size: 20 });
+      setAllCards(r.items ?? []);
+      setAllTotal(r.total ?? 0);
+    } catch (e: any) {
+      message.error(e.message || '加载用户智能卡失败');
+    } finally {
+      setAllLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchCards();
+    fetchZones();
+    getCapabilities().then(setCaps).catch(() => undefined);
+  }, []);
+
+  useEffect(() => { if (isAdmin && tab === 'all') fetchAllCards(allPage); }, [isAdmin, tab, allPage]);
 
   const openDetail = async (c: CardModel) => {
     setCurrentCard(c);
@@ -82,11 +113,13 @@ const CardsPage: React.FC = () => {
         puk: values.puk,
         admin_key: values.admin_key,
         pin_retries: values.pin_retries || 3,
-      });
+        order_no: values.order_no || undefined,
+      } as any);
       message.success('智能卡创建成功');
       setCreateOpen(false);
       form.resetFields();
       fetchCards();
+      getCapabilities().then(setCaps).catch(() => undefined);
     } catch (e: any) {
       message.error(e.message || '创建失败');
     }
@@ -133,18 +166,101 @@ const CardsPage: React.FC = () => {
         title={<Space><CreditCardOutlined /><Title level={4} style={{ margin: 0 }}>个人业务</Title></Space>}
         extra={
           <Space>
+            <HelpLink doc="user-04-cloud-card" />
             <Button icon={<ReloadOutlined />} onClick={fetchCards}>刷新</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-              新建智能卡
-            </Button>
+            {/* 不允许自主开通时不展示创建入口（销售模式需购买后凭订单开通） */}
+            {caps?.can_create_card ? (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+                新建智能卡
+              </Button>
+            ) : caps ? (
+              <Tooltip title={caps.card_create_reason || '当前不可自助开通'}>
+                <Button type="primary" disabled icon={<PlusOutlined />}>新建智能卡</Button>
+              </Tooltip>
+            ) : null}
           </Space>
         }
       >
-        <Alert
-          type="info" showIcon style={{ marginBottom: 16 }}
-          message="云端智能卡支持 PIN/PUK/Admin Key 三级密钥保护；PIN 错误超过限制后会被锁定，使用 PUK 解锁，Admin Key 可重置 PIN/PUK。"
-        />
-        <Table rowKey="uuid" loading={loading} dataSource={cards} columns={columns as any} />
+        {caps && !caps.can_create_card && (
+          <Alert
+            type="info" showIcon style={{ marginBottom: 16 }}
+            message={caps.card_create_reason || '当前不可自助开通智能卡'}
+            description={caps.card_apply_mode === 'sales' && (
+              <Button type="link" size="small" style={{ padding: 0 }} onClick={() => navigate('/products/cloudcard')}>
+                前往产品中心选购云端智能卡
+              </Button>
+            )}
+          />
+        )}
+        {isAdmin ? (
+          <Tabs
+            activeKey={tab}
+            onChange={setTab}
+            items={[
+              {
+                key: 'mine', label: '我的智能卡',
+                children: <Table rowKey="uuid" loading={loading} dataSource={cards} columns={columns as any} />,
+              },
+              {
+                key: 'all', label: '全部用户智能卡',
+                children: (
+                  <>
+                    <Alert type="info" showIcon style={{ marginBottom: 12 }}
+                      message="管理员视图：可解除 PIN 锁定、删除卡片"
+                      description="删除卡片会连带删除其中的证书，请先确认证书是否需要保留；用户自助吊销与续期由其本人操作。" />
+                    <Table
+                      rowKey="uuid" loading={allLoading} dataSource={allCards}
+                      pagination={{
+                        current: allPage, total: allTotal, pageSize: 20,
+                        onChange: setAllPage, showTotal: (t) => `共 ${t} 张`,
+                      }}
+                      columns={[
+                        { title: '用户', dataIndex: 'username', render: (v: string, r: any) => v || r.user_uuid?.slice(0, 8) },
+                        { title: '卡片名称', dataIndex: 'card_name' },
+                        { title: '类型', dataIndex: 'kind', width: 120,
+                          render: (v: string) => v === 'hosting' ? <Tag>托管容器</Tag> : <Tag color="blue">用户智能卡</Tag> },
+                        { title: '来源订单', dataIndex: 'order_no', render: (v: string) => v || '—' },
+                        { title: '证书数', dataIndex: 'cert_count', width: 80 },
+                        { title: 'PIN 状态', key: 'pin', width: 130,
+                          render: (_: any, r: any) => r.pin_locked
+                            ? <Tag color="error">已锁定（{r.pin_failed_count}/{r.pin_retries}）</Tag>
+                            : <Tag color="success">正常</Tag> },
+                        { title: '创建时间', dataIndex: 'created_at', width: 165,
+                          render: (v: string) => (v ? new Date(v).toLocaleString('zh-CN') : '—') },
+                        {
+                          title: '操作', key: 'actions', width: 190,
+                          render: (_: any, r: any) => (
+                            <Space size={4}>
+                              <Button size="small" type="link" icon={<UnlockOutlined />}
+                                onClick={async () => {
+                                  try {
+                                    await adminUnlockCard(r.uuid);
+                                    message.success('已解除锁定');
+                                    fetchAllCards(allPage);
+                                  } catch (e: any) { message.error(e.message || '操作失败'); }
+                                }}>解锁</Button>
+                              <Popconfirm title="删除卡片会连带删除其中证书，确认？" onConfirm={async () => {
+                                try {
+                                  await adminDeleteCard(r.uuid);
+                                  message.success('已删除');
+                                  fetchAllCards(allPage);
+                                } catch (e: any) { message.error(e.message || '删除失败'); }
+                              }}>
+                                <Button size="small" danger type="link" icon={<DeleteOutlined />}>删除</Button>
+                              </Popconfirm>
+                            </Space>
+                          ),
+                        },
+                      ] as any}
+                    />
+                  </>
+                ),
+              },
+            ]}
+          />
+        ) : (
+          <Table rowKey="uuid" loading={loading} dataSource={cards} columns={columns as any} />
+        )}
       </Card>
 
       {/* 新建卡片 */}
@@ -155,6 +271,19 @@ const CardsPage: React.FC = () => {
         destroyOnClose
       >
         <Form form={form} layout="vertical" onFinish={handleCreate}>
+          {(caps?.card_entitlements?.length ?? 0) > 0 && (
+            <Form.Item name="order_no" label="使用订单额度"
+              extra="销售模式下凭已支付的云智能卡订单开通，一张订单可开通的卡片数量有限">
+              <Select
+                allowClear
+                placeholder="选择要使用的已支付订单"
+                options={(caps?.card_entitlements ?? []).map((q) => ({
+                  value: q.order_no,
+                  label: `${q.product_name || '云智能卡'} · 剩余 ${q.remaining}/${q.quantity} 张`,
+                }))}
+              />
+            </Form.Item>
+          )}
           <Form.Item name="card_name" label="卡片名称" rules={[{ required: true, message: '请输入卡片名称' }]}>
             <Input placeholder="例如：服务器证书卡" maxLength={64} />
           </Form.Item>

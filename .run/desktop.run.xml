@@ -1,0 +1,11 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="desktop" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="PKCS11Driver" />
+    <working_directory value="$PROJECT_DIR$/desktop/wails" />
+    <kind value="PACKAGE" />
+    <package value="github.com/globaltrusts/opencert-desktop" />
+    <directory value="$PROJECT_DIR$" />
+    <auto_managed_config_id value="$PROJECT_DIR$/desktop/wails" />
+    <method v="2" />
+  </configuration>
+</component>

@@ -3,11 +3,12 @@ package template
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/globaltrusts/server-card/internal/storage"
+	"github.com/google/uuid"
 )
 
 // Service 是密钥存储类型模板服务。
@@ -109,83 +110,99 @@ func (s *Service) Delete(ctx context.Context, templateUUID string) error {
 	return err
 }
 
-// CheckReissue 检查证书是否可以重新下发，返回剩余次数。
+// isUnlimited 判断该模板的下发次数是否不受限制。
+//
+// 文件下载模式与 max_reissue_count = -1 都表示不限次数。
+func isUnlimited(tmpl *storage.KeyStorageTemplate) bool {
+	return tmpl.HasMethod(storage.StorageFileDownload) || tmpl.MaxReissueCount == -1
+}
+
+// ensureCounter 确保下发计数器存在（幂等）。
+func ensureCounter(ctx context.Context, tx *sql.Tx, certUUID, templateUUID string, maxCount int) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO cert_reissue_counters (cert_uuid, template_uuid, issued_count, max_count)
+		 VALUES (?, ?, 0, ?)
+		 ON CONFLICT(cert_uuid, template_uuid) DO NOTHING`,
+		certUUID, templateUUID, maxCount)
+	return err
+}
+
+// CheckReissue 检查证书是否可以重新下发，返回剩余次数（-1 表示不限）。
 func (s *Service) CheckReissue(ctx context.Context, certUUID string, templateUUID string) (int, error) {
 	tmpl, err := s.GetByUUID(ctx, templateUUID)
 	if err != nil {
 		return 0, err
 	}
-
 	if !tmpl.AllowReissue {
-		return 0, fmt.Errorf("模板不允许重新下发")
+		return 0, fmt.Errorf("该证书的存储策略不允许重新下发")
 	}
-
-	// 文件下载模式无限次
-	if tmpl.HasMethod(storage.StorageFileDownload) {
+	if isUnlimited(tmpl) {
 		return -1, nil
 	}
 
-	var counter storage.CertReissueCounter
+	var issuedCount, maxCount int
 	err = s.db.QueryRowContext(ctx,
-		`SELECT cert_uuid, template_uuid, issued_count, max_count FROM cert_reissue_counters WHERE cert_uuid = ? AND template_uuid = ?`,
+		`SELECT issued_count, max_count FROM cert_reissue_counters WHERE cert_uuid = ? AND template_uuid = ?`,
 		certUUID, templateUUID,
-	).Scan(&counter.CertUUID, &counter.TemplateUUID, &counter.IssuedCount, &counter.MaxCount)
+	).Scan(&issuedCount, &maxCount)
+	if err == sql.ErrNoRows {
+		// 首次下发：以模板配置作为上限
+		return tmpl.MaxReissueCount, nil
+	}
 	if err != nil {
-		// 首次下发，创建计数器
-		counter = storage.CertReissueCounter{
-			CertUUID:     certUUID,
-			TemplateUUID: templateUUID,
-			IssuedCount:  0,
-			MaxCount:     tmpl.MaxReissueCount,
-		}
-		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO cert_reissue_counters (cert_uuid, template_uuid, issued_count, max_count) VALUES (?, ?, ?, ?)`,
-			counter.CertUUID, counter.TemplateUUID, counter.IssuedCount, counter.MaxCount,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("创建下发计数器失败: %w", err)
-		}
+		return 0, fmt.Errorf("查询下发次数失败: %w", err)
+	}
+	if maxCount == -1 {
+		return -1, nil
 	}
 
-	if counter.MaxCount == -1 {
-		return -1, nil // 无限次
-	}
-	remaining := counter.MaxCount - counter.IssuedCount
+	remaining := maxCount - issuedCount
 	if remaining <= 0 {
-		return 0, fmt.Errorf("已达最大下发次数 %d", counter.MaxCount)
+		return 0, fmt.Errorf("已达最大下发次数 %d", maxCount)
 	}
 	return remaining, nil
 }
 
-// RecordReissue 记录一次证书下发（使用事务保证原子性）。
+// RecordReissue 记录一次证书下发（事务 + 条件更新，保证额度不被并发穿透）。
+//
+// 与早期实现的差异：不限次数的模板同样会创建计数器并记录下发流水，
+// 不再出现"检查放行但记录时报已达上限"的矛盾。
 func (s *Service) RecordReissue(ctx context.Context, certUUID, templateUUID, userUUID, method, deviceInfo string) error {
+	tmpl, err := s.GetByUUID(ctx, templateUUID)
+	if err != nil {
+		return err
+	}
+	if !tmpl.AllowReissue {
+		return fmt.Errorf("该证书的存储策略不允许重新下发")
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("开启事务失败: %w", err)
 	}
 	defer tx.Rollback()
 
-	// 原子递增计数器（带乐观锁检查）
-	result, err := tx.ExecContext(ctx,
+	if err := ensureCounter(ctx, tx, certUUID, templateUUID, tmpl.MaxReissueCount); err != nil {
+		return fmt.Errorf("初始化下发计数器失败: %w", err)
+	}
+
+	// 条件递增：max_count = -1 或仍有剩余额度时才允许
+	res, err := tx.ExecContext(ctx,
 		`UPDATE cert_reissue_counters SET issued_count = issued_count + 1
 		 WHERE cert_uuid = ? AND template_uuid = ? AND (max_count = -1 OR issued_count < max_count)`,
-		certUUID, templateUUID,
-	)
+		certUUID, templateUUID)
 	if err != nil {
 		return fmt.Errorf("更新下发计数失败: %w", err)
 	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
+	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("已达最大下发次数，无法继续下发")
 	}
 
-	// 写入下发记录
-	_, err = tx.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO cert_issuance_records (uuid, cert_uuid, user_uuid, issuance_method, device_info, issued_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		uuid.New().String(), certUUID, userUUID, method, deviceInfo, time.Now(),
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("写入下发记录失败: %w", err)
 	}
 

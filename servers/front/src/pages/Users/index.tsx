@@ -38,10 +38,21 @@ const Users: React.FC = () => {
     try {
       const values = await form.validateFields();
       if (editUser) {
-        await updateUser(editUser.uuid, values);
+        // 仅提交服务端支持的字段，角色通过独立接口变更
+        await updateUser(editUser.uuid, {
+          display_name: values.display_name,
+          email: values.email,
+          ...(values.password ? { password: values.password } : {}),
+        });
         message.success('用户已更新');
       } else {
-        await createUser(values);
+        await createUser({
+          username: values.username,
+          password: values.password,
+          email: values.email,
+          display_name: values.display_name,
+          role: values.role,
+        });
         message.success('用户已创建');
       }
       setModalOpen(false); form.resetFields(); setEditUser(null); load();
@@ -50,7 +61,13 @@ const Users: React.FC = () => {
 
   const handleEdit = (user: User) => {
     setEditUser(user);
-    form.setFieldsValue({ user_type: user.user_type, display_name: user.display_name, email: user.email, enabled: user.enabled });
+    form.setFieldsValue({
+      username: user.username,
+      role: user.role,
+      display_name: user.display_name,
+      email: user.email,
+      enabled: user.enabled,
+    });
     setModalOpen(true);
   };
 
@@ -65,9 +82,13 @@ const Users: React.FC = () => {
       title: '显示名称', dataIndex: 'display_name',
       render: (v: string) => <Space><UserOutlined style={{ color: '#1677ff' }} /><Text strong>{v}</Text></Space>,
     },
+    {
+      title: '用户名', dataIndex: 'username', width: 140,
+      render: (v: string) => <Text code style={{ fontSize: 12 }}>{v || '-'}</Text>,
+    },
     { title: '邮箱', dataIndex: 'email', render: (v: string) => <Text type="secondary">{v || '-'}</Text> },
     {
-      title: '角色', dataIndex: 'user_type', width: 160,
+      title: '角色', dataIndex: 'role', width: 160,
       render: (v: string, record: User) => (
         <Select size="small" value={v || 'user'} style={{ width: 140 }}
           onChange={(role) => updateUserRole(record.uuid, role as any).then(() => { message.success('角色已更新'); load(); }).catch((e: any) => message.error(e.message))}
@@ -123,9 +144,17 @@ const Users: React.FC = () => {
         onOk={handleSubmit} onCancel={() => { setModalOpen(false); form.resetFields(); setEditUser(null); }}
         okText={editUser ? '保存' : '创建'} cancelText="取消" width={480}>
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+          {!editUser && (
+            <Form.Item
+              name="username" label="用户名" rules={[{ required: true, message: '请输入用户名' }]}
+              extra="登录账号，创建后不可修改"
+            >
+              <Input placeholder="例如：zhangsan" />
+            </Form.Item>
+          )}
           <Form.Item name="display_name" label="显示名称" rules={[{ required: true }]}><Input placeholder="例如：张三" /></Form.Item>
           <Form.Item name="email" label="邮箱" rules={[{ type: 'email', message: '请输入有效邮箱' }]}><Input placeholder="user@example.com" /></Form.Item>
-          <Form.Item name="user_type" label="用户类型" initialValue="user">
+          <Form.Item name="role" label="角色" initialValue="user">
             <Select options={[
               { value: 'super_admin', label: '超级管理员' },
               { value: 'admin', label: '管理员' },
@@ -134,15 +163,19 @@ const Users: React.FC = () => {
               { value: 'readonly', label: '只读用户' },
             ]} />
           </Form.Item>
-          {!editUser && (
+          {!editUser ? (
             <Form.Item name="password" label="密码" rules={[{ required: true }, { min: 8, message: '密码至少8位' }]}>
               <Input.Password placeholder="至少 8 位" />
             </Form.Item>
-          )}
-          {editUser && (
-            <Form.Item name="enabled" label="账号状态" valuePropName="checked">
-              <Switch checkedChildren="启用" unCheckedChildren="禁用" />
-            </Form.Item>
+          ) : (
+            <>
+              <Form.Item name="password" label="重置密码" extra="留空表示不修改">
+                <Input.Password placeholder="至少 8 位，留空不修改" />
+              </Form.Item>
+              <Form.Item name="enabled" label="账号状态" valuePropName="checked">
+                <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+              </Form.Item>
+            </>
           )}
         </Form>
       </Modal>

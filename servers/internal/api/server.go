@@ -14,10 +14,14 @@ import (
 	"github.com/globaltrusts/server-card/internal/auth"
 	"github.com/globaltrusts/server-card/internal/ca"
 	"github.com/globaltrusts/server-card/internal/card"
+	"github.com/globaltrusts/server-card/internal/cps"
 	"github.com/globaltrusts/server-card/internal/ct"
+	"github.com/globaltrusts/server-card/internal/identity"
 	"github.com/globaltrusts/server-card/internal/issuance"
 	"github.com/globaltrusts/server-card/internal/mailer"
 	"github.com/globaltrusts/server-card/internal/payment"
+	"github.com/globaltrusts/server-card/internal/portal"
+	"github.com/globaltrusts/server-card/internal/promo"
 	"github.com/globaltrusts/server-card/internal/revocation"
 	"github.com/globaltrusts/server-card/internal/storage"
 	"github.com/globaltrusts/server-card/internal/template"
@@ -37,6 +41,11 @@ type Services struct {
 	RevocationSvc *revocation.Service
 	CTSvc         *ct.Service
 	ACMESvc       *acme.Service
+	PortalSvc     *portal.Service
+	PaymentLoader *payment.Loader // 支付插件热加载（可为空）
+	IdentityStore *identity.Store // 认证接口（邮件/实名）
+	CPSSvc        *cps.Service    // 证书策略页面
+	PromoSvc      *promo.Service  // 优惠码/订阅/兑换码
 }
 
 // Server 是 REST API 服务器。
@@ -58,8 +67,13 @@ type Server struct {
 	revocationSvc *revocation.Service
 	ctSvc         *ct.Service
 	acmeSvc       *acme.Service
+	portalSvc     *portal.Service
+	paymentLoader *payment.Loader
 	pinSessions   *card.PINSessionStore // PIN 会话令牌存储
 	mailer        mailer.Mailer         // 邮件发送器（找回密码等场景）
+	identityStore *identity.Store
+	cpsSvc        *cps.Service
+	promoSvc      *promo.Service
 }
 
 // SetMailer 注入邮件发送器（在服务装配阶段调用）。
@@ -86,7 +100,18 @@ func NewServer(cfg *configs.Config, db *storage.DB, jwtMgr *auth.Manager, svcs *
 		revocationSvc: svcs.RevocationSvc,
 		ctSvc:         svcs.CTSvc,
 		acmeSvc:       svcs.ACMESvc,
+		portalSvc:     svcs.PortalSvc,
+		paymentLoader: svcs.PaymentLoader,
 		pinSessions:   card.NewPINSessionStore(card.DefaultPINSessionTTL),
+		identityStore: svcs.IdentityStore,
+		cpsSvc:        svcs.CPSSvc,
+		promoSvc:      svcs.PromoSvc,
+	}
+	if s.cpsSvc == nil {
+		s.cpsSvc = cps.NewService(db)
+	}
+	if s.promoSvc == nil {
+		s.promoSvc = promo.NewService(db)
 	}
 
 	mux := http.NewServeMux()
@@ -182,6 +207,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/certs/{uuid}/chain", s.authMiddleware(s.handleGetCertChain))
 	mux.HandleFunc("GET /api/certs/{uuid}/chain-view", s.authMiddleware(s.handleGetCertChainView))
 
+	// 证书交付（客户端可编程调用）：默认只返回公开材料，私钥需显式请求并通过模板策略校验
+	mux.HandleFunc("POST /api/certificates/{uuid}/download", s.writeOnly(s.handleDeliverCertificate))
+
 	// 卡片 PIN/PUK/Admin Key 管理（需要认证）
 	mux.HandleFunc("POST /api/cards/{uuid}/verify-pin", s.authMiddleware(s.handleVerifyPIN))
 	mux.HandleFunc("DELETE /api/cards/{uuid}/pin-session", s.authMiddleware(s.handleLogoutPINSession))
@@ -235,6 +263,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/cas/{uuid}/revoke", s.adminOnly(s.handleRevokeCert))
 	mux.HandleFunc("GET /api/cas/{uuid}/crl", s.handleGetCRL)
 	mux.HandleFunc("POST /api/cas/{uuid}/issue", s.adminOnly(s.handleIssueCert))
+	mux.HandleFunc("PUT /api/cas/{uuid}/publish", s.adminOnly(s.handleUpdateCAPublish))
 
 	// 证书颁发模板管理（读取需认证，写入需管理员）
 	mux.HandleFunc("GET /api/templates/issuance", s.authMiddleware(s.handleListIssuanceTemplates))
@@ -246,7 +275,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// 主体模板管理（管理员）
 	mux.HandleFunc("GET /api/templates/subject", s.authMiddleware(s.handleListSubjectTemplates))
 	mux.HandleFunc("POST /api/templates/subject", s.adminOnly(s.handleCreateSubjectTemplate))
+	mux.HandleFunc("PUT /api/templates/subject/{uuid}", s.adminOnly(s.handleUpdateSubjectTemplate))
 	mux.HandleFunc("DELETE /api/templates/subject/{uuid}", s.adminOnly(s.handleDeleteSubjectTemplate))
+	mux.HandleFunc("PUT /api/templates/extension/{uuid}", s.adminOnly(s.handleUpdateExtensionTemplate))
+	mux.HandleFunc("GET /api/meta/subject-field-keys", s.authMiddleware(s.handleSubjectFieldKeys))
 
 	// 扩展信息模板管理（管理员）
 	mux.HandleFunc("GET /api/templates/extension", s.authMiddleware(s.handleListExtensionTemplates))
@@ -305,16 +337,72 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/subject-infos", s.authMiddleware(s.handleListSubjectInfos))
 	mux.HandleFunc("POST /api/subject-infos", s.writeOnly(s.handleCreateSubjectInfo))
 	mux.HandleFunc("DELETE /api/subject-infos/{uuid}", s.writeOnly(s.handleDeleteSubjectInfo))
-	mux.HandleFunc("POST /api/subject-infos/{uuid}/approve", s.adminOnly(s.handleApproveSubjectInfo))
-	mux.HandleFunc("POST /api/subject-infos/{uuid}/reject", s.adminOnly(s.handleRejectSubjectInfo))
+	mux.HandleFunc("PUT /api/subject-infos/{uuid}", s.writeOnly(s.handleResubmitSubjectInfo))
+	mux.HandleFunc("POST /api/subject-infos/{uuid}/identity", s.writeOnly(s.handleStartSubjectIdentity))
+	mux.HandleFunc("POST /api/subject-infos/{uuid}/approve", s.operatorOnly(s.handleApproveSubjectInfo))
+	mux.HandleFunc("POST /api/subject-infos/{uuid}/reject", s.operatorOnly(s.handleRejectSubjectInfo))
 
 	// 扩展信息验证（需要认证）
 	mux.HandleFunc("GET /api/extension-infos", s.authMiddleware(s.handleListExtensionInfos))
 	mux.HandleFunc("POST /api/extension-infos", s.writeOnly(s.handleCreateExtensionInfo))
-	mux.HandleFunc("POST /api/extension-infos/{uuid}/verify-dns", s.authMiddleware(s.handleVerifyDNS))
-	mux.HandleFunc("POST /api/extension-infos/{uuid}/verify-email", s.authMiddleware(s.handleVerifyEmail))
-	mux.HandleFunc("POST /api/extension-infos/{uuid}/verify-http", s.authMiddleware(s.handleVerifyHTTP))
+	mux.HandleFunc("POST /api/extension-infos/{uuid}/verify-dns", s.writeOnly(s.handleVerifyDNS))
+	mux.HandleFunc("POST /api/extension-infos/{uuid}/verify-email", s.writeOnly(s.handleVerifyEmail))
+	mux.HandleFunc("POST /api/extension-infos/{uuid}/verify-http", s.writeOnly(s.handleVerifyHTTP))
+	mux.HandleFunc("POST /api/extension-infos/{uuid}/verify-tls", s.writeOnly(s.handleVerifyTLS))
+	mux.HandleFunc("POST /api/extension-infos/{uuid}/renew", s.writeOnly(s.handleRenewExtensionInfo))
+	mux.HandleFunc("POST /api/extension-infos/{uuid}/approve", s.operatorOnly(s.handleApproveExtensionInfo))
+	mux.HandleFunc("POST /api/extension-infos/{uuid}/reject", s.operatorOnly(s.handleRejectExtensionInfo))
 	mux.HandleFunc("DELETE /api/extension-infos/{uuid}", s.writeOnly(s.handleDeleteExtensionInfo))
+
+	// 身份认证审核与自动审核接口（管理员）
+	mux.HandleFunc("GET /api/admin/identity-reviews", s.operatorOnly(s.handleListIdentityReviews))
+	mux.HandleFunc("GET /api/verify-providers", s.adminOnly(s.handleListVerifyProviders))
+	mux.HandleFunc("POST /api/verify-providers", s.adminOnly(s.handleSaveVerifyProvider))
+	mux.HandleFunc("PUT /api/verify-providers/{uuid}", s.adminOnly(s.handleSaveVerifyProvider))
+	mux.HandleFunc("DELETE /api/verify-providers/{uuid}", s.adminOnly(s.handleDeleteVerifyProvider))
+	mux.HandleFunc("POST /api/verify-providers/{uuid}/test", s.adminOnly(s.handleTestVerifyProvider))
+	// 实名认证结果回调（第三方调用，HMAC 签名校验）
+	mux.HandleFunc("POST /api/identity/callback/{provider}", s.handleIdentityCallback)
+
+	// OCSP 响应服务与证书策略（管理员）
+	mux.HandleFunc("GET /api/ocsp-responders", s.adminOnly(s.handleListOCSPResponders))
+	mux.HandleFunc("POST /api/ocsp-responders", s.adminOnly(s.handleSaveOCSPResponder))
+	mux.HandleFunc("PUT /api/ocsp-responders/{uuid}", s.adminOnly(s.handleSaveOCSPResponder))
+	mux.HandleFunc("DELETE /api/ocsp-responders/{uuid}", s.adminOnly(s.handleDeleteOCSPResponder))
+	mux.HandleFunc("GET /api/cert-policies", s.adminOnly(s.handleListCertPolicies))
+	mux.HandleFunc("GET /api/cert-policies/{uuid}", s.adminOnly(s.handleGetCertPolicy))
+	mux.HandleFunc("POST /api/cert-policies", s.adminOnly(s.handleSaveCertPolicy))
+	mux.HandleFunc("PUT /api/cert-policies/{uuid}", s.adminOnly(s.handleSaveCertPolicy))
+	mux.HandleFunc("DELETE /api/cert-policies/{uuid}", s.adminOnly(s.handleDeleteCertPolicy))
+	mux.HandleFunc("POST /ocsp/r/{path}", s.handleOCSPResponder)
+	mux.HandleFunc("GET /ocsp/r/{path}", s.handleOCSPResponder)
+	mux.HandleFunc("GET /ocsp/r/{path}/{req...}", s.handleOCSPResponder)
+	mux.HandleFunc("GET /policy/{path}", s.handlePublicPolicy)
+	mux.HandleFunc("GET /api/portal/policies", s.handlePortalPolicies)
+
+	// 优惠码 / 订阅套餐 / 兑换码（管理员）
+	mux.HandleFunc("GET /api/promo/coupons", s.adminOnly(s.handleListCoupons))
+	mux.HandleFunc("POST /api/promo/coupons", s.adminOnly(s.handleSaveCoupon))
+	mux.HandleFunc("PUT /api/promo/coupons/{uuid}", s.adminOnly(s.handleSaveCoupon))
+	mux.HandleFunc("DELETE /api/promo/coupons/{uuid}", s.adminOnly(s.handleDeleteCoupon))
+	mux.HandleFunc("GET /api/promo/plans", s.adminOnly(s.handleListPlans))
+	mux.HandleFunc("POST /api/promo/plans", s.adminOnly(s.handleSavePlan))
+	mux.HandleFunc("PUT /api/promo/plans/{uuid}", s.adminOnly(s.handleSavePlan))
+	mux.HandleFunc("DELETE /api/promo/plans/{uuid}", s.adminOnly(s.handleDeletePlan))
+	mux.HandleFunc("GET /api/promo/subscriptions", s.adminOnly(s.handleAdminListSubscriptions))
+	mux.HandleFunc("POST /api/promo/subscriptions", s.adminOnly(s.handleAdminGrantSubscription))
+	mux.HandleFunc("POST /api/promo/subscriptions/{uuid}/cancel", s.adminOnly(s.handleAdminCancelSubscription))
+	mux.HandleFunc("GET /api/promo/redeem-codes", s.adminOnly(s.handleListRedeemCodes))
+	mux.HandleFunc("POST /api/promo/redeem-codes", s.adminOnly(s.handleGenerateRedeemCodes))
+	mux.HandleFunc("PUT /api/promo/redeem-codes/{uuid}/enabled", s.adminOnly(s.handleSetRedeemEnabled))
+	// 用户侧：套餐、订阅、兑换、优惠码报价、申请向导、自助吊销
+	mux.HandleFunc("GET /api/portal/plans", s.handlePortalPlans)
+	mux.HandleFunc("POST /api/portal/plans/{code}/orders", s.writeOnly(s.handlePortalBuyPlan))
+	mux.HandleFunc("GET /api/portal/subscriptions", s.authMiddleware(s.handleMySubscriptions))
+	mux.HandleFunc("POST /api/portal/redeem", s.writeOnly(s.handleRedeem))
+	mux.HandleFunc("POST /api/portal/quotes/coupon", s.authMiddleware(s.handlePortalQuoteWithCoupon))
+	mux.HandleFunc("GET /api/portal/apply-context", s.authMiddleware(s.handleApplyContext))
+	mux.HandleFunc("POST /api/my/certs/{uuid}/revoke", s.writeOnly(s.handleUserRevokeCert))
 
 	// 证书订单与申请（需要认证）
 	mux.HandleFunc("POST /api/cert-orders", s.writeOnly(s.handleCreateCertOrder))
@@ -355,6 +443,62 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/public/cert-applications", s.handlePublicCreateCertApplication)
 	mux.HandleFunc("GET /api/public/cert-applications/{uuid}", s.handlePublicGetCertApplicationStatus)
 
+	// ---- 门户（官网/商城）----
+	// 公开读取：站点配置、分类、商品目录、报价（不创建订单、不占用库存）
+	mux.HandleFunc("GET /api/portal/site", s.handlePortalGetSiteSettings)
+	mux.HandleFunc("GET /api/portal/categories", s.handlePortalListCategories)
+	mux.HandleFunc("GET /api/portal/products", s.handlePortalListProducts)
+	mux.HandleFunc("GET /api/portal/products/{code}", s.handlePortalGetProduct)
+	mux.HandleFunc("POST /api/portal/quotes", s.handlePortalQuote)
+	// 公开信任服务：CA 目录与证书链下载（仅包含管理员标记为公开的 CA）
+	mux.HandleFunc("GET /api/portal/pki-endpoints", s.handlePortalPKIEndpoints)
+	mux.HandleFunc("GET /api/portal/pki/cas/{uuid}/chain", s.handlePortalCAChain)
+
+	// 需登录：下单与我的订单（业务约定"注册后才能下单"）
+	mux.HandleFunc("POST /api/portal/orders", s.writeOnly(s.handlePortalCreateOrder))
+	mux.HandleFunc("GET /api/portal/orders", s.authMiddleware(s.handlePortalListMyOrders))
+	mux.HandleFunc("GET /api/portal/orders/{orderNo}", s.authMiddleware(s.handlePortalGetMyOrder))
+
+	// 收银台与退款（需登录）
+	mux.HandleFunc("GET /api/portal/payment-channels", s.authMiddleware(s.handlePortalPaymentChannels))
+	mux.HandleFunc("POST /api/portal/orders/{orderNo}/pay", s.writeOnly(s.handlePortalPayOrder))
+	mux.HandleFunc("GET /api/portal/orders/{orderNo}/payment", s.authMiddleware(s.handlePortalOrderPaymentState))
+	mux.HandleFunc("POST /api/portal/orders/{orderNo}/refund", s.writeOnly(s.handlePortalRequestRefund))
+	mux.HandleFunc("GET /api/portal/refunds", s.authMiddleware(s.handlePortalListMyRefunds))
+	mux.HandleFunc("POST /api/portal/orders/{orderNo}/cancel", s.writeOnly(s.handlePortalCancelOrder))
+
+	// 业务模式能力与统一证书申请入口（需登录）
+	mux.HandleFunc("GET /api/portal/capabilities", s.authMiddleware(s.handlePortalCapabilities))
+	mux.HandleFunc("POST /api/portal/applications", s.writeOnly(s.handlePortalSubmitApplication))
+
+	// 运营后台：订单
+	mux.HandleFunc("GET /api/portal/admin/orders", s.adminOnly(s.handleAdminListOrders))
+	mux.HandleFunc("POST /api/portal/admin/orders/{orderNo}/confirm-payment", s.adminOnly(s.handleAdminConfirmOfflinePayment))
+	mux.HandleFunc("POST /api/portal/admin/orders/{orderNo}/cancel", s.adminOnly(s.handleAdminCancelOrder))
+
+	// 运营后台：用户智能卡
+	mux.HandleFunc("GET /api/admin/cards", s.adminOnly(s.handleAdminListCards))
+	mux.HandleFunc("POST /api/admin/cards/{uuid}/unlock", s.adminOnly(s.handleAdminUnlockCard))
+	mux.HandleFunc("DELETE /api/admin/cards/{uuid}", s.adminOnly(s.handleAdminDeleteCard))
+
+	// 帮助中心：用户文档公开；管理员文档仅对登录管理员开放
+	mux.HandleFunc("GET /api/help/docs", s.handleHelpPublicDocs)
+	mux.HandleFunc("GET /api/help/admin-docs", s.adminOnly(s.handleHelpAdminDocs))
+
+	// 运营后台：商品与规格管理
+	mux.HandleFunc("GET /api/portal/admin/products", s.adminOnly(s.handleAdminListProducts))
+	mux.HandleFunc("POST /api/portal/admin/products", s.adminOnly(s.handleAdminCreateProduct))
+	mux.HandleFunc("PUT /api/portal/admin/products/{uuid}", s.adminOnly(s.handleAdminUpdateProduct))
+	mux.HandleFunc("DELETE /api/portal/admin/products/{uuid}", s.adminOnly(s.handleAdminDeleteProduct))
+	mux.HandleFunc("GET /api/portal/admin/products/{uuid}/skus", s.adminOnly(s.handleAdminListSKUs))
+	mux.HandleFunc("POST /api/portal/admin/skus", s.adminOnly(s.handleAdminCreateSKU))
+	mux.HandleFunc("PUT /api/portal/admin/skus/{uuid}", s.adminOnly(s.handleAdminUpdateSKU))
+	mux.HandleFunc("DELETE /api/portal/admin/skus/{uuid}", s.adminOnly(s.handleAdminDeleteSKU))
+
+	// 站点配置（读取需登录，写入需管理员）
+	mux.HandleFunc("GET /api/site-settings", s.authMiddleware(s.handleGetSiteSettings))
+	mux.HandleFunc("PUT /api/site-settings", s.adminOnly(s.handleUpdateSiteSettings))
+
 	// 吊销服务管理（管理员）
 	mux.HandleFunc("GET /api/revocation-services", s.adminOnly(s.handleListRevocationServices))
 	mux.HandleFunc("POST /api/revocation-services", s.adminOnly(s.handleCreateRevocationService))
@@ -369,6 +513,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/ct-entries", s.authMiddleware(s.handleListCTEntries))
 	mux.HandleFunc("DELETE /api/ct-entries/{uuid}", s.adminOnly(s.handleDeleteCTEntry))
 }
+
+// Handler 返回 HTTP 处理器（供测试或嵌入其它服务器使用）。
+func (s *Server) Handler() http.Handler { return s.httpServer.Handler }
 
 // Start 启动 HTTP 服务。
 func (s *Server) Start() error {
@@ -459,6 +606,11 @@ func (s *Server) checkPINSession(w http.ResponseWriter, r *http.Request, cardUUI
 	c, err := s.cardSvc.GetCard(r.Context(), cardUUID, claims.UserUUID)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
+		return false
+	}
+	// 系统托管容器没有 PIN 保护，只用于存放下载型证书，禁止任何密钥运算与写入
+	if c.IsHosting() {
+		writeError(w, http.StatusForbidden, "证书托管容器不支持该操作；如需远程签名，请将证书签发到您的智能卡")
 		return false
 	}
 	if len(c.PINData) == 0 {

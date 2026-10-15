@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/globaltrusts/server-card/internal/storage"
+	"github.com/google/uuid"
 )
 
 // Service 是证书颁发模板管理服务。
@@ -128,32 +128,71 @@ func (s *Service) DeleteIssuanceTemplate(ctx context.Context, tmplUUID string) e
 
 // ---- 主体模板 CRUD ----
 
-// CreateSubjectTemplate 创建主体模板。
+const subjectTemplateColumns = `uuid, name, description, fields, verify_provider_uuid, verify_validity, created_at, updated_at`
+
+func scanSubjectTemplate(scan func(dest ...interface{}) error) (*storage.SubjectTemplate, error) {
+	t := &storage.SubjectTemplate{}
+	err := scan(&t.UUID, &t.Name, &t.Description, &t.Fields, &t.VerifyProviderUUID, &t.VerifyValidity, &t.CreatedAt, &t.UpdatedAt)
+	return t, err
+}
+
+// CreateSubjectTemplate 创建主体模板（字段结构由调用方校验）。
 func (s *Service) CreateSubjectTemplate(ctx context.Context, t *storage.SubjectTemplate) error {
 	t.UUID = uuid.New().String()
 	t.CreatedAt = time.Now()
-	t.UpdatedAt = time.Now()
+	t.UpdatedAt = t.CreatedAt
+	if t.VerifyValidity == "" {
+		t.VerifyValidity = "365d"
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO subject_templates (uuid, name, fields, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		t.UUID, t.Name, t.Fields, t.CreatedAt, t.UpdatedAt,
+		`INSERT INTO subject_templates (`+subjectTemplateColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.UUID, t.Name, t.Description, t.Fields, t.VerifyProviderUUID, t.VerifyValidity, t.CreatedAt, t.UpdatedAt,
 	)
 	return err
+}
+
+// UpdateSubjectTemplate 更新主体模板。已提交的主体信息保留原字段值，重新验证时按新模板执行。
+func (s *Service) UpdateSubjectTemplate(ctx context.Context, t *storage.SubjectTemplate) error {
+	if t.VerifyValidity == "" {
+		t.VerifyValidity = "365d"
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE subject_templates SET name = ?, description = ?, fields = ?, verify_provider_uuid = ?, verify_validity = ?, updated_at = ?
+		 WHERE uuid = ?`,
+		t.Name, t.Description, t.Fields, t.VerifyProviderUUID, t.VerifyValidity, time.Now(), t.UUID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("主体模板不存在")
+	}
+	return nil
+}
+
+// GetSubjectTemplate 按 UUID 查询主体模板。
+func (s *Service) GetSubjectTemplate(ctx context.Context, tmplUUID string) (*storage.SubjectTemplate, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+subjectTemplateColumns+` FROM subject_templates WHERE uuid = ?`, tmplUUID)
+	t, err := scanSubjectTemplate(row.Scan)
+	if err != nil {
+		return nil, fmt.Errorf("主体模板不存在: %s", tmplUUID)
+	}
+	return t, nil
 }
 
 // ListSubjectTemplates 查询所有主体模板。
 func (s *Service) ListSubjectTemplates(ctx context.Context) ([]*storage.SubjectTemplate, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT uuid, name, fields, created_at, updated_at FROM subject_templates ORDER BY created_at DESC`,
+		`SELECT `+subjectTemplateColumns+` FROM subject_templates ORDER BY created_at DESC`,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var templates []*storage.SubjectTemplate
+	templates := []*storage.SubjectTemplate{}
 	for rows.Next() {
-		t := &storage.SubjectTemplate{}
-		if err := rows.Scan(&t.UUID, &t.Name, &t.Fields, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		t, err := scanSubjectTemplate(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
 		templates = append(templates, t)
@@ -177,59 +216,51 @@ func (s *Service) CreateExtensionTemplate(ctx context.Context, t *storage.Extens
 	if t.VerifyExpiresDays <= 0 {
 		t.VerifyExpiresDays = 90
 	}
+	if t.VerifyPolicy == "" {
+		t.VerifyPolicy = "{}"
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO extension_templates (uuid, name, max_dns, max_email, max_ip, max_uri, max_rid, max_other,
-		 allow_uri, allow_rid, allow_other, require_dns_verify, require_email_verify, verify_expires_days, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 allow_uri, allow_rid, allow_other, require_dns_verify, require_email_verify, verify_expires_days, verify_policy,
+		 created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.UUID, t.Name, t.MaxDNS, t.MaxEmail, t.MaxIP, t.MaxURI, t.MaxRID, t.MaxOther,
 		boolToInt(t.AllowURI), boolToInt(t.AllowRID), boolToInt(t.AllowOther),
-		boolToInt(t.RequireDNSVerify), boolToInt(t.RequireEmailVerify), t.VerifyExpiresDays,
+		boolToInt(t.RequireDNSVerify), boolToInt(t.RequireEmailVerify), t.VerifyExpiresDays, t.VerifyPolicy,
 		t.CreatedAt, t.UpdatedAt,
 	)
 	return err
 }
 
-// ListExtensionTemplates 查询所有扩展信息模板。
-func (s *Service) ListExtensionTemplates(ctx context.Context) ([]*storage.ExtensionTemplate, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT uuid, name, max_dns, max_email, max_ip, max_uri, max_rid, max_other,
-		 allow_uri, allow_rid, allow_other, require_dns_verify, require_email_verify, verify_expires_days, created_at, updated_at
-		 FROM extension_templates ORDER BY created_at DESC`,
-	)
+// UpdateExtensionTemplate 更新扩展信息模板（名称与验证策略）。
+func (s *Service) UpdateExtensionTemplate(ctx context.Context, t *storage.ExtensionTemplate) error {
+	if t.VerifyPolicy == "" {
+		t.VerifyPolicy = "{}"
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE extension_templates SET name = ?, verify_policy = ?, require_dns_verify = ?, require_email_verify = ?,
+		 verify_expires_days = ?, updated_at = ? WHERE uuid = ?`,
+		t.Name, t.VerifyPolicy, boolToInt(t.RequireDNSVerify), boolToInt(t.RequireEmailVerify),
+		t.VerifyExpiresDays, time.Now(), t.UUID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer rows.Close()
-
-	var templates []*storage.ExtensionTemplate
-	for rows.Next() {
-		t := &storage.ExtensionTemplate{}
-		var dnsVerify, emailVerify, allowURI, allowRID, allowOther int
-		if err := rows.Scan(&t.UUID, &t.Name, &t.MaxDNS, &t.MaxEmail, &t.MaxIP, &t.MaxURI, &t.MaxRID, &t.MaxOther,
-			&allowURI, &allowRID, &allowOther, &dnsVerify, &emailVerify, &t.VerifyExpiresDays, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, err
-		}
-		t.RequireDNSVerify = dnsVerify == 1
-		t.RequireEmailVerify = emailVerify == 1
-		t.AllowURI = allowURI == 1
-		t.AllowRID = allowRID == 1
-		t.AllowOther = allowOther == 1
-		templates = append(templates, t)
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("扩展信息模板不存在")
 	}
-	return templates, rows.Err()
+	return nil
 }
 
-// GetExtensionTemplate 按 UUID 查询扩展信息模板。
-func (s *Service) GetExtensionTemplate(ctx context.Context, tmplUUID string) (*storage.ExtensionTemplate, error) {
+const extensionTemplateColumns = `uuid, name, max_dns, max_email, max_ip, max_uri, max_rid, max_other,
+	allow_uri, allow_rid, allow_other, require_dns_verify, require_email_verify, verify_expires_days, verify_policy,
+	created_at, updated_at`
+
+func scanExtensionTemplate(scan func(dest ...interface{}) error) (*storage.ExtensionTemplate, error) {
 	t := &storage.ExtensionTemplate{}
 	var dnsVerify, emailVerify, allowURI, allowRID, allowOther int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT uuid, name, max_dns, max_email, max_ip, max_uri, max_rid, max_other,
-		 allow_uri, allow_rid, allow_other, require_dns_verify, require_email_verify, verify_expires_days, created_at, updated_at
-		 FROM extension_templates WHERE uuid = ?`, tmplUUID,
-	).Scan(&t.UUID, &t.Name, &t.MaxDNS, &t.MaxEmail, &t.MaxIP, &t.MaxURI, &t.MaxRID, &t.MaxOther,
-		&allowURI, &allowRID, &allowOther, &dnsVerify, &emailVerify, &t.VerifyExpiresDays, &t.CreatedAt, &t.UpdatedAt)
-	if err != nil {
+	if err := scan(&t.UUID, &t.Name, &t.MaxDNS, &t.MaxEmail, &t.MaxIP, &t.MaxURI, &t.MaxRID, &t.MaxOther,
+		&allowURI, &allowRID, &allowOther, &dnsVerify, &emailVerify, &t.VerifyExpiresDays, &t.VerifyPolicy,
+		&t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.RequireDNSVerify = dnsVerify == 1
@@ -238,6 +269,34 @@ func (s *Service) GetExtensionTemplate(ctx context.Context, tmplUUID string) (*s
 	t.AllowRID = allowRID == 1
 	t.AllowOther = allowOther == 1
 	return t, nil
+}
+
+// ListExtensionTemplates 查询所有扩展信息模板。
+func (s *Service) ListExtensionTemplates(ctx context.Context) ([]*storage.ExtensionTemplate, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+extensionTemplateColumns+` FROM extension_templates ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	templates := []*storage.ExtensionTemplate{}
+	for rows.Next() {
+		t, err := scanExtensionTemplate(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		templates = append(templates, t)
+	}
+	return templates, rows.Err()
+}
+
+// GetExtensionTemplate 按 UUID 查询扩展信息模板。
+func (s *Service) GetExtensionTemplate(ctx context.Context, tmplUUID string) (*storage.ExtensionTemplate, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+extensionTemplateColumns+` FROM extension_templates WHERE uuid = ?`, tmplUUID)
+	return scanExtensionTemplate(row.Scan)
 }
 
 // DeleteExtensionTemplate 删除扩展信息模板。

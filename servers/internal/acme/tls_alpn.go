@@ -3,9 +3,9 @@
 // 验证流程（RFC 8737 §3）：
 //  1. ACME 客户端在 domain:443 上提供一个 TLS 服务，监听握手时若 ClientHello 包含
 //     ALPN 扩展且仅含 "acme-tls/1"，则返回一份特殊自签名证书：
-//        - SAN 仅包含 domain
-//        - 含一个 critical 扩展 id-pe-acmeIdentifier (1.3.6.1.5.5.7.1.31)，
-//          其值为 OCTET STRING(SHA-256(keyAuthorization))
+//     - SAN 仅包含 domain
+//     - 含一个 critical 扩展 id-pe-acmeIdentifier (1.3.6.1.5.5.7.1.31)，
+//     其值为 OCTET STRING(SHA-256(keyAuthorization))
 //  2. ACME 服务端在验证时打开 TLS 连接，ALPN 协商 "acme-tls/1"，
 //     从握手返回的证书中读取该扩展并比对哈希。
 //

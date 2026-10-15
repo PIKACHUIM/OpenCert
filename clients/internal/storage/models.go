@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"encoding/json"
 	"encoding/pem"
+	"strings"
 	"time"
 )
 
@@ -160,8 +162,37 @@ type Certificate struct {
 	// high 模式专用：tpm.WrappedKey 序列化（JSON），私钥永不出 TPM。
 	TPMWrappedBlob Base64Bytes `json:"-"`
 	Remark         string      `json:"remark"`
-	CreatedAt      time.Time   `json:"created_at"`
-	UpdatedAt      time.Time   `json:"updated_at"`
+	// CloudMeta 是云卡证书的元数据（JSON）：主体、颁发者、有效期、吊销状态、CA 等。
+	// 仅 Cloud Slot 同步时写入，本地卡为空。
+	CloudMeta string    `json:"cloud_meta,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// CloudCertMeta 是云卡证书元数据的结构化形式，便于前端直接展示。
+type CloudCertMeta struct {
+	SubjectDN        string     `json:"subject_dn,omitempty"`
+	IssuerDN         string     `json:"issuer_dn,omitempty"`
+	SerialHex        string     `json:"serial_hex,omitempty"`
+	CAUUID           string     `json:"ca_uuid,omitempty"`
+	NotBefore        *time.Time `json:"not_before,omitempty"`
+	NotAfter         *time.Time `json:"not_after,omitempty"`
+	RevocationStatus string     `json:"revocation_status,omitempty"`
+	SANDNS           string     `json:"san_dns,omitempty"`
+	SANEmail         string     `json:"san_email,omitempty"`
+	SyncedAt         time.Time  `json:"synced_at"`
+}
+
+// ParseCloudMeta 解析云卡证书元数据；为空或格式错误时返回 nil。
+func (c *Certificate) ParseCloudMeta() *CloudCertMeta {
+	if strings.TrimSpace(c.CloudMeta) == "" {
+		return nil
+	}
+	var m CloudCertMeta
+	if err := json.Unmarshal([]byte(c.CloudMeta), &m); err != nil {
+		return nil
+	}
+	return &m
 }
 
 // DERContent 从 CertContent 中提取 DER 格式数据。
@@ -236,7 +267,7 @@ type CSRRecord struct {
 	Locality      string      `json:"locality"`
 	Email         string      `json:"email"`
 	KeyType       string      `json:"key_type"`
-	DigestType    string      `json:"digest_type"`   // sha256/sha384/sha512；空值表示使用默认值
+	DigestType    string      `json:"digest_type"` // sha256/sha384/sha512；空值表示使用默认值
 	KeyStorage    KeyStorage  `json:"key_storage"`
 	CardUUID      string      `json:"card_uuid"` // KeyStorage=smartcard 时有效
 	SANDN         string      `json:"san_dns"`   // 逗号分隔

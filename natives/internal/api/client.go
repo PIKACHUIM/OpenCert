@@ -87,21 +87,21 @@ type User struct {
 
 // Card 智能卡信息
 type Card struct {
-	UUID          string         `json:"uuid"`
-	SlotType      SlotType       `json:"slot_type"`
-	CardName      string         `json:"card_name"`
-	UserUUID      string         `json:"user_uuid"`
-	Remark        string         `json:"remark,omitempty"`
-	SecurityLevel SecurityLevel  `json:"security_level"`
-	CloudURL      string         `json:"cloud_url,omitempty"`
-	CloudCardUUID string         `json:"cloud_card_uuid,omitempty"`
-	Enabled       bool           `json:"enabled"`
-	PINRetries    int            `json:"pin_retries"`
+	UUID           string        `json:"uuid"`
+	SlotType       SlotType      `json:"slot_type"`
+	CardName       string        `json:"card_name"`
+	UserUUID       string        `json:"user_uuid"`
+	Remark         string        `json:"remark,omitempty"`
+	SecurityLevel  SecurityLevel `json:"security_level"`
+	CloudURL       string        `json:"cloud_url,omitempty"`
+	CloudCardUUID  string        `json:"cloud_card_uuid,omitempty"`
+	Enabled        bool          `json:"enabled"`
+	PINRetries     int           `json:"pin_retries"`
 	PINFailedCount int           `json:"pin_failed_count"`
-	PINLocked     bool           `json:"pin_locked"`
-	CreatedAt     string         `json:"created_at"`
-	ExpiresAt     string         `json:"expires_at,omitempty"`
-	CertStats     *CertStats     `json:"cert_stats,omitempty"`
+	PINLocked      bool          `json:"pin_locked"`
+	CreatedAt      string        `json:"created_at"`
+	ExpiresAt      string        `json:"expires_at,omitempty"`
+	CertStats      *CertStats    `json:"cert_stats,omitempty"`
 }
 
 // CertStats 证书统计
@@ -129,47 +129,47 @@ type Certificate struct {
 
 // CertDetail 证书详细信息（/certs/{uuid}/detail 返回）
 type CertDetail struct {
-	CommonName        string        `json:"common_name"`
-	Organization      string        `json:"organization,omitempty"`
-	OrgUnit           string        `json:"org_unit,omitempty"`
-	Country           string        `json:"country,omitempty"`
-	State             string        `json:"state,omitempty"`
-	Locality          string        `json:"locality,omitempty"`
-	Street            string        `json:"street,omitempty"`
-	SubjectSerial     string        `json:"subject_serial,omitempty"`
-	Description       string        `json:"description,omitempty"`
-	IssuerCN          string        `json:"issuer_cn"`
-	IssuerOrg         string        `json:"issuer_org,omitempty"`
-	IssuerOU          string        `json:"issuer_ou,omitempty"`
-	IssuerCountry     string        `json:"issuer_country,omitempty"`
-	IssuerState       string        `json:"issuer_state,omitempty"`
-	IssuerLocality    string        `json:"issuer_locality,omitempty"`
-	IssuerStreet      string        `json:"issuer_street,omitempty"`
-	IssuerSerial      string        `json:"issuer_serial,omitempty"`
-	IssuerDescription string        `json:"issuer_description,omitempty"`
-	NotBefore         string        `json:"not_before"`
-	NotAfter          string        `json:"not_after"`
-	SerialNumber      string        `json:"serial_number"`
-	SHA1Fingerprint   string        `json:"sha1_fingerprint"`
-	SHA256Fingerprint string        `json:"sha256_fingerprint,omitempty"`
-	KeyUsage          []string      `json:"key_usage"`
-	ExtKeyUsage       []string      `json:"ext_key_usage"`
-	IsCA              bool          `json:"is_ca"`
-	MaxPathLen        int           `json:"max_path_len"`
-	MaxPathLenZero    bool          `json:"max_path_len_zero"`
-	KeyBits           int           `json:"key_bits,omitempty"`
-	SANDNSNames       []string      `json:"san_dns,omitempty"`
-	SANIPAddresses    []string      `json:"san_ip,omitempty"`
-	SANEmailAddresses []string      `json:"san_email,omitempty"`
-	SANURIs           []string      `json:"san_uri,omitempty"`
-	CRLDistPoints     []string      `json:"crl_dist_points,omitempty"`
-	OCSPServers       []string      `json:"ocsp_servers,omitempty"`
-	IssuingCertURL    []string      `json:"issuing_cert_url,omitempty"`
-	CPSURLs           []string      `json:"cps_urls,omitempty"`
-	CertPolicies      []CertPolicy  `json:"cert_policies,omitempty"`
-	SignatureAlgo     string        `json:"signature_algo"`
-	PublicKeyAlgo     string        `json:"public_key_algo"`
-	IsSelfSigned      bool          `json:"is_self_signed"`
+	CommonName        string       `json:"common_name"`
+	Organization      string       `json:"organization,omitempty"`
+	OrgUnit           string       `json:"org_unit,omitempty"`
+	Country           string       `json:"country,omitempty"`
+	State             string       `json:"state,omitempty"`
+	Locality          string       `json:"locality,omitempty"`
+	Street            string       `json:"street,omitempty"`
+	SubjectSerial     string       `json:"subject_serial,omitempty"`
+	Description       string       `json:"description,omitempty"`
+	IssuerCN          string       `json:"issuer_cn"`
+	IssuerOrg         string       `json:"issuer_org,omitempty"`
+	IssuerOU          string       `json:"issuer_ou,omitempty"`
+	IssuerCountry     string       `json:"issuer_country,omitempty"`
+	IssuerState       string       `json:"issuer_state,omitempty"`
+	IssuerLocality    string       `json:"issuer_locality,omitempty"`
+	IssuerStreet      string       `json:"issuer_street,omitempty"`
+	IssuerSerial      string       `json:"issuer_serial,omitempty"`
+	IssuerDescription string       `json:"issuer_description,omitempty"`
+	NotBefore         string       `json:"not_before"`
+	NotAfter          string       `json:"not_after"`
+	SerialNumber      string       `json:"serial_number"`
+	SHA1Fingerprint   string       `json:"sha1_fingerprint"`
+	SHA256Fingerprint string       `json:"sha256_fingerprint,omitempty"`
+	KeyUsage          []string     `json:"key_usage"`
+	ExtKeyUsage       []string     `json:"ext_key_usage"`
+	IsCA              bool         `json:"is_ca"`
+	MaxPathLen        int          `json:"max_path_len"`
+	MaxPathLenZero    bool         `json:"max_path_len_zero"`
+	KeyBits           int          `json:"key_bits,omitempty"`
+	SANDNSNames       []string     `json:"san_dns,omitempty"`
+	SANIPAddresses    []string     `json:"san_ip,omitempty"`
+	SANEmailAddresses []string     `json:"san_email,omitempty"`
+	SANURIs           []string     `json:"san_uri,omitempty"`
+	CRLDistPoints     []string     `json:"crl_dist_points,omitempty"`
+	OCSPServers       []string     `json:"ocsp_servers,omitempty"`
+	IssuingCertURL    []string     `json:"issuing_cert_url,omitempty"`
+	CPSURLs           []string     `json:"cps_urls,omitempty"`
+	CertPolicies      []CertPolicy `json:"cert_policies,omitempty"`
+	SignatureAlgo     string       `json:"signature_algo"`
+	PublicKeyAlgo     string       `json:"public_key_algo"`
+	IsSelfSigned      bool         `json:"is_self_signed"`
 }
 
 // CertPolicy 证书策略
@@ -196,12 +196,12 @@ type CloudLoginRequest struct {
 
 // AuthToken 认证令牌
 type AuthToken struct {
-	Token    string `json:"token"`
-	UserUUID string `json:"user_uuid"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
-	UserType string `json:"user_type,omitempty"`
-	CloudURL string `json:"cloud_url,omitempty"`
+	Token     string `json:"token"`
+	UserUUID  string `json:"user_uuid"`
+	Username  string `json:"username"`
+	Role      string `json:"role"`
+	UserType  string `json:"user_type,omitempty"`
+	CloudURL  string `json:"cloud_url,omitempty"`
 	CloudUser string `json:"cloud_user,omitempty"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
@@ -222,9 +222,9 @@ type DeliverRequest struct {
 	CertUUID     string `json:"cert_uuid"`
 	SourceCloud  string `json:"source_cloud_url,omitempty"`
 	SourceCard   string `json:"source_card_uuid,omitempty"`
-	Target       string `json:"target"`                      // "database" | "card"
-	TargetCard   string `json:"target_card_uuid,omitempty"`  // Target=card 时必填
-	CardPassword string `json:"card_password,omitempty"`     // Target=card 时必填
+	Target       string `json:"target"`                     // "database" | "card"
+	TargetCard   string `json:"target_card_uuid,omitempty"` // Target=card 时必填
+	CardPassword string `json:"card_password,omitempty"`    // Target=card 时必填
 	Remark       string `json:"remark,omitempty"`
 }
 

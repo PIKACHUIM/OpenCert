@@ -42,7 +42,9 @@ jobs:
           echo "tag_name=${VERSION}" >> $GITHUB_OUTPUT
 
   # ================================================================
-  # Job 1: 构建 client-card.exe（CGO_ENABLED=0，ubuntu 即可）
+  # Job 1: 构建 Windows 客户端（client-card.exe + OpenCertManager.exe）
+  #        CGO_ENABLED=0，ubuntu runner 直接交叉编译；Wails 桌面端见
+  #        desktop/wails（本安装包仅面向 x64）
   # ================================================================
   build-client:
     name: Build client (Windows/amd64)
@@ -54,24 +56,28 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: clients/go.sum
+          cache-dependency-path: |
+            clients/go.sum
+            desktop/wails/go.sum
 
-      - name: Build client-card.exe
-        working-directory: clients
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: clients/front/package-lock.json
+
+      - name: Build Windows clients (amd64)
         env:
-          GOOS: windows
-          GOARCH: amd64
-          CGO_ENABLED: "0"
-        run: |
-          go build \
-            -ldflags="-s -w -X main.Version=${{ needs.version.outputs.version }}" \
-            -o client-card.exe \
-            ./cmd/client-card
+          ARCHES: amd64
+          VERSION: ${{ needs.version.outputs.version }}
+        run: bash scripts/build-clients.sh "$VERSION"
 
       - uses: actions/upload-artifact@v4
         with:
           name: client-windows
-          path: clients/client-card.exe
+          path: |
+            dist/clients/OpenCertManager-windows-amd64.exe
+            dist/clients/client-card-windows-amd64.exe
           retention-days: 7
 
   # ================================================================
@@ -104,40 +110,12 @@ jobs:
           retention-days: 7
 
   # ================================================================
-  # Job 3: 构建 Electron desktop（unpacked，供 Inno Setup 打包）
-  # ================================================================
-  build-desktop:
-    name: Build desktop (Windows unpacked)
-    runs-on: windows-latest
-    needs: [version]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install dependencies
-        working-directory: desktop
-        run: npm ci
-
-      - name: Build unpacked app
-        working-directory: desktop
-        run: npx electron-builder --win dir
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: desktop-windows
-          path: desktop/dist/win-unpacked/
-          retention-days: 7
-
-  # ================================================================
   # Job 4: Inno Setup 打包 → 生成安装程序
   # ================================================================
   build-installer:
     name: Build Windows installer
     runs-on: windows-latest
-    needs: [version, build-client, build-native, build-desktop]
+    needs: [version, build-client, build-native]
     steps:
       - uses: actions/checkout@v4
 
@@ -150,11 +128,11 @@ jobs:
       - name: Stage packaging directory
         shell: pwsh
         run: |
-          # client / native 下载后带子目录，展平到 pkg/client/ 和 pkg/native/
-          Move-Item pkg/client-windows/client-card.exe pkg/client/client-card.exe -Force
+          # client-windows 内含 OpenCertManager.exe 与 client-card.exe
+          New-Item -ItemType Directory -Force -Path pkg/client, pkg/desktop, pkg/native | Out-Null
+          Move-Item pkg/client-windows/client-card-windows-amd64.exe pkg/client/client-card.exe -Force
+          Move-Item pkg/client-windows/OpenCertManager-windows-amd64.exe pkg/desktop/OpenCertManager.exe -Force
           Move-Item pkg/native-windows/native-client.exe pkg/native/native-client.exe -Force
-          # desktop artifact 已下载到 pkg/desktop-windows/，重命名
-          Rename-Item pkg/desktop-windows pkg/desktop
           # 驱动：保留 build/ + setup/ 兄弟结构（installer_all.bat 依赖 %SCRIPT_DIR%..\build）
           New-Item -ItemType Directory -Force -Path pkg/drivers/build | Out-Null
           New-Item -ItemType Directory -Force -Path pkg/drivers/setup | Out-Null

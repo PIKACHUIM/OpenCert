@@ -6,10 +6,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/globaltrusts/client-card/internal/card/local"
 	cryptoutil "github.com/globaltrusts/client-card/internal/crypto"
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/internal/tpm"
-	"github.com/globaltrusts/client-card/internal/card/local"
 	"github.com/google/uuid"
 )
 

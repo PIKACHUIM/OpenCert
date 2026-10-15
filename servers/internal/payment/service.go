@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/globaltrusts/server-card/internal/storage"
+	"github.com/google/uuid"
 )
 
 // Service 是支付服务。
@@ -69,7 +69,9 @@ func (s *Service) CreateRechargeOrder(ctx context.Context, userUUID string, amou
 	return order, payResp, nil
 }
 
-// HandleCallback 处理支付回调。
+// HandleCallback 处理支付回调：先验签，再按业务订单 / 充值订单分派结算。
+//
+// 具体校验与幂等逻辑见 checkout.go 的 HandleChannelCallback。
 func (s *Service) HandleCallback(ctx context.Context, channel string, body []byte, headers map[string]string) error {
 	provider, err := s.registry.Get(channel)
 	if err != nil {
@@ -86,65 +88,7 @@ func (s *Service) HandleCallback(ctx context.Context, channel string, body []byt
 		return nil
 	}
 
-	// 使用事务更新订单状态和用户余额
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer tx.Rollback()
-
-	// 检查订单状态，防止重复处理
-	var currentStatus string
-	err = tx.QueryRowContext(ctx,
-		`SELECT status FROM recharge_orders WHERE order_no = ?`, data.OrderNo,
-	).Scan(&currentStatus)
-	if err != nil {
-		return fmt.Errorf("查询订单失败: %w", err)
-	}
-	if currentStatus != string(storage.OrderStatusPending) {
-		slog.Info("订单已处理，跳过", "order_no", data.OrderNo, "status", currentStatus)
-		return nil
-	}
-
-	// 更新订单状态
-	now := time.Now()
-	_, err = tx.ExecContext(ctx,
-		`UPDATE recharge_orders SET status = ?, paid_at = ?, callback_data = ? WHERE order_no = ?`,
-		storage.OrderStatusPaid, now, data.RawData, data.OrderNo,
-	)
-	if err != nil {
-		return fmt.Errorf("更新订单状态失败: %w", err)
-	}
-
-	// 查询订单获取用户UUID和金额
-	var userUUID string
-	var amountCents int64
-	err = tx.QueryRowContext(ctx,
-		`SELECT user_uuid, amount_cents FROM recharge_orders WHERE order_no = ?`, data.OrderNo,
-	).Scan(&userUUID, &amountCents)
-	if err != nil {
-		return fmt.Errorf("查询订单详情失败: %w", err)
-	}
-
-	// 更新用户余额（UPSERT）
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO user_balances (user_uuid, available_cents, frozen_cents, total_recharge, total_consume)
-		 VALUES (?, ?, 0, ?, 0)
-		 ON CONFLICT(user_uuid) DO UPDATE SET
-		   available_cents = available_cents + ?,
-		   total_recharge = total_recharge + ?`,
-		userUUID, amountCents, amountCents, amountCents, amountCents,
-	)
-	if err != nil {
-		return fmt.Errorf("更新余额失败: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交事务失败: %w", err)
-	}
-
-	slog.Info("充值成功", "order_no", data.OrderNo, "user", userUUID, "amount_cents", amountCents)
-	return nil
+	return s.HandleChannelCallback(ctx, channel, data)
 }
 
 // DeductBalance 从用户余额中扣除金额（购买证书服务时调用）。
@@ -372,73 +316,5 @@ func (s *Service) ListRefunds(ctx context.Context, userUUID string, page, pageSi
 	return refunds, total, rows.Err()
 }
 
-// ApproveRefund 管理员审批退款（审批通过后执行退款）。
-func (s *Service) ApproveRefund(ctx context.Context, refundUUID, adminUUID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer tx.Rollback()
-
-	// 查询退款工单
-	var refund storage.RefundRequest
-	err = tx.QueryRowContext(ctx,
-		`SELECT uuid, user_uuid, order_no, amount_cents, status FROM refund_requests WHERE uuid = ?`, refundUUID,
-	).Scan(&refund.UUID, &refund.UserUUID, &refund.OrderNo, &refund.AmountCents, &refund.Status)
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("退款工单不存在: %s", refundUUID)
-	}
-	if err != nil {
-		return fmt.Errorf("查询退款工单失败: %w", err)
-	}
-	if refund.Status != storage.OrderStatusPending {
-		return fmt.Errorf("退款工单状态不允许审批: %s", refund.Status)
-	}
-
-	now := time.Now()
-
-	// 更新退款工单状态
-	_, err = tx.ExecContext(ctx,
-		`UPDATE refund_requests SET status = 'paid', approved_by = ?, processed_at = ? WHERE uuid = ?`,
-		adminUUID, now, refundUUID,
-	)
-	if err != nil {
-		return fmt.Errorf("更新退款工单失败: %w", err)
-	}
-
-	// 更新原始订单状态为已退款
-	_, err = tx.ExecContext(ctx,
-		`UPDATE recharge_orders SET status = ? WHERE order_no = ?`,
-		storage.OrderStatusRefunded, refund.OrderNo,
-	)
-	if err != nil {
-		return fmt.Errorf("更新订单状态失败: %w", err)
-	}
-
-	// 扣减用户余额
-	_, err = tx.ExecContext(ctx,
-		`UPDATE user_balances SET available_cents = available_cents - ?, total_recharge = total_recharge - ? WHERE user_uuid = ?`,
-		refund.AmountCents, refund.AmountCents, refund.UserUUID,
-	)
-	if err != nil {
-		return fmt.Errorf("扣减余额失败: %w", err)
-	}
-
-	// 写入消费记录（负数表示退款）
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO consume_records (uuid, user_uuid, order_no, consume_type, amount_cents, remark, created_at)
-		 VALUES (?, ?, ?, 'refund', ?, ?, ?)`,
-		uuid.New().String(), refund.UserUUID, refund.OrderNo, -refund.AmountCents,
-		fmt.Sprintf("退款: 订单 %s", refund.OrderNo), now,
-	)
-	if err != nil {
-		return fmt.Errorf("写入退款记录失败: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交事务失败: %w", err)
-	}
-
-	slog.Info("退款审批通过", "refund_uuid", refundUUID, "admin", adminUUID, "amount_cents", refund.AmountCents)
-	return nil
-}
+// 退款相关的实现见 refund.go：
+//   ApproveRefund / RejectRefund / RequestCertOrderRefund / ListAllRefunds 等。

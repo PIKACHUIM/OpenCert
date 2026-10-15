@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	cryptoutil "github.com/globaltrusts/client-card/internal/crypto"
 	"github.com/globaltrusts/client-card/internal/card/local"
+	cryptoutil "github.com/globaltrusts/client-card/internal/crypto"
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/google/uuid"
 )

@@ -11,7 +11,7 @@ import (
 
 // Response 是 API 统一响应格式。
 type Response struct {
-	Code    int         `json:"code"`            // 0=成功，非0=错误
+	Code    int         `json:"code"` // 0=成功，非0=错误
 	Message string      `json:"message"`
 	Data    interface{} `json:"data,omitempty"`
 }

@@ -161,10 +161,9 @@ func (m *Manager) Login(ctx context.Context, handle pkcs11types.SessionHandle, u
 	}
 
 	s.Lock()
-	defer s.Unlock()
-
 	// 检查是否已登录
 	if s.IsLoggedIn() {
+		s.Unlock()
 		return pkcs11types.CKR_USER_ALREADY_LOGGED_IN
 	}
 
@@ -174,42 +173,53 @@ func (m *Manager) Login(ctx context.Context, handle pkcs11types.SessionHandle, u
 		switch s.State {
 		case pkcs11types.CKS_RO_PUBLIC_SESSION:
 			if err := s.Provider.Login(ctx, userType, pin); err != nil {
+				s.Unlock()
 				return err
 			}
 			s.State = pkcs11types.CKS_RO_USER_FUNCTIONS
-			// 同步更新同一 Slot 的所有会话状态
-			m.updateSlotSessionsState(s.SlotID, userType)
+			s.Unlock()
+			// 同步更新同一 Slot 的其他会话状态
+			m.updateSlotSessionsState(s.SlotID, userType, s.Handle)
 			return nil
 		case pkcs11types.CKS_RW_PUBLIC_SESSION:
 			if err := s.Provider.Login(ctx, userType, pin); err != nil {
+				s.Unlock()
 				return err
 			}
 			s.State = pkcs11types.CKS_RW_USER_FUNCTIONS
-			m.updateSlotSessionsState(s.SlotID, userType)
+			s.Unlock()
+			m.updateSlotSessionsState(s.SlotID, userType, s.Handle)
 			return nil
 		default:
+			s.Unlock()
 			return pkcs11types.CKR_USER_ALREADY_LOGGED_IN
 		}
 
 	case pkcs11types.CKU_SO:
 		// 只有 RW_PUBLIC 可以 SO 登录；如果存在 RO 会话则拒绝
 		if s.State != pkcs11types.CKS_RW_PUBLIC_SESSION {
-			if s.State == pkcs11types.CKS_RO_PUBLIC_SESSION {
+			state := s.State
+			s.Unlock()
+			if state == pkcs11types.CKS_RO_PUBLIC_SESSION {
 				return pkcs11types.CKR_SESSION_READ_ONLY_EXISTS
 			}
 			return pkcs11types.CKR_USER_ALREADY_LOGGED_IN
 		}
 		// 检查同一 Slot 是否存在 RO 会话
 		if m.hasROSessionForSlot(s.SlotID) {
+			s.Unlock()
 			return pkcs11types.CKR_SESSION_READ_ONLY_EXISTS
 		}
 		if err := s.Provider.Login(ctx, userType, pin); err != nil {
+			s.Unlock()
 			return err
 		}
 		s.State = pkcs11types.CKS_RW_SO_FUNCTIONS
+		s.Unlock()
 		return nil
 
 	default:
+		s.Unlock()
 		return pkcs11types.CKR_USER_TYPE_INVALID
 	}
 }
@@ -222,13 +232,13 @@ func (m *Manager) Logout(ctx context.Context, handle pkcs11types.SessionHandle) 
 	}
 
 	s.Lock()
-	defer s.Unlock()
-
 	if !s.IsLoggedIn() {
+		s.Unlock()
 		return pkcs11types.CKR_USER_NOT_LOGGED_IN
 	}
 
 	if err := s.Provider.Logout(ctx); err != nil {
+		s.Unlock()
 		return err
 	}
 
@@ -239,9 +249,10 @@ func (m *Manager) Logout(ctx context.Context, handle pkcs11types.SessionHandle) 
 	case pkcs11types.CKS_RW_USER_FUNCTIONS, pkcs11types.CKS_RW_SO_FUNCTIONS:
 		s.State = pkcs11types.CKS_RW_PUBLIC_SESSION
 	}
+	s.Unlock()
 
-	// 同步更新同一 Slot 的所有会话状态
-	m.revertSlotSessionsToPublic(s.SlotID)
+	// 同步更新同一 Slot 的其他会话状态
+	m.revertSlotSessionsToPublic(s.SlotID, s.Handle)
 	return nil
 }
 
@@ -258,42 +269,53 @@ func (m *Manager) hasROSessionForSlot(slotID pkcs11types.SlotID) bool {
 	return false
 }
 
-// updateSlotSessionsState 当 User 登录成功时，同步更新同一 Slot 的所有会话状态。
-// PKCS#11 规范要求：同一 Token 上的所有会话共享登录状态。
-func (m *Manager) updateSlotSessionsState(slotID pkcs11types.SlotID, userType pkcs11types.UserType) {
+// sessionsOfSlot 收集指定 Slot 上除 exclude 之外的会话。
+// 返回前已释放 Manager 锁，调用方可逐个对会话加锁，
+// 避免出现「持有会话 A 的锁再去抢会话 B 的锁」这类交叉加锁。
+func (m *Manager) sessionsOfSlot(slotID pkcs11types.SlotID, exclude pkcs11types.SessionHandle) []*Session {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	targets := make([]*Session, 0, len(m.sessions))
+	for h, s := range m.sessions {
+		if s.SlotID == slotID && h != exclude {
+			targets = append(targets, s)
+		}
+	}
+	m.mu.RUnlock()
+	return targets
+}
 
-	for _, s := range m.sessions {
-		if s.SlotID != slotID {
-			continue
+// updateSlotSessionsState 当 User 登录成功时，同步更新同一 Slot 的其他会话状态。
+// PKCS#11 规范要求：同一 Token 上的所有会话共享登录状态。
+//
+// 并发要点：State 字段由各会话自己的互斥锁保护，因此这里逐个加锁更新；
+// 且调用方必须已释放当前会话的锁（否则会与其它 goroutine 的登录/登出交叉加锁而死锁）。
+func (m *Manager) updateSlotSessionsState(slotID pkcs11types.SlotID, userType pkcs11types.UserType, exclude pkcs11types.SessionHandle) {
+	if userType != pkcs11types.CKU_USER {
+		return
+	}
+	for _, s := range m.sessionsOfSlot(slotID, exclude) {
+		s.Lock()
+		switch s.State {
+		case pkcs11types.CKS_RO_PUBLIC_SESSION:
+			s.State = pkcs11types.CKS_RO_USER_FUNCTIONS
+		case pkcs11types.CKS_RW_PUBLIC_SESSION:
+			s.State = pkcs11types.CKS_RW_USER_FUNCTIONS
 		}
-		// 注意：调用方已持有当前 session 的锁，这里只更新其他 session
-		switch userType {
-		case pkcs11types.CKU_USER:
-			if s.State == pkcs11types.CKS_RO_PUBLIC_SESSION {
-				s.State = pkcs11types.CKS_RO_USER_FUNCTIONS
-			} else if s.State == pkcs11types.CKS_RW_PUBLIC_SESSION {
-				s.State = pkcs11types.CKS_RW_USER_FUNCTIONS
-			}
-		}
+		s.Unlock()
 	}
 }
 
-// revertSlotSessionsToPublic 当登出时，同步将同一 Slot 的所有会话回退到 PUBLIC 状态。
-func (m *Manager) revertSlotSessionsToPublic(slotID pkcs11types.SlotID) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, s := range m.sessions {
-		if s.SlotID != slotID {
-			continue
-		}
+// revertSlotSessionsToPublic 当登出时，同步将同一 Slot 的其他会话回退到 PUBLIC 状态。
+// 与 updateSlotSessionsState 相同，逐个加锁且不嵌套持有多个会话锁。
+func (m *Manager) revertSlotSessionsToPublic(slotID pkcs11types.SlotID, exclude pkcs11types.SessionHandle) {
+	for _, s := range m.sessionsOfSlot(slotID, exclude) {
+		s.Lock()
 		switch s.State {
 		case pkcs11types.CKS_RO_USER_FUNCTIONS:
 			s.State = pkcs11types.CKS_RO_PUBLIC_SESSION
 		case pkcs11types.CKS_RW_USER_FUNCTIONS, pkcs11types.CKS_RW_SO_FUNCTIONS:
 			s.State = pkcs11types.CKS_RW_PUBLIC_SESSION
 		}
+		s.Unlock()
 	}
 }

@@ -399,10 +399,10 @@ func (h *PKCSHandler) handleKSPSign(ctx context.Context, req *Frame) (interface{
 // digestInfoPrefix 返回指定哈希算法的 ASN.1 DigestInfo 前缀字节。
 // 调用方需将实际哈希值追加到前缀之后，构成完整的 DigestInfo。
 //
-// DigestInfo ::= SEQUENCE {
-//   digestAlgorithm AlgorithmIdentifier,
-//   digest OCTET STRING
-// }
+//	DigestInfo ::= SEQUENCE {
+//	  digestAlgorithm AlgorithmIdentifier,
+//	  digest OCTET STRING
+//	}
 func digestInfoPrefix(hashAlg string) ([]byte, error) {
 	switch strings.ToUpper(hashAlg) {
 	case "SHA1":

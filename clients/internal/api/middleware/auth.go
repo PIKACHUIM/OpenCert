@@ -13,9 +13,15 @@ import (
 	"sync"
 )
 
-// SessionValidator 是 session token 验证函数类型。
-// 由 auth_handler.go 中的 getSession 提供，避免循环依赖。
-type SessionValidator func(token string) bool
+// Principal 表示通过认证的调用方身份。
+type Principal struct {
+	UserUUID  string
+	Role      Role
+	TokenType string
+}
+
+// SessionValidator 验证 session token 并返回调用方身份。
+type SessionValidator func(token string) (Principal, bool)
 
 // AuthToken 管理本地 API 认证 Token。
 type AuthToken struct {
@@ -73,7 +79,7 @@ func (at *AuthToken) Token() string {
 func (at *AuthToken) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 跳过不需要认证的路径
-		if isPublicPath(r.URL.Path) {
+		if IsPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -84,42 +90,63 @@ func (at *AuthToken) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// 提取 Bearer Token
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			writeUnauthorized(w, "缺少 Authorization 头")
+		principal, errMsg := at.authenticate(r.Header.Get("Authorization"))
+		if errMsg != "" {
+			writeUnauthorized(w, errMsg)
 			return
 		}
 
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			writeUnauthorized(w, "Authorization 格式错误，期望 Bearer <token>")
-			return
-		}
-
-		token := parts[1]
-
-		// 优先验证用户 session token
-		at.mu.RLock()
-		validator := at.sessionValidator
-		at.mu.RUnlock()
-		if validator != nil && validator(token) {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// 回退：验证本地 API Token（供内嵌前端/调试使用）
-		if token == at.Token() {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		writeUnauthorized(w, "Token 无效")
+		ctx := SetUserContext(r.Context(), principal.UserUUID, principal.Role)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// isPublicPath 判断是否为公开路径（不需要认证）。
-func isPublicPath(path string) bool {
+// Protect 包装一个处理器，要求请求携带本地 API Token 或有效 session。
+// 用于 /metrics 这类不在 /api/ 前缀下、因而不会被全局认证中间件覆盖的端点，
+// 避免监控指标对同机任意进程（或改绑外网地址后的任意主机）完全开放。
+func (at *AuthToken) Protect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, errMsg := at.authenticate(r.Header.Get("Authorization")); errMsg != "" {
+			writeUnauthorized(w, errMsg)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// authenticate 解析 Authorization 头并返回调用方身份。
+// 返回的 errMsg 非空表示认证失败，由调用方写入 401 响应。
+func (at *AuthToken) authenticate(authHeader string) (Principal, string) {
+	if authHeader == "" {
+		return Principal{}, "缺少 Authorization 头"
+	}
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return Principal{}, "Authorization 格式错误，期望 Bearer <token>"
+	}
+	token := parts[1]
+
+	// 优先验证用户 session token
+	at.mu.RLock()
+	validator := at.sessionValidator
+	at.mu.RUnlock()
+	if validator != nil {
+		if principal, ok := validator(token); ok {
+			return principal, ""
+		}
+	}
+
+	// 本地 API Token 仅代表受限的本机系统调用方，不授予用户角色。
+	if token == at.Token() {
+		return Principal{Role: RoleSystem, TokenType: "local"}, ""
+	}
+	return Principal{}, "Token 无效"
+}
+
+// IsPublicPath 判断是否为公开路径（不需要认证）。
+// 公开路径同时也不受 RBAC 约束：认证中间件不会为它们注入用户角色，
+// 若 RBAC 仍按 fail-closed 处理会把登录接口与前端静态资源一并拒绝。
+func IsPublicPath(path string) bool {
 	// 健康检查
 	if path == "/api/health" {
 		return true

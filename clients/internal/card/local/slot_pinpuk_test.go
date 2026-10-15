@@ -11,6 +11,8 @@ import (
 )
 
 // newTestRepos 创建临时 SQLite 数据库，返回 CardRepo。
+// cards.user_uuid 对 users.uuid 有外键约束，因此需先为用例中使用的
+// 用户 UUID 落库，否则创建卡片会被外键约束拒绝。
 func newTestRepos(t *testing.T) (*storage.DB, *storage.CardRepo) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "pinpuk.db")
@@ -19,6 +21,19 @@ func newTestRepos(t *testing.T) (*storage.DB, *storage.CardRepo) {
 		t.Fatalf("打开数据库失败: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
+
+	userRepo := storage.NewUserRepo(db)
+	for _, uuid := range []string{"user-1", "u1"} {
+		u := &storage.User{
+			UUID:        uuid,
+			UserType:    storage.UserTypeLocal,
+			DisplayName: uuid,
+			Enabled:     true,
+		}
+		if err := userRepo.Create(context.Background(), u); err != nil {
+			t.Fatalf("创建测试用户失败: %v", err)
+		}
+	}
 	return db, storage.NewCardRepo(db)
 }
 
@@ -219,11 +234,11 @@ func TestTryUnlockByType_SkipsOtherTypes(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := CreateCardWithCreds(ctx, cardRepo, CreateCardArgs{
-		UserUUID:      "u1",
-		CardName:      "c",
-		PIN:           "secret-shared", // 故意让 PIN 与 AdminKey 不同
-		AdminKey:      "admin-key-123",
-		GeneratePUK:   true,
+		UserUUID:    "u1",
+		CardName:    "c",
+		PIN:         "secret-shared", // 故意让 PIN 与 AdminKey 不同
+		AdminKey:    "admin-key-123",
+		GeneratePUK: true,
 	})
 	if err != nil {
 		t.Fatalf("创建失败: %v", err)

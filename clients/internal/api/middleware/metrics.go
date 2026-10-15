@@ -14,9 +14,9 @@ type Metrics struct {
 	startTime time.Time
 
 	// 请求计数器
-	totalRequests   atomic.Int64
-	totalErrors4xx  atomic.Int64
-	totalErrors5xx  atomic.Int64
+	totalRequests  atomic.Int64
+	totalErrors4xx atomic.Int64
+	totalErrors5xx atomic.Int64
 
 	// 活跃连接/会话
 	activeRequests atomic.Int64
@@ -101,21 +101,21 @@ func (m *Metrics) DecrActiveRequests() { m.activeRequests.Add(-1) }
 
 // metricsResponse 是 /metrics 端点的 JSON 响应结构。
 type metricsResponse struct {
-	Uptime         string            `json:"uptime"`
-	UptimeSeconds  int64             `json:"uptime_seconds"`
-	TotalRequests  int64             `json:"total_requests"`
-	ActiveRequests int64             `json:"active_requests"`
-	Errors4xx      int64             `json:"errors_4xx"`
-	Errors5xx      int64             `json:"errors_5xx"`
-	Latency        map[string]int64  `json:"latency_buckets"`
-	TopPaths       []pathMetric      `json:"top_paths,omitempty"`
+	Uptime         string           `json:"uptime"`
+	UptimeSeconds  int64            `json:"uptime_seconds"`
+	TotalRequests  int64            `json:"total_requests"`
+	ActiveRequests int64            `json:"active_requests"`
+	Errors4xx      int64            `json:"errors_4xx"`
+	Errors5xx      int64            `json:"errors_5xx"`
+	Latency        map[string]int64 `json:"latency_buckets"`
+	TopPaths       []pathMetric     `json:"top_paths,omitempty"`
 }
 
 type pathMetric struct {
-	Path     string  `json:"path"`
-	Count    int64   `json:"count"`
-	Errors   int64   `json:"errors"`
-	AvgMs    float64 `json:"avg_ms"`
+	Path   string  `json:"path"`
+	Count  int64   `json:"count"`
+	Errors int64   `json:"errors"`
+	AvgMs  float64 `json:"avg_ms"`
 }
 
 // Handler 返回 /metrics 端点的 HTTP 处理函数。

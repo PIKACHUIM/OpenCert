@@ -205,12 +205,12 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		SlotType      string `json:"slot_type"`
 		CardName      string `json:"card_name"`
 		UserUUID      string `json:"user_uuid"`
-		UserPassword  string `json:"user_password"`  // 必填，验证用户身份
-		CardPassword  string `json:"card_password"`  // 可选
-		PIN           string `json:"pin"`            // 必填，用于加密主密钥
-		PUK           string `json:"puk"`            // 可选，未提供时自动生成
-		AdminKey      string `json:"admin_key"`      // 可选，未提供时自动生成
-		ExpiresAt     string `json:"expires_at"`     // RFC3339 格式
+		UserPassword  string `json:"user_password"` // 必填，验证用户身份
+		CardPassword  string `json:"card_password"` // 可选
+		PIN           string `json:"pin"`           // 必填，用于加密主密钥
+		PUK           string `json:"puk"`           // 可选，未提供时自动生成
+		AdminKey      string `json:"admin_key"`     // 可选，未提供时自动生成
+		ExpiresAt     string `json:"expires_at"`    // RFC3339 格式
 		Remark        string `json:"remark"`
 		SecurityLevel string `json:"security_level"` // 安全等级：high / medium / low（可选，默认 low）
 	}
@@ -301,9 +301,9 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 	// 响应体包含卡片及一次性明文 PUK / AdminKey（调用方必须保存）
 	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: map[string]interface{}{
 		"card":      card,
-		"puk":       result.PUK,       // 仅自动生成时非空
-		"admin_key": result.AdminKey,  // 仅自动生成时非空
-		"pin":       result.PIN,       // 仅自动生成时非空
+		"puk":       result.PUK,      // 仅自动生成时非空
+		"admin_key": result.AdminKey, // 仅自动生成时非空
+		"pin":       result.PIN,      // 仅自动生成时非空
 	}})
 }
 
@@ -350,9 +350,9 @@ func (s *Server) handleCreateTPMSCCard(w http.ResponseWriter, r *http.Request, u
 		"pin":         vscResult.PIN,        // 默认 PIN（12345678），提示用户修改
 		"puk":         vscResult.PUK,        // 默认 PUK（12345678）
 		"admin_key":   vscResult.AdminKey,   // 默认 AdminKey
-		"instance_id": vscResult.InstanceID,  // Windows 设备实例 ID
-		"reader_name": vscResult.ReaderName,  // 虚拟读卡器名称
-		"output":      vscResult.Output,      // 命令行输出（调试用）
+		"instance_id": vscResult.InstanceID, // Windows 设备实例 ID
+		"reader_name": vscResult.ReaderName, // 虚拟读卡器名称
+		"output":      vscResult.Output,     // 命令行输出（调试用）
 	}})
 }
 

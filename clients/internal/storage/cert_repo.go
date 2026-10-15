@@ -34,16 +34,35 @@ func (r *CertRepo) Create(ctx context.Context, c *Certificate) error {
 			cert_content, temp_key_salt, temp_key_enc, private_data,
 			tpm_platform, tpm_key_handle, tpm_public_blob, tpm_private_blob,
 			tpm_pcr_policy, tpm_auth_policy, tpm_wrapped_blob, tpm_cert_key_salt,
-			remark, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			remark, cloud_meta, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.UUID, string(c.SlotType), c.CardUUID, string(c.CertType), c.KeyType,
 		c.CertContent, c.TempKeySalt, c.TempKeyEnc, c.PrivateData,
 		string(c.TPMPlatform), c.TPMKeyHandle, c.TPMPublicBlob, c.TPMPrivateBlob,
 		c.TPMPCRPolicy, c.TPMAuthPolicy, c.TPMWrappedBlob, c.TPMCertKeySalt,
-		c.Remark, c.CreatedAt, c.UpdatedAt,
+		c.Remark, c.CloudMeta, c.CreatedAt, c.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("创建证书失败: %w", err)
+	}
+	return nil
+}
+
+// UpdateCloudCert 更新云卡证书的公开部分与元数据（同步时使用）。
+//
+// 只更新证书内容、备注与云卡元数据，不触碰私钥相关字段，
+// 因此不会覆盖本地已有的私钥材料。
+func (r *CertRepo) UpdateCloudCert(ctx context.Context, certUUID string, content Base64Bytes, remark, cloudMeta string) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE certificates
+		SET cert_content = ?, remark = ?, cloud_meta = ?, updated_at = ?
+		WHERE uuid = ?`,
+		content, remark, cloudMeta, time.Now(), certUUID)
+	if err != nil {
+		return fmt.Errorf("更新云卡证书失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("证书不存在: %s", certUUID)
 	}
 	return nil
 }
@@ -56,13 +75,13 @@ func (r *CertRepo) GetByUUID(ctx context.Context, certUUID string) (*Certificate
 			cert_content, temp_key_salt, temp_key_enc, private_data,
 			tpm_platform, tpm_key_handle, tpm_public_blob, tpm_private_blob,
 			tpm_pcr_policy, tpm_auth_policy, tpm_wrapped_blob, tpm_cert_key_salt,
-			remark, created_at, updated_at
+			remark, cloud_meta, created_at, updated_at
 		FROM certificates WHERE uuid=?`, certUUID).
 		Scan(&c.UUID, &c.SlotType, &c.CardUUID, &c.CertType, &c.KeyType,
 			&c.CertContent, &c.TempKeySalt, &c.TempKeyEnc, &c.PrivateData,
 			&c.TPMPlatform, &c.TPMKeyHandle, &c.TPMPublicBlob, &c.TPMPrivateBlob,
 			&c.TPMPCRPolicy, &c.TPMAuthPolicy, &c.TPMWrappedBlob, &c.TPMCertKeySalt,
-			&c.Remark, &c.CreatedAt, &c.UpdatedAt)
+			&c.Remark, &c.CloudMeta, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -76,7 +95,7 @@ func (r *CertRepo) GetByUUID(ctx context.Context, certUUID string) (*Certificate
 func (r *CertRepo) ListByCard(ctx context.Context, cardUUID string) ([]*Certificate, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT uuid, slot_type, card_uuid, cert_type, key_type,
-			cert_content, tpm_platform, remark, created_at, updated_at,
+			cert_content, tpm_platform, remark, cloud_meta, created_at, updated_at,
 			CASE WHEN private_data IS NOT NULL AND length(private_data) > 0 THEN 1 ELSE 0 END as has_private,
 			temp_key_salt, temp_key_enc, private_data,
 			tpm_wrapped_blob, tpm_private_blob, tpm_cert_key_salt
@@ -91,7 +110,7 @@ func (r *CertRepo) ListByCard(ctx context.Context, cardUUID string) ([]*Certific
 		c := &Certificate{}
 		var hasPrivate int
 		if err := rows.Scan(&c.UUID, &c.SlotType, &c.CardUUID, &c.CertType, &c.KeyType,
-			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CreatedAt, &c.UpdatedAt,
+			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CloudMeta, &c.CreatedAt, &c.UpdatedAt,
 			&hasPrivate, &c.TempKeySalt, &c.TempKeyEnc, &c.PrivateData,
 			&c.TPMWrappedBlob, &c.TPMPrivateBlob, &c.TPMCertKeySalt); err != nil {
 			return nil, fmt.Errorf("扫描证书数据失败: %w", err)
@@ -106,7 +125,7 @@ func (r *CertRepo) ListByCard(ctx context.Context, cardUUID string) ([]*Certific
 func (r *CertRepo) ListByCardPrefix(ctx context.Context, cardUUIDPrefix string) ([]*Certificate, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT uuid, slot_type, card_uuid, cert_type, key_type,
-			cert_content, tpm_platform, remark, created_at, updated_at,
+			cert_content, tpm_platform, remark, cloud_meta, created_at, updated_at,
 			CASE WHEN private_data IS NOT NULL AND length(private_data) > 0 THEN 1 ELSE 0 END as has_private,
 			temp_key_salt, temp_key_enc, private_data,
 			tpm_wrapped_blob, tpm_private_blob, tpm_cert_key_salt
@@ -121,7 +140,7 @@ func (r *CertRepo) ListByCardPrefix(ctx context.Context, cardUUIDPrefix string) 
 		c := &Certificate{}
 		var hasPrivate int
 		if err := rows.Scan(&c.UUID, &c.SlotType, &c.CardUUID, &c.CertType, &c.KeyType,
-			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CreatedAt, &c.UpdatedAt,
+			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CloudMeta, &c.CreatedAt, &c.UpdatedAt,
 			&hasPrivate, &c.TempKeySalt, &c.TempKeyEnc, &c.PrivateData,
 			&c.TPMWrappedBlob, &c.TPMPrivateBlob, &c.TPMCertKeySalt); err != nil {
 			return nil, fmt.Errorf("扫描证书数据失败: %w", err)
@@ -137,7 +156,7 @@ func (r *CertRepo) ListByCardPrefix(ctx context.Context, cardUUIDPrefix string) 
 func (r *CertRepo) ListByCardPublic(ctx context.Context, cardUUID string) ([]*Certificate, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT uuid, slot_type, card_uuid, cert_type, key_type,
-			cert_content, tpm_platform, remark, created_at, updated_at,
+			cert_content, tpm_platform, remark, cloud_meta, created_at, updated_at,
 			CASE WHEN private_data IS NOT NULL AND length(private_data) > 0 THEN 1 ELSE 0 END as has_private,
 			temp_key_salt, temp_key_enc, private_data,
 			tpm_wrapped_blob, tpm_private_blob, tpm_cert_key_salt
@@ -152,7 +171,7 @@ func (r *CertRepo) ListByCardPublic(ctx context.Context, cardUUID string) ([]*Ce
 		c := &Certificate{}
 		var hasPrivate int
 		if err := rows.Scan(&c.UUID, &c.SlotType, &c.CardUUID, &c.CertType, &c.KeyType,
-			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CreatedAt, &c.UpdatedAt,
+			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CloudMeta, &c.CreatedAt, &c.UpdatedAt,
 			&hasPrivate, &c.TempKeySalt, &c.TempKeyEnc, &c.PrivateData,
 			&c.TPMWrappedBlob, &c.TPMPrivateBlob, &c.TPMCertKeySalt); err != nil {
 			return nil, fmt.Errorf("扫描证书数据失败: %w", err)
@@ -236,7 +255,7 @@ func (r *CertRepo) CountGroupedByCard(ctx context.Context) (map[string]*CertStat
 func (r *CertRepo) ListX509All(ctx context.Context) ([]*Certificate, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT uuid, slot_type, card_uuid, cert_type, key_type,
-			cert_content, tpm_platform, remark, created_at, updated_at,
+			cert_content, tpm_platform, remark, cloud_meta, created_at, updated_at,
 			CASE WHEN private_data IS NOT NULL AND length(private_data) > 0 THEN 1 ELSE 0 END as has_private,
 			temp_key_salt, temp_key_enc, private_data
 		FROM certificates WHERE cert_type=? AND cert_content IS NOT NULL AND length(cert_content) > 0
@@ -251,7 +270,7 @@ func (r *CertRepo) ListX509All(ctx context.Context) ([]*Certificate, error) {
 		c := &Certificate{}
 		var hasPrivate int
 		if err := rows.Scan(&c.UUID, &c.SlotType, &c.CardUUID, &c.CertType, &c.KeyType,
-			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CreatedAt, &c.UpdatedAt,
+			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CloudMeta, &c.CreatedAt, &c.UpdatedAt,
 			&hasPrivate, &c.TempKeySalt, &c.TempKeyEnc, &c.PrivateData); err != nil {
 			return nil, fmt.Errorf("扫描证书数据失败: %w", err)
 		}

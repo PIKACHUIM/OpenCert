@@ -39,6 +39,11 @@ const App: React.FC = () => {
   const { darkMode, themeMode, setThemeMode } = useAppStore();
 
   useEffect(() => {
+    document.documentElement.classList.toggle('dark-theme', darkMode);
+    document.documentElement.dataset.theme = darkMode ? 'dark' : 'light';
+  }, [darkMode]);
+
+  useEffect(() => {
     if (themeMode !== 'system') return;
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const handler = () => setThemeMode('system');
@@ -52,7 +57,7 @@ const App: React.FC = () => {
       theme={{
         algorithm: darkMode ? theme.darkAlgorithm : theme.defaultAlgorithm,
         token: {
-          colorPrimary: '#1677ff',
+          colorPrimary: '#0ea5e9',
           borderRadius: 8,
           fontFamily: "'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif",
         },

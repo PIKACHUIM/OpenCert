@@ -2,164 +2,12 @@ package pki
 
 import (
 	"crypto/x509"
-	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
 	"strings"
 
 	"software.sslmate.com/src/go-pkcs12"
 )
-
-// parseCertLenient 宽松解析 X.509 证书 DER 数据。
-// Go 1.22+ 对 Certificate Policies 扩展解析更严格，某些证书会报
-// "x509: invalid certificate policies" 错误。对此类错误尝试剥离不兼容的
-// 扩展属性后重新解析，以提取公钥算法、签名算法等关键信息。
-func parseCertLenient(derData []byte) (*x509.Certificate, error) {
-	cert, err := x509.ParseCertificate(derData)
-	if err == nil {
-		return cert, nil
-	}
-	// 对 certificate policies 相关错误做宽松处理：
-	// 尝试剥离不兼容的扩展属性后重新解析
-	if strings.Contains(err.Error(), "certificate policies") {
-		if stripped, stripErr := stripInvalidExtensions(derData); stripErr == nil {
-			if c, e := x509.ParseCertificate(stripped); e == nil {
-				// 使用原始 DER 数据（保留完整证书内容），但用解析出的字段
-				c.Raw = derData
-				return c, nil
-			}
-		}
-		// 剥离失败时返回仅含 Raw 字段的最小对象
-		return &x509.Certificate{Raw: derData}, nil
-	}
-	return nil, err
-}
-
-// stripInvalidExtensions 剥离 TBSCertificate 中导致解析失败的扩展属性，
-// 返回修改后的 DER 数据。
-func stripInvalidExtensions(derData []byte) ([]byte, error) {
-	// 解析外层 Certificate SEQUENCE
-	var certSeq asn1.RawValue
-	if _, err := asn1.Unmarshal(derData, &certSeq); err != nil {
-		return nil, err
-	}
-
-	// 解析 TBSCertificate
-	var tbsRaw asn1.RawValue
-	rest, err := asn1.Unmarshal(certSeq.Bytes, &tbsRaw)
-	if err != nil {
-		return nil, err
-	}
-
-	// 收集外层剩余元素（signatureAlgorithm + signatureValue）
-	outerRest := rest
-
-	// 重新构建 TBSCertificate，跳过有问题的扩展
-	newTBS, err := rebuildTBSWithoutPolicies(tbsRaw.Bytes)
-	if err != nil {
-		return nil, err
-	}
-
-	// 重新组装 Certificate SEQUENCE
-	return asn1.Marshal(struct {
-		Raw       asn1.RawContent
-		TBS       []byte
-		SigAlgo   asn1.RawValue
-		Signature asn1.BitString
-	}{}, ) // 这种方式不可行，改用手工拼接
-
-	// 更简洁：直接拼接 DER
-	var result []byte
-	// Certificate SEQUENCE header
-	tbsTagged, _ := asn1.Marshal(newTBS)
-	result = append(tbsTagged, outerRest...)
-	return result, nil
-}
-
-// rebuildTBSWithoutPolicies 从 TBSCertificate 的原始字节中重建，
-// 移除 2.5.29.32 (certificatePolicies) 扩展。
-func rebuildTBSWithoutPolicies(tbsBytes []byte) ([]byte, error) {
-	// 收集 TBSCertificate 内部各元素
-	var elems [][]byte
-	rest := tbsBytes
-
-	for len(rest) > 0 {
-		var elem asn1.RawValue
-		var err error
-		rest, err = asn1.Unmarshal(rest, &elem)
-		if err != nil {
-			return nil, err
-		}
-
-		// 检查是否为 extensions [3] EXPLICIT
-		if elem.Class == 2 && elem.Tag == 3 && elem.IsCompound {
-			// 过滤掉 certificatePolicies 扩展
-			filtered := filterExtensions(elem.Bytes)
-			if len(filtered) > 0 {
-				// 重建 extensions 元素
-				filteredTagged, _ := asn1.MarshalWithParams(filtered, "tag:3,explicit")
-				elems = append(elems, filteredTagged)
-			}
-			// 如果没有扩展了，则不添加 extensions 元素
-		} else {
-			elems = append(elems, elem.FullBytes)
-		}
-	}
-
-	// 重新拼接
-	result := make([]byte, 0)
-	for _, e := range elems {
-		result = append(result, e...)
-	}
-	return result, nil
-}
-
-// filterExtensions 从 extensions SEQUENCE 中移除 certificatePolicies 扩展。
-func filterExtensions(extBytes []byte) []byte {
-	// 解析外层 SEQUENCE
-	var extSeq asn1.RawValue
-	if _, err := asn1.Unmarshal(extBytes, &extSeq); err != nil {
-		return extBytes
-	}
-
-	var kept []asn1.RawValue
-	rest := extSeq.Bytes
-	for len(rest) > 0 {
-		var ext asn1.RawValue
-		var err error
-		rest, err = asn1.Unmarshal(rest, &ext)
-		if err != nil {
-			break
-		}
-
-		// 检查扩展 OID 是否为 certificatePolicies (2.5.29.32)
-		if isCertPoliciesExt(ext.Bytes) {
-			continue // 跳过
-		}
-		kept = append(kept, ext)
-	}
-
-	if len(kept) == 0 {
-		return nil
-	}
-
-	// 重建 SEQUENCE
-	var inner []byte
-	for _, k := range kept {
-		inner = append(inner, k.FullBytes...)
-	}
-	tagged, _ := asn1.Marshal(inner)
-	return tagged
-}
-
-// isCertPoliciesExt 检查扩展原始字节中第一个元素是否为 2.5.29.32 OID。
-func isCertPoliciesExt(extBytes []byte) bool {
-	var oid asn1.ObjectIdentifier
-	if _, err := asn1.Unmarshal(extBytes, &oid); err == nil {
-		return oid.String() == "2.5.29.32"
-	}
-	return false
-}
 
 // ValidateCertDER 验证 DER 数据是否为合法的 X.509 证书。
 // 对于 certificate policies 解析错误的证书仍视为有效。
@@ -207,23 +55,24 @@ func ParseCertificateFromPEM(pemData []byte) (*x509.Certificate, error) {
 }
 
 // ParseCertificateAuto 自动识别 PEM 或 DER 格式并解析证书。
-// 对包含非标准 Certificate Policies 的证书使用宽松解析。
+// 对包含非标准 Certificate Policies 扩展的证书，剥离该扩展后重新解析，
+// 从而仍能返回 subject/issuer/有效期等可用字段（Raw 保留原始 DER）。
 func ParseCertificateAuto(data []byte) (*x509.Certificate, error) {
-	// 先尝试 PEM
-	block, _ := pem.Decode(data)
-	if block != nil {
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil && strings.Contains(err.Error(), "certificate policies") {
-			return nil, nil
-		}
-		return cert, err
+	der := data
+	if block, _ := pem.Decode(data); block != nil {
+		der = block.Bytes
 	}
-	// 尝试 DER
-	cert, err := x509.ParseCertificate(data)
-	if err != nil && strings.Contains(err.Error(), "certificate policies") {
+
+	cert, err := parseCertLenientStripping(der)
+	if err == nil {
+		return cert, nil
+	}
+	// 保留历史契约：Certificate Policies 不兼容时返回 (nil, nil)，
+	// 由调用方提示「证书有效但部分信息无法解析」。
+	if strings.Contains(err.Error(), "certificate policies") {
 		return nil, nil
 	}
-	return cert, err
+	return nil, err
 }
 
 // ExportPKCS12 将证书和私钥导出为 PKCS#12 格式。
@@ -311,10 +160,11 @@ func ParseCertChainFromPEM(pemData []byte) ([]*x509.Certificate, error) {
 		if block.Type != "CERTIFICATE" {
 			continue
 		}
-		cert, err := x509.ParseCertificate(block.Bytes)
+		// 使用宽松解析：策略扩展不兼容的证书不应被整条链丢弃
+		cert, err := parseCertLenientStripping(block.Bytes)
 		if err != nil {
 			if strings.Contains(err.Error(), "certificate policies") {
-				continue // 跳过策略扩展不兼容的证书
+				continue // 策略扩展不兼容且剥离失败，跳过
 			}
 			return nil, fmt.Errorf("解析证书链中的证书失败: %w", err)
 		}

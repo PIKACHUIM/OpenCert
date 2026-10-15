@@ -4,8 +4,8 @@
 //   - 仅依赖标准库；不引入 paypal-sdk
 //   - 协议：PayPal Orders v2（OAuth2 Client Credentials + JSON）
 //   - 接口：POST /v2/checkout/orders（创建订单）；
-//          GET  /v2/checkout/orders/{id}（查询）；
-//          POST /v2/payments/captures/{capture_id}/refund（退款）
+//     GET  /v2/checkout/orders/{id}（查询）；
+//     POST /v2/payments/captures/{capture_id}/refund（退款）
 //   - Webhook：通过 PayPal /v1/notifications/verify-webhook-signature 接口验签
 //
 // 配置项（PaymentPlugin.Config 中的 JSON 字段）：
@@ -200,13 +200,13 @@ func (p *PayPalProvider) VerifyCallback(ctx context.Context, body []byte, header
 	// 2) 委托 PayPal 验签
 	var rawBody json.RawMessage = body
 	verifyReq := map[string]interface{}{
-		"transmission_id":    headers["Paypal-Transmission-Id"],
-		"transmission_time":  headers["Paypal-Transmission-Time"],
-		"cert_url":           headers["Paypal-Cert-Url"],
-		"auth_algo":          headers["Paypal-Auth-Algo"],
-		"transmission_sig":   headers["Paypal-Transmission-Sig"],
-		"webhook_id":         p.WebhookID,
-		"webhook_event":      rawBody,
+		"transmission_id":   headers["Paypal-Transmission-Id"],
+		"transmission_time": headers["Paypal-Transmission-Time"],
+		"cert_url":          headers["Paypal-Cert-Url"],
+		"auth_algo":         headers["Paypal-Auth-Algo"],
+		"transmission_sig":  headers["Paypal-Transmission-Sig"],
+		"webhook_id":        p.WebhookID,
+		"webhook_event":     rawBody,
 	}
 	verifyBody, _ := json.Marshal(verifyReq)
 	respBody, err := p.doRequest(ctx, http.MethodPost,

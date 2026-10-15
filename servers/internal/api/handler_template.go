@@ -2,9 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/globaltrusts/server-card/internal/identity"
 	"github.com/globaltrusts/server-card/internal/storage"
 	"github.com/google/uuid"
 )
@@ -166,10 +169,45 @@ func (s *Server) handleListSubjectTemplates(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]interface{}{"templates": templates, "total": len(templates)})
 }
 
+// validateSubjectTemplate 规范化并校验主体模板（字段定义、有效期、认证接口）。
+func (s *Server) validateSubjectTemplate(r *http.Request, t *storage.SubjectTemplate) error {
+	if strings.TrimSpace(t.Name) == "" {
+		return fmt.Errorf("模板名称不能为空")
+	}
+	fields, err := identity.ParseSubjectFields(t.Fields)
+	if err != nil {
+		return err
+	}
+	if len(fields) == 0 {
+		return fmt.Errorf("请至少配置一个主体字段")
+	}
+	raw, _ := json.Marshal(fields)
+	t.Fields = string(raw)
+	if _, err := identity.ParseValidity(t.VerifyValidity); err != nil {
+		return err
+	}
+	if identity.SubjectVerifyMode(fields) == identity.VerifyAuto {
+		if t.VerifyProviderUUID == "" {
+			return fmt.Errorf("存在「自动接口」验证的字段，请选择实名认证接口")
+		}
+		if s.identityStore != nil {
+			p, err := s.identityStore.Get(r.Context(), t.VerifyProviderUUID)
+			if err != nil || p.Kind != identity.KindIdentity {
+				return fmt.Errorf("所选实名认证接口不存在")
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleCreateSubjectTemplate(w http.ResponseWriter, r *http.Request) {
 	var t storage.SubjectTemplate
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := s.validateSubjectTemplate(r, &t); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.issuanceSvc.CreateSubjectTemplate(r.Context(), &t); err != nil {
@@ -177,6 +215,71 @@ func (s *Server) handleCreateSubjectTemplate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusCreated, t)
+}
+
+func (s *Server) handleUpdateSubjectTemplate(w http.ResponseWriter, r *http.Request) {
+	var t storage.SubjectTemplate
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	t.UUID = r.PathValue("uuid")
+	if err := s.validateSubjectTemplate(r, &t); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.issuanceSvc.UpdateSubjectTemplate(r.Context(), &t); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+// handleSubjectFieldKeys GET /api/meta/subject-field-keys：主体模板可选字段。
+func (s *Server) handleSubjectFieldKeys(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": identity.SubjectFieldKeys})
+}
+
+// normalizeExtensionTemplate 校验扩展信息模板的验证策略。
+func normalizeExtensionTemplate(t *storage.ExtensionTemplate) error {
+	if strings.TrimSpace(t.Name) == "" {
+		return fmt.Errorf("模板名称不能为空")
+	}
+	p, err := identity.ParseExtensionPolicy(t.VerifyPolicy)
+	if err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(p)
+	t.VerifyPolicy = string(raw)
+	// 兼容旧字段：数量限制已迁移到商品规格，此处不再限制
+	t.MaxDNS, t.MaxEmail, t.MaxIP, t.MaxURI = 100, 100, 100, 100
+	t.RequireDNSVerify = p.Domain.Mode != identity.VerifyNone
+	t.RequireEmailVerify = p.Email.Mode != identity.VerifyNone
+	if d, err := identity.ParseValidity(p.Domain.Validity); err == nil && d > 0 {
+		t.VerifyExpiresDays = int(d.Hours()/24 + 0.5)
+		if t.VerifyExpiresDays < 1 {
+			t.VerifyExpiresDays = 1
+		}
+	}
+	return nil
+}
+
+func (s *Server) handleUpdateExtensionTemplate(w http.ResponseWriter, r *http.Request) {
+	var t storage.ExtensionTemplate
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	t.UUID = r.PathValue("uuid")
+	if err := normalizeExtensionTemplate(&t); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.issuanceSvc.UpdateExtensionTemplate(r.Context(), &t); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
 }
 
 func (s *Server) handleDeleteSubjectTemplate(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +304,10 @@ func (s *Server) handleCreateExtensionTemplate(w http.ResponseWriter, r *http.Re
 	var t storage.ExtensionTemplate
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := normalizeExtensionTemplate(&t); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.issuanceSvc.CreateExtensionTemplate(r.Context(), &t); err != nil {

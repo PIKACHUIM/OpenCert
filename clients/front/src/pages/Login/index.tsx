@@ -198,48 +198,70 @@ const LoginPage: React.FC = () => {
     }
   };
 
-  const bg = darkMode ? '#0d1117' : '#f0f2f5';
-  const cardBg = darkMode ? '#161b22' : '#fff';
-  const border = darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(0,0,0,0.06)';
+  const bg = darkMode ? '#080e1a' : '#f0f5fc';
+  const cardBg = darkMode ? '#0d1526' : '#ffffff';
+  const border = darkMode ? '1px solid rgba(14,165,233,0.12)' : '1px solid rgba(14,165,233,0.10)';
 
   return (
     <div style={{
       minHeight: '100vh',
       background: bg,
+      /* Subtle radial glow — adds depth without flat sterile feeling */
+      backgroundImage: darkMode
+        ? 'radial-gradient(ellipse 60% 50% at 50% 0%, rgba(14,165,233,0.06) 0%, transparent 70%)'
+        : 'radial-gradient(ellipse 60% 50% at 50% 0%, rgba(14,165,233,0.04) 0%, transparent 70%)',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
       padding: 16,
     }}>
+      {/* Outer shell — Double-Bezel pattern */}
       <div style={{
-        width: 440,
-        padding: '36px 32px',
-        background: cardBg,
+        width: 460,
+        padding: 6,
+        background: darkMode ? 'rgba(14,165,233,0.04)' : 'rgba(14,165,233,0.03)',
         border,
-        borderRadius: 16,
-        boxShadow: darkMode
-          ? '0 8px 40px rgba(0,0,0,0.5)'
-          : '0 8px 40px rgba(0,0,0,0.1)',
+        borderRadius: 22,
+        boxShadow: darkMode ? 'var(--shadow-md)' : 'var(--shadow-sm)',
       }}>
-        {/* Logo */}
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+        {/* Inner core */}
+        <div style={{
+          padding: '32px 28px',
+          background: cardBg,
+          borderRadius: 17,
+          boxShadow: darkMode ? 'inset 0 1px 1px rgba(255,255,255,0.04)' : 'inset 0 1px 1px rgba(255,255,255,0.8)',
+        }}>
+        {/* Logo — Double-Bezel icon */}
+        <div style={{ textAlign: 'center', marginBottom: 26 }}>
           <div style={{
-            width: 56,
-            height: 56,
-            borderRadius: 16,
-            background: 'linear-gradient(135deg, #1677ff, #722ed1)',
+            width: 60, height: 60, borderRadius: 16,
+            background: 'rgba(14,165,233,0.08)',
+            border: '1.5px solid rgba(14,165,233,0.20)',
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
-            boxShadow: '0 6px 20px rgba(22,119,255,0.4)',
-            marginBottom: 12,
+            marginBottom: 14,
           }}>
-            <SafetyCertificateOutlined style={{ fontSize: 28, color: '#fff' }} />
+            <div style={{
+              width: 44, height: 44, borderRadius: 11,
+              background: 'var(--accent)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 4px 14px rgba(14,165,233,0.45)',
+            }}>
+              <SafetyCertificateOutlined style={{ fontSize: 24, color: '#fff' }} />
+            </div>
           </div>
-          <Title level={4} style={{ margin: 0, color: darkMode ? '#c9d1d9' : '#1a1a2e' }}>
+          <Title level={4} style={{
+            margin: 0,
+            color: 'var(--text-1)',
+            fontWeight: 600,
+            letterSpacing: '-0.02em',
+          }}>
             OpenCert Manager
           </Title>
-          <Text style={{ color: darkMode ? '#8b949e' : '#999', fontSize: 13 }}>
+          <Text style={{ color: 'var(--text-2)', fontSize: 13 }}>
             {addMode ? '添加新账号' : '本地智能卡管理系统'}
           </Text>
         </div>
@@ -283,8 +305,8 @@ const LoginPage: React.FC = () => {
                           <Avatar
                             style={{
                               background: a.user_type === 'cloud'
-                                ? 'linear-gradient(135deg, #1677ff, #13c2c2)'
-                                : 'linear-gradient(135deg, #722ed1, #eb2f96)',
+                                ? 'var(--accent)'
+                                : 'var(--success)',
                             }}
                             icon={a.user_type === 'cloud' ? <CloudOutlined /> : <UserOutlined />}
                           />
@@ -341,15 +363,17 @@ const LoginPage: React.FC = () => {
                   )}
                   <Form.Item style={{ marginBottom: 12 }}>
                     <Checkbox checked={rememberLocal} onChange={(e) => handleRememberLocalChange(e.target.checked)}>
-                      <Text style={{ fontSize: 13, color: darkMode ? '#8b949e' : '#666' }}>记住密码</Text>
+                      <Text style={{ fontSize: 13, color: 'var(--text-2)' }}>记住密码</Text>
                     </Checkbox>
                   </Form.Item>
                   <Form.Item style={{ marginBottom: 0 }}>
                     <Button
                       type="primary" htmlType="submit" size="large" block loading={loading}
                       style={{
-                        background: 'linear-gradient(135deg, #1677ff, #722ed1)',
-                        border: 'none', height: 44, fontSize: 15, fontWeight: 600,
+                        background: 'var(--accent)',
+                        border: 'none', height: 44, fontSize: 14, fontWeight: 600,
+                        letterSpacing: '0.02em',
+                        transition: `all var(--t-fast) var(--ease-out-expo)`,
                       }}
                     >{need2FA ? '重新登录' : '登 录'}</Button>
                   </Form.Item>
@@ -375,15 +399,17 @@ const LoginPage: React.FC = () => {
                   </Form.Item>
                   <Form.Item style={{ marginBottom: 12 }}>
                     <Checkbox checked={rememberCloud} onChange={(e) => handleRememberCloudChange(e.target.checked)}>
-                      <Text style={{ fontSize: 13, color: darkMode ? '#8b949e' : '#666' }}>记住密码</Text>
+                      <Text style={{ fontSize: 13, color: 'var(--text-2)' }}>记住密码</Text>
                     </Checkbox>
                   </Form.Item>
                   <Form.Item style={{ marginBottom: 0 }}>
                     <Button
                       type="primary" htmlType="submit" size="large" block loading={loading}
                       style={{
-                        background: 'linear-gradient(135deg, #1677ff, #13c2c2)',
-                        border: 'none', height: 44, fontSize: 15, fontWeight: 600,
+                        background: 'var(--accent)',
+                        border: 'none', height: 44, fontSize: 14, fontWeight: 600,
+                        letterSpacing: '0.02em',
+                        transition: `all var(--t-fast) var(--ease-out-expo)`,
                       }}
                     >云端登录</Button>
                   </Form.Item>
@@ -412,6 +438,7 @@ const LoginPage: React.FC = () => {
         </div>
       </div>
     </div>
+  </div>
   );
 };
 

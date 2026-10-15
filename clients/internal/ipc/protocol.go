@@ -24,51 +24,51 @@ type CmdCode uint32
 
 // PKCS#11 命令码定义，对应 C 层的函数调用。
 const (
-	CmdPing             CmdCode = 0x0000 // 心跳命令
-	CmdGetInfo          CmdCode = 0x0001
-	CmdGetSlotList      CmdCode = 0x0002
-	CmdGetSlotInfo      CmdCode = 0x0003
-	CmdGetTokenInfo     CmdCode = 0x0004
-	CmdGetMechanismList CmdCode = 0x0005
-	CmdGetMechanismInfo CmdCode = 0x0006
-	CmdOpenSession      CmdCode = 0x0007
-	CmdCloseSession     CmdCode = 0x0008
-	CmdCloseAllSessions CmdCode = 0x0009
-	CmdLogin            CmdCode = 0x000A
-	CmdLogout           CmdCode = 0x000B
-	CmdFindObjectsInit  CmdCode = 0x000C
-	CmdFindObjects      CmdCode = 0x000D
-	CmdFindObjectsFinal CmdCode = 0x000E
+	CmdPing              CmdCode = 0x0000 // 心跳命令
+	CmdGetInfo           CmdCode = 0x0001
+	CmdGetSlotList       CmdCode = 0x0002
+	CmdGetSlotInfo       CmdCode = 0x0003
+	CmdGetTokenInfo      CmdCode = 0x0004
+	CmdGetMechanismList  CmdCode = 0x0005
+	CmdGetMechanismInfo  CmdCode = 0x0006
+	CmdOpenSession       CmdCode = 0x0007
+	CmdCloseSession      CmdCode = 0x0008
+	CmdCloseAllSessions  CmdCode = 0x0009
+	CmdLogin             CmdCode = 0x000A
+	CmdLogout            CmdCode = 0x000B
+	CmdFindObjectsInit   CmdCode = 0x000C
+	CmdFindObjects       CmdCode = 0x000D
+	CmdFindObjectsFinal  CmdCode = 0x000E
 	CmdGetAttributeValue CmdCode = 0x000F
 	CmdSetAttributeValue CmdCode = 0x0010
-	CmdCreateObject     CmdCode = 0x0011
-	CmdDestroyObject    CmdCode = 0x0012
-	CmdGetObjectSize    CmdCode = 0x0013
-	CmdSignInit         CmdCode = 0x0014
-	CmdSign             CmdCode = 0x0015
-	CmdSignUpdate       CmdCode = 0x0016
-	CmdSignFinal        CmdCode = 0x0017
-	CmdVerifyInit       CmdCode = 0x0018
-	CmdVerify           CmdCode = 0x0019
-	CmdDecryptInit      CmdCode = 0x001A
-	CmdDecrypt          CmdCode = 0x001B
-	CmdEncryptInit      CmdCode = 0x001C
-	CmdEncrypt          CmdCode = 0x001D
-	CmdGenerateKeyPair  CmdCode = 0x001E
-	CmdGenerateRandom   CmdCode = 0x001F
-	CmdDigestInit       CmdCode = 0x0020
-	CmdDigest           CmdCode = 0x0021
-	CmdGetSessionInfo   CmdCode = 0x0022
-	CmdInitPIN          CmdCode = 0x0023
-	CmdSetPIN           CmdCode = 0x0024
+	CmdCreateObject      CmdCode = 0x0011
+	CmdDestroyObject     CmdCode = 0x0012
+	CmdGetObjectSize     CmdCode = 0x0013
+	CmdSignInit          CmdCode = 0x0014
+	CmdSign              CmdCode = 0x0015
+	CmdSignUpdate        CmdCode = 0x0016
+	CmdSignFinal         CmdCode = 0x0017
+	CmdVerifyInit        CmdCode = 0x0018
+	CmdVerify            CmdCode = 0x0019
+	CmdDecryptInit       CmdCode = 0x001A
+	CmdDecrypt           CmdCode = 0x001B
+	CmdEncryptInit       CmdCode = 0x001C
+	CmdEncrypt           CmdCode = 0x001D
+	CmdGenerateKeyPair   CmdCode = 0x001E
+	CmdGenerateRandom    CmdCode = 0x001F
+	CmdDigestInit        CmdCode = 0x0020
+	CmdDigest            CmdCode = 0x0021
+	CmdGetSessionInfo    CmdCode = 0x0022
+	CmdInitPIN           CmdCode = 0x0023
+	CmdSetPIN            CmdCode = 0x0024
 	// 流式 Digest / Verify 与 SeedRandom（v1.1 扩展）
-	CmdDigestUpdate     CmdCode = 0x0025
-	CmdDigestKey        CmdCode = 0x0026
-	CmdDigestFinal      CmdCode = 0x0027
-	CmdVerifyUpdate     CmdCode = 0x0028
-	CmdVerifyFinal      CmdCode = 0x0029
-	CmdSeedRandom       CmdCode = 0x002A
-	CmdHandshake        CmdCode = 0x00FF // 版本协商命令
+	CmdDigestUpdate CmdCode = 0x0025
+	CmdDigestKey    CmdCode = 0x0026
+	CmdDigestFinal  CmdCode = 0x0027
+	CmdVerifyUpdate CmdCode = 0x0028
+	CmdVerifyFinal  CmdCode = 0x0029
+	CmdSeedRandom   CmdCode = 0x002A
+	CmdHandshake    CmdCode = 0x00FF // 版本协商命令
 
 	// CmdSlotChanged 是服务端主动推送事件：卡片（Slot）列表发生变化，
 	// 客户端收到后应重置内部 slot 缓存并重新调用 CmdGetSlotList。
@@ -152,8 +152,8 @@ type HandshakeResp struct {
 // SlotChangedEvent 是 CmdSlotChanged 事件的 payload。
 // Reason 标识变化来源（create/delete/sync 等），便于客户端做差异化处理。
 type SlotChangedEvent struct {
-	Reason    string `json:"reason"`     // create / delete / update / sync
-	Timestamp int64  `json:"timestamp"`  // Unix 秒
+	Reason    string `json:"reason"`    // create / delete / update / sync
+	Timestamp int64  `json:"timestamp"` // Unix 秒
 }
 
 // Frame 是 IPC 通信帧。
@@ -171,7 +171,7 @@ type Request struct {
 
 // Response 是 IPC 响应的通用结构（JSON Payload）。
 type Response struct {
-	RV   uint32          `json:"rv"`            // CK_RV 返回码
+	RV   uint32          `json:"rv"`             // CK_RV 返回码
 	Data json.RawMessage `json:"data,omitempty"` // 各命令特定数据
 }
 

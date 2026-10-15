@@ -49,13 +49,13 @@ type Server struct {
 }
 
 // NewServer 创建 API 服务实例。
-func NewServer(cfg *config.APIConfig, manager *card.Manager, db *storage.DB) *Server {
+func NewServer(cfg *config.APIConfig, manager *card.Manager, db *storage.DB) (*Server, error) {
 	s := &Server{
 		cfg:         cfg,
 		mux:         http.NewServeMux(),
 		manager:     manager,
 		db:          db,
-	userRepo:    storage.NewUserRepo(db),
+		userRepo:    storage.NewUserRepo(db),
 		cardRepo:    storage.NewCardRepo(db),
 		certRepo:    storage.NewCertRepo(db),
 		logRepo:     storage.NewLogRepo(db),
@@ -83,23 +83,30 @@ func NewServer(cfg *config.APIConfig, manager *card.Manager, db *storage.DB) *Se
 		slog.Warn("初始化审计日志表失败", "error", err)
 	}
 
-	// 初始化本地认证 Token
+	// 初始化本地认证 Token；认证初始化失败时拒绝启动，禁止 fail-open。
 	authToken, err := middleware.NewAuthToken(cfg.DataDir)
 	if err != nil {
-		slog.Warn("初始化本地认证 Token 失败，API 将不启用认证", "error", err)
-	} else {
-		s.authToken = authToken
-		// 注入 session token 验证函数，使用户登录 token 也能通过认证
-		authToken.SetSessionValidator(func(token string) bool {
-			return isValidSession(token)
-		})
+		return nil, fmt.Errorf("初始化本地认证 Token 失败: %w", err)
 	}
+	s.authToken = authToken
+	// 注入 session token 验证函数，使用户登录 token 也能通过认证。
+	authToken.SetSessionValidator(func(token string) (middleware.Principal, bool) {
+		sess := getSession(token)
+		if sess == nil {
+			return middleware.Principal{}, false
+		}
+		return middleware.Principal{
+			UserUUID:  sess.UserUUID,
+			Role:      middleware.Role(sess.Role),
+			TokenType: "session",
+		}, true
+	})
 
 	// 检查绑定地址安全性
 	middleware.CheckBindAddress(cfg.Addr())
 
 	s.registerRoutes()
-	return s
+	return s, nil
 }
 
 // registerRoutes 注册所有 API 路由。
@@ -222,7 +229,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/pki/certs/propagate", s.handlePropagateCerts)
 
 	// ---- 应用指标 ----
-	s.mux.HandleFunc("GET /metrics", s.metrics.Handler())
+	// /metrics 不在 /api/ 前缀下，不会被全局认证中间件覆盖，
+	// 因此显式要求携带本地 API Token，避免指标对同机任意进程开放。
+	s.mux.Handle("GET /metrics", s.authToken.Protect(s.metrics.Handler()))
 
 	// ---- 云端同步 ----
 	s.mux.HandleFunc("POST /api/cloud/sync", s.handleCloudSync)
@@ -361,7 +370,10 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// isLocalOrigin 判断是否为本地来源（localhost / 127.0.0.1）。
+// isLocalOrigin 判断是否为本地来源（localhost / 127.0.0.1 / Wails 桌面端）。
+//
+// Wails v2 的 WebView 页面来源为 http://wails.localhost（Windows）或 wails://wails
+// （macOS / Linux），二者都是本机可信来源，需要放行，否则桌面端无法调用 REST API。
 func isLocalOrigin(origin string) bool {
 	if origin == "" {
 		return false
@@ -371,6 +383,10 @@ func isLocalOrigin(origin string) bool {
 		"https://localhost",
 		"http://127.0.0.1",
 		"https://127.0.0.1",
+		// Wails 桌面端（desktop/wails）
+		"http://wails.localhost",
+		"https://wails.localhost",
+		"wails://",
 	} {
 		if len(origin) >= len(prefix) && origin[:len(prefix)] == prefix {
 			return true
@@ -394,9 +410,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListSlots(w http.ResponseWriter, r *http.Request) {
 	ids := s.manager.GetSlotList(false)
 	type slotItem struct {
-		SlotID      uint32 `json:"slot_id"`
-		Description string `json:"description"`
-		TokenPresent bool  `json:"token_present"`
+		SlotID       uint32 `json:"slot_id"`
+		Description  string `json:"description"`
+		TokenPresent bool   `json:"token_present"`
 	}
 
 	items := make([]slotItem, 0, len(ids))

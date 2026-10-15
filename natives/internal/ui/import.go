@@ -20,10 +20,10 @@ import (
 
 // ImportDialog 导入证书对话框
 type ImportDialog struct {
-	appCore  *appcore.App
-	window   fyne.Window
-	dialog   dialog.Dialog
-	cards    []api.Card
+	appCore *appcore.App
+	window  fyne.Window
+	dialog  dialog.Dialog
+	cards   []api.Card
 
 	cardSelect   *widget.Select
 	formatSelect *widget.Select
@@ -43,7 +43,7 @@ type ImportDialog struct {
 func NewImportDialog(a *appcore.App, w fyne.Window) *ImportDialog {
 	id := &ImportDialog{
 		appCore: a,
-		window: w,
+		window:  w,
 	}
 
 	id.cardSelect = widget.NewSelect([]string{}, nil)

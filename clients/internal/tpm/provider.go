@@ -6,10 +6,10 @@
 //     通过 LoadKey/Sign/Decrypt 在 TPM 内部完成签名/解密；私钥永远不以明文形式出现在外部。
 //
 // 当前提供两种后端：
-//   1. SoftwareStub（默认）：用本地受保护文件 + AES-256-GCM 模拟，保持与真 TPM 完全相同的接口语义，
-//      用于尚未接入真实硬件 / 开发 / 测试。PlatformName="sw-stub"。
-//   2. （TODO）TPM2 真实后端：Windows 走 CNG/Platform Crypto Provider（自家 KSP 同源），
-//      Linux/macOS 走 go-tpm + /dev/tpmrm0 等。完成后会替换 NewProvider 工厂。
+//  1. SoftwareStub（默认）：用本地受保护文件 + AES-256-GCM 模拟，保持与真 TPM 完全相同的接口语义，
+//     用于尚未接入真实硬件 / 开发 / 测试。PlatformName="sw-stub"。
+//  2. （TODO）TPM2 真实后端：Windows 走 CNG/Platform Crypto Provider（自家 KSP 同源），
+//     Linux/macOS 走 go-tpm + /dev/tpmrm0 等。完成后会替换 NewProvider 工厂。
 //
 // 上层（local 包）只依赖本接口，不感知后端差异。
 package tpm

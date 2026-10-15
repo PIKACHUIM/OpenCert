@@ -5,12 +5,16 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,16 +24,27 @@ import (
 	"github.com/globaltrusts/server-card/internal/auth"
 	"github.com/globaltrusts/server-card/internal/ca"
 	"github.com/globaltrusts/server-card/internal/card"
+	"github.com/globaltrusts/server-card/internal/cps"
 	"github.com/globaltrusts/server-card/internal/ct"
+	"github.com/globaltrusts/server-card/internal/identity"
 	"github.com/globaltrusts/server-card/internal/issuance"
 	"github.com/globaltrusts/server-card/internal/mailer"
 	"github.com/globaltrusts/server-card/internal/payment"
+	"github.com/globaltrusts/server-card/internal/portal"
+	"github.com/globaltrusts/server-card/internal/promo"
 	"github.com/globaltrusts/server-card/internal/revocation"
 	"github.com/globaltrusts/server-card/internal/storage"
 	"github.com/globaltrusts/server-card/internal/template"
 	"github.com/globaltrusts/server-card/internal/verification"
 	"github.com/globaltrusts/server-card/internal/workflow"
 	"golang.org/x/crypto/bcrypt"
+)
+
+// 版本信息，由 ldflags 在构建时注入。
+var (
+	Version   = "dev"
+	BuildTime = "unknown"
+	Commit    = "unknown"
 )
 
 func main() {
@@ -39,7 +54,20 @@ func main() {
 	// 初始化日志
 	initLogger(cfg.Log.Level)
 
-	slog.Info("servers 启动中", "addr", cfg.API.Addr(), "db", cfg.Database.Path, "db_url", cfg.Database.URL != "")
+	slog.Info("servers 启动中",
+		"version", Version,
+		"commit", Commit,
+		"built", BuildTime,
+		"addr", cfg.API.Addr(),
+		"db", cfg.Database.Path,
+		"db_url", cfg.Database.URL != "")
+
+	// 生产安全基线：对外监听时不允许使用默认 JWT 密钥（否则任何人都能伪造管理员令牌）
+	if !isLoopbackHost(cfg.API.Host) && (cfg.JWT.Secret == defaultJWTSecret || len(cfg.JWT.Secret) < 32) {
+		slog.Error("对外监听时必须通过 SERVER_CARD_JWT_SECRET 设置至少 32 位的随机密钥",
+			"host", cfg.API.Host)
+		os.Exit(1)
+	}
 
 	// 初始化数据库
 	db, err := storage.Open(cfg.Database.Path, cfg.Database.URL)
@@ -63,7 +91,7 @@ func main() {
 	logRepo := storage.NewLogRepo(db)
 
 	// 首次启动时创建默认管理员账号
-	if err := ensureDefaultAdmin(context.Background(), userRepo); err != nil {
+	if err := ensureDefaultAdmin(context.Background(), userRepo, !isLoopbackHost(cfg.API.Host)); err != nil {
 		slog.Warn("初始化默认管理员账号失败", "error", err)
 	}
 
@@ -87,6 +115,9 @@ func main() {
 
 	// 初始化工作流服务（注入 caSvc/issuanceSvc 以支持审批自动签发）
 	workflowSvc := workflow.NewService(db, caSvc, issuanceSvc)
+
+	// 初始化门户（官网/商城）服务：商品目录、权威报价与下单编排
+	portalSvc := portal.NewService(storage.NewPortalRepo(db), workflowSvc)
 
 	// 初始化支付系统
 	paymentRegistry := payment.NewRegistry()
@@ -115,7 +146,46 @@ func main() {
 	// 注入 CA 签发依赖（避免循环依赖）
 	acmeSvc.SetCASvc(caSvc)
 
-	// 启动定时任务：关闭超时未支付订单
+	// 身份认证接口（SMTP/Resend 邮件、实名回调）：配置用主密钥加密存储
+	identityStore := identity.NewStore(db, cardSvc, mailer.New(cfg.SMTP))
+	verifySvc.SetProviders(identityStore)
+	// 域名 TLS 验证复用 ACME TLS-ALPN-01 校验
+	verifySvc.SetTLSValidator(acmeSvc.ValidateTLSALPN01)
+
+	// 独立 OCSP 响应服务可使用平台内证书（如 OCSP 委托签名证书）作为签名者
+	revocationSvc.SetSignerLoader(func(ctx context.Context, certUUID string) (*x509.Certificate, crypto.Signer, error) {
+		c, err := certRepo.GetByUUID(ctx, certUUID)
+		if err != nil {
+			return nil, nil, err
+		}
+		block, _ := pem.Decode(c.CertContent)
+		if block == nil {
+			return nil, nil, fmt.Errorf("证书内容不是 PEM 格式")
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(c.PrivateData) == 0 {
+			return nil, nil, fmt.Errorf("该证书的私钥不在平台内，不能用于签名")
+		}
+		key, err := cardSvc.DecryptPrivateKey(ctx, c)
+		if err != nil {
+			return nil, nil, err
+		}
+		signer, ok := key.(crypto.Signer)
+		if !ok {
+			return nil, nil, fmt.Errorf("私钥不支持签名")
+		}
+		return cert, signer, nil
+	})
+
+	// 优惠码 / 订阅 / 兑换码；证书策略页面
+	promoSvc := promo.NewService(db)
+	portalSvc.SetPromo(promoSvc)
+	cpsSvc := cps.NewService(db)
+
+	// 启动定时任务：关闭超时未支付订单（充值订单 + 证书/智能卡/套餐订单，后者归还库存与优惠码）
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
@@ -124,6 +194,11 @@ func main() {
 				slog.Error("关闭超时订单失败", "error", err)
 			} else if n > 0 {
 				slog.Info("已关闭超时订单", "count", n)
+			}
+			if n, err := portalSvc.CloseStaleOrders(context.Background()); err != nil {
+				slog.Error("关闭超时证书订单失败", "error", err)
+			} else if n > 0 {
+				slog.Info("已关闭超时证书订单", "count", n)
 			}
 		}
 	}()
@@ -140,6 +215,11 @@ func main() {
 		RevocationSvc: revocationSvc,
 		CTSvc:         ctSvc,
 		ACMESvc:       acmeSvc,
+		PortalSvc:     portalSvc,
+		PaymentLoader: paymentLoader,
+		IdentityStore: identityStore,
+		CPSSvc:        cpsSvc,
+		PromoSvc:      promoSvc,
 	}
 	apiServer := api.NewServer(cfg, db, jwtMgr, svcs, userRepo, logRepo)
 	apiServer.SetMailer(mailer.New(cfg.SMTP))
@@ -169,8 +249,8 @@ func main() {
 
 // loadOrGenerateMasterKey 加载或生成服务端主密钥。
 // 优先级：1. 环境变量 SERVER_CARD_MASTER_KEY（Base64）
-//         2. 配置文件路径（验证文件权限为 0600）
-//         3. 自动生成并保存到文件
+//  2. 配置文件路径（验证文件权限为 0600）
+//  3. 自动生成并保存到文件
 func loadOrGenerateMasterKey(cfg *configs.Config) ([]byte, error) {
 	// 1. 优先从环境变量读取（Base64 编码的 32 字节密钥）
 	if envKey := os.Getenv("SERVER_CARD_MASTER_KEY"); envKey != "" {
@@ -241,17 +321,47 @@ func initLogger(level string) {
 	slog.SetDefault(slog.New(handler))
 }
 
-// ensureDefaultAdmin 首次启动时创建默认管理员账号。
-// 默认账号：admin / admin
-// 如果 admin 用户已存在则跳过。
-func ensureDefaultAdmin(ctx context.Context, userRepo *storage.UserRepo) error {
+// defaultJWTSecret 与 configs 中的缺省值保持一致，用于识别"未修改"的部署。
+const defaultJWTSecret = "change-me-in-production-please!!"
+
+// isLoopbackHost 判断监听地址是否仅限本机（本地开发/测试环境）。
+func isLoopbackHost(host string) bool {
+	switch strings.TrimSpace(host) {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	return false
+}
+
+// ensureDefaultAdmin 首次启动时创建默认管理员账号（admin 已存在则跳过）。
+//
+// 口令来源优先级：
+//  1. 环境变量 SERVER_CARD_ADMIN_PASSWORD（至少 12 位）；
+//  2. 本机监听（开发环境）使用 admin，便于本地调试；
+//  3. 对外监听（生产环境）自动生成随机口令，仅在首次启动日志中输出一次。
+func ensureDefaultAdmin(ctx context.Context, userRepo *storage.UserRepo, production bool) error {
 	const defaultUsername = "admin"
-	const defaultPassword = "admin"
 
 	// 检查 admin 是否已存在
 	if _, err := userRepo.GetByUsername(ctx, defaultUsername); err == nil {
 		// 已存在，跳过
 		return nil
+	}
+
+	defaultPassword := os.Getenv("SERVER_CARD_ADMIN_PASSWORD")
+	switch {
+	case defaultPassword != "":
+		if len(defaultPassword) < 12 {
+			return fmt.Errorf("SERVER_CARD_ADMIN_PASSWORD 至少需要 12 位")
+		}
+	case production:
+		buf := make([]byte, 12)
+		if _, err := rand.Read(buf); err != nil {
+			return fmt.Errorf("生成初始管理员口令失败: %w", err)
+		}
+		defaultPassword = base64.RawURLEncoding.EncodeToString(buf)
+	default:
+		defaultPassword = "admin"
 	}
 
 	// 生成密码哈希

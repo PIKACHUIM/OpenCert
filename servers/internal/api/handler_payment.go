@@ -1,7 +1,6 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/globaltrusts/server-card/internal/payment"
 	"github.com/globaltrusts/server-card/internal/storage"
 	"github.com/google/uuid"
 )
@@ -203,6 +203,13 @@ func (s *Server) handleCreatePaymentPlugin(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusBadRequest, "配置格式错误")
 			return
 		}
+		// 启用状态下立即校验配置可用；停用状态允许先保存草稿配置
+		if req.Enabled {
+			if err := payment.ValidateProviderConfig(req.PluginType, configJSON); err != nil {
+				writeError(w, http.StatusBadRequest, "插件配置无效: "+err.Error())
+				return
+			}
+		}
 		// 使用 card service 的加密功能
 		configEnc, err = s.cardSvc.EncryptData(configJSON)
 		if err != nil {
@@ -222,6 +229,7 @@ func (s *Server) handleCreatePaymentPlugin(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	s.reloadPaymentPlugins(r)
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"uuid":        pluginUUID,
 		"name":        req.Name,
@@ -230,6 +238,18 @@ func (s *Server) handleCreatePaymentPlugin(w http.ResponseWriter, r *http.Reques
 		"sort_weight": req.SortWeight,
 		"created_at":  now,
 	})
+}
+
+// reloadPaymentPlugins 在插件增删改后热加载，使启停立即生效（无需重启服务）。
+func (s *Server) reloadPaymentPlugins(r *http.Request) {
+	if s.paymentLoader == nil {
+		return
+	}
+	if loaded, err := s.paymentLoader.Reload(r.Context()); err != nil {
+		slog.Warn("支付插件热加载失败", "error", err)
+	} else {
+		slog.Info("支付插件已热加载", "types", loaded)
+	}
 }
 
 // UpdatePaymentPluginRequest 是更新支付插件请求体。
@@ -254,6 +274,7 @@ func (s *Server) handleUpdatePaymentPlugin(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.reloadPaymentPlugins(r)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "支付插件已更新"})
 }
 
@@ -264,110 +285,36 @@ func (s *Server) handleDeletePaymentPlugin(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.reloadPaymentPlugins(r)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "支付插件已删除"})
 }
 
 // ---- 退款审批处理器（管理员）----
 
+// handleListRefunds 查询全部退款工单（管理员）。
 func (s *Server) handleListRefunds(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	page, pageSize := parsePagination(r)
-	offset := (page - 1) * pageSize
 
-	query := `SELECT uuid, user_uuid, order_no, amount_cents, reason, status, approved_by, created_at, processed_at
-		 FROM refund_requests WHERE 1=1`
-	var args []interface{}
-	if status != "" {
-		query += ` AND status = ?`
-		args = append(args, status)
-	}
-
-	var total int
-	countQuery := `SELECT COUNT(*) FROM refund_requests WHERE 1=1`
-	if status != "" {
-		countQuery += ` AND status = ?`
-	}
-	if err := s.db.QueryRowContext(r.Context(), countQuery, args...).Scan(&total); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(r.Context(), query, append(args, pageSize, offset)...)
+	refunds, total, err := s.paymentSvc.ListAllRefunds(r.Context(), status, page, pageSize)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	defer rows.Close()
-
-	var refunds []storage.RefundRequest
-	for rows.Next() {
-		var rr storage.RefundRequest
-		var approvedBy sql.NullString
-		var processedAt sql.NullTime
-		if err := rows.Scan(&rr.UUID, &rr.UserUUID, &rr.OrderNo, &rr.AmountCents, &rr.Reason,
-			&rr.Status, &approvedBy, &rr.CreatedAt, &processedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if approvedBy.Valid {
-			rr.ApprovedBy = approvedBy.String
-		}
-		if processedAt.Valid {
-			rr.ProcessedAt = &processedAt.Time
-		}
-		refunds = append(refunds, rr)
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"refunds": refunds, "total": total, "page": page})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"refunds": refunds, "items": refunds, "total": total, "page": page,
+	})
 }
 
+// handleApproveRefund 审批退款：余额支付退回余额，第三方渠道调用原路退款。
+//
+// 渠道退款失败时返回错误并保留 failed 状态与失败原因，不会谎报退款成功。
 func (s *Server) handleApproveRefund(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
 	refundUUID := r.PathValue("uuid")
 
-	// 查询退款工单
-	var rr storage.RefundRequest
-	err := s.db.QueryRowContext(r.Context(),
-		`SELECT uuid, user_uuid, order_no, amount_cents, status FROM refund_requests WHERE uuid = ?`, refundUUID,
-	).Scan(&rr.UUID, &rr.UserUUID, &rr.OrderNo, &rr.AmountCents, &rr.Status)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "退款工单不存在")
-		return
-	}
-
-	if rr.Status != "pending" {
-		writeError(w, http.StatusBadRequest, "只能审批待处理的退款工单")
-		return
-	}
-
-	now := time.Now()
-
-	// 扣减用户余额
-	_, err = s.db.ExecContext(r.Context(),
-		`UPDATE user_balances SET available_cents = available_cents - ? WHERE user_uuid = ?`,
-		rr.AmountCents, rr.UserUUID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "扣减余额失败: "+err.Error())
-		return
-	}
-
-	// 写入消费记录（负数金额表示退款）
-	consumeUUID := uuid.New().String()
-	_, err = s.db.ExecContext(r.Context(),
-		`INSERT INTO consume_records (uuid, user_uuid, order_no, consume_type, amount_cents, remark, created_at)
-		 VALUES (?, ?, ?, 'refund', ?, '退款审批通过', ?)`,
-		consumeUUID, rr.UserUUID, rr.OrderNo, -rr.AmountCents, now)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "写入消费记录失败: "+err.Error())
-		return
-	}
-
-	// 更新退款工单状态
-	_, err = s.db.ExecContext(r.Context(),
-		`UPDATE refund_requests SET status = 'paid', approved_by = ?, processed_at = ? WHERE uuid = ?`,
-		claims.UserUUID, now, refundUUID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := s.paymentSvc.ApproveRefund(r.Context(), refundUUID, claims.UserUUID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -377,34 +324,25 @@ func (s *Server) handleApproveRefund(w http.ResponseWriter, r *http.Request) {
 		IPAddr:   r.RemoteAddr,
 	})
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "退款已审批通过"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "退款已处理"})
 }
 
+// handleRejectRefund 驳回退款申请。
 func (s *Server) handleRejectRefund(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
 	refundUUID := r.PathValue("uuid")
 
-	// 查询退款工单状态
-	var status string
-	err := s.db.QueryRowContext(r.Context(),
-		`SELECT status FROM refund_requests WHERE uuid = ?`, refundUUID,
-	).Scan(&status)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "退款工单不存在")
-		return
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	// 请求体可选；解析失败时使用默认原因
+	_ = json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+	if req.Reason == "" {
+		req.Reason = "管理员驳回"
 	}
 
-	if status != "pending" {
-		writeError(w, http.StatusBadRequest, "只能拒绝待处理的退款工单")
-		return
-	}
-
-	now := time.Now()
-	_, err = s.db.ExecContext(r.Context(),
-		`UPDATE refund_requests SET status = 'failed', approved_by = ?, processed_at = ? WHERE uuid = ?`,
-		claims.UserUUID, now, refundUUID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := s.paymentSvc.RejectRefund(r.Context(), refundUUID, claims.UserUUID, req.Reason); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

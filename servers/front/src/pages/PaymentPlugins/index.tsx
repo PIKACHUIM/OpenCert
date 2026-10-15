@@ -36,9 +36,12 @@ const PaymentPluginsPage: React.FC = () => {
       await createPaymentPlugin({
         name: values.name,
         plugin_type: values.plugin_type,
-        api_key: values.api_key,
-        api_secret: values.api_secret,
-        callback_url: values.callback_url,
+        // 服务端以 config 对象接收并加密存储渠道密钥
+        config: {
+          ...(values.api_key ? { api_key: values.api_key } : {}),
+          ...(values.api_secret ? { api_secret: values.api_secret } : {}),
+          ...(values.callback_url ? { callback_url: values.callback_url } : {}),
+        },
         enabled: values.enabled !== false,
       });
       message.success('支付插件已创建');

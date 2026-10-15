@@ -11,8 +11,7 @@ import (
 
 func TestIssuanceTemplateCRUD(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := issuance.NewService(db)
 	ctx := context.Background()
@@ -76,8 +75,7 @@ func TestIssuanceTemplateCRUD(t *testing.T) {
 
 func TestIssuanceTemplateGetAndList(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := issuance.NewService(db)
 	ctx := context.Background()
@@ -137,8 +135,7 @@ func TestIssuanceTemplateGetAndList(t *testing.T) {
 
 func TestIssuanceTemplateDelete(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := issuance.NewService(db)
 	ctx := context.Background()
@@ -162,8 +159,7 @@ func TestIssuanceTemplateDelete(t *testing.T) {
 
 func TestSubjectTemplateCRUD(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := issuance.NewService(db)
 	ctx := context.Background()
@@ -198,8 +194,7 @@ func TestSubjectTemplateCRUD(t *testing.T) {
 
 func TestExtensionTemplateCRUD(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := issuance.NewService(db)
 	ctx := context.Background()
@@ -231,8 +226,7 @@ func TestExtensionTemplateCRUD(t *testing.T) {
 
 func TestKeyUsageTemplateCRUD(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := issuance.NewService(db)
 	ctx := context.Background()

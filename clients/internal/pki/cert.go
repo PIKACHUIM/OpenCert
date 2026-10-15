@@ -26,14 +26,14 @@ import (
 
 // CertExtensions 证书扩展选项（签发时可覆盖 CSR 中的设置）。
 type CertExtensions struct {
-	KeyUsage         []string `json:"key_usage,omitempty"`          // digitalSignature, keyEncipherment, ...
-	ExtKeyUsage      []string `json:"ext_key_usage,omitempty"`      // serverAuth, clientAuth, ...
-	IsCA             *bool    `json:"is_ca,omitempty"`              // 基本约束：是否 CA
-	PathLenConstraint *int    `json:"path_len_constraint,omitempty"` // 基本约束：CA 链最大深度
-	CRLURLs          []string `json:"crl_urls,omitempty"`           // CRL 分发点
-	OCSPURLs         []string `json:"ocsp_urls,omitempty"`          // OCSP 响应者地址
-	AIAURLs          []string `json:"aia_urls,omitempty"`           // AIA（颁发者信息访问）地址
-	CSPName          string   `json:"csp_name,omitempty"`           // CSP（Cryptographic Service Provider）名称
+	KeyUsage          []string `json:"key_usage,omitempty"`           // digitalSignature, keyEncipherment, ...
+	ExtKeyUsage       []string `json:"ext_key_usage,omitempty"`       // serverAuth, clientAuth, ...
+	IsCA              *bool    `json:"is_ca,omitempty"`               // 基本约束：是否 CA
+	PathLenConstraint *int     `json:"path_len_constraint,omitempty"` // 基本约束：CA 链最大深度
+	CRLURLs           []string `json:"crl_urls,omitempty"`            // CRL 分发点
+	OCSPURLs          []string `json:"ocsp_urls,omitempty"`           // OCSP 响应者地址
+	AIAURLs           []string `json:"aia_urls,omitempty"`            // AIA（颁发者信息访问）地址
+	CSPName           string   `json:"csp_name,omitempty"`            // CSP（Cryptographic Service Provider）名称
 }
 
 // SelfSignFromCSRRequest 是通过已有 CSR 生成自签名证书的请求。
@@ -41,7 +41,7 @@ type SelfSignFromCSRRequest struct {
 	CSRUUID      string          `json:"csr_uuid"`
 	ValidityDays int             `json:"validity_days"`
 	Remark       string          `json:"remark"`
-	CardPassword string          `json:"card_password"`  // smartcard 模式下需要卡片密码解密私钥
+	CardPassword string          `json:"card_password"`        // smartcard 模式下需要卡片密码解密私钥
 	Extensions   *CertExtensions `json:"extensions,omitempty"` // 证书扩展选项
 }
 
@@ -238,26 +238,26 @@ func decryptSmartcardPrivKey(ctx context.Context, cardRepo *storage.CardRepo, ce
 
 // CreateCSRRequest 是创建并持久化 CSR 的请求。
 type CreateCSRRequest struct {
-	CommonName   string            `json:"common_name"`
-	Organization string            `json:"organization"`
-	OrgUnit      string            `json:"org_unit"`
-	Country      string            `json:"country"`
-	State        string            `json:"state"`
-	Locality     string            `json:"locality"`
-	Email        string            `json:"email"`
-	KeyType      string            `json:"key_type"`
-	DigestType   string            `json:"digest_type"`  // sha256/sha384/sha512；空值则按密钥类型取默认值
+	CommonName   string             `json:"common_name"`
+	Organization string             `json:"organization"`
+	OrgUnit      string             `json:"org_unit"`
+	Country      string             `json:"country"`
+	State        string             `json:"state"`
+	Locality     string             `json:"locality"`
+	Email        string             `json:"email"`
+	KeyType      string             `json:"key_type"`
+	DigestType   string             `json:"digest_type"` // sha256/sha384/sha512；空值则按密钥类型取默认值
 	KeyStorage   storage.KeyStorage `json:"key_storage"` // database / smartcard
-	CardUUID     string            `json:"card_uuid"`
-	CardPassword string            `json:"card_password"` // smartcard 模式下需要卡片密码
-	SANDN        string            `json:"san_dns"`
-	SANIP        string            `json:"san_ip"`
-	SANEmail     string            `json:"san_email"`
-	SANURI       string            `json:"san_uri"`
-	KeyUsage     []string          `json:"key_usage"`
-	ExtKeyUsage  []string          `json:"ext_key_usage"`
-	ExtraSubject map[string]string `json:"extra_subject"` // 额外 DN 字段（serialNumber/givenName 等）
-	Remark       string            `json:"remark"`
+	CardUUID     string             `json:"card_uuid"`
+	CardPassword string             `json:"card_password"` // smartcard 模式下需要卡片密码
+	SANDN        string             `json:"san_dns"`
+	SANIP        string             `json:"san_ip"`
+	SANEmail     string             `json:"san_email"`
+	SANURI       string             `json:"san_uri"`
+	KeyUsage     []string           `json:"key_usage"`
+	ExtKeyUsage  []string           `json:"ext_key_usage"`
+	ExtraSubject map[string]string  `json:"extra_subject"` // 额外 DN 字段（serialNumber/givenName 等）
+	Remark       string             `json:"remark"`
 }
 
 // CreateAndSaveCSR 生成 CSR 并持久化到数据库。
@@ -453,13 +453,13 @@ func encryptAndStoreKeyOnly(ctx context.Context, certRepo *storage.CertRepo, car
 
 // CreateCARequest 是创建本地 CA 的请求。
 type CreateCARequest struct {
-	Name         string `json:"name"`
-	CommonName   string `json:"common_name"`
-	Organization string `json:"organization"`
-	Country      string `json:"country"`
-	KeyType      string `json:"key_type"`
-	ValidityYears int   `json:"validity_years"`
-	CardUUID     string `json:"card_uuid"`
+	Name          string `json:"name"`
+	CommonName    string `json:"common_name"`
+	Organization  string `json:"organization"`
+	Country       string `json:"country"`
+	KeyType       string `json:"key_type"`
+	ValidityYears int    `json:"validity_years"`
+	CardUUID      string `json:"card_uuid"`
 }
 
 // CreateAndSaveCA 生成自签名 CA 并持久化。
@@ -575,9 +575,9 @@ type IssueCertFromCSRRequest struct {
 	CAUUID       string          `json:"ca_uuid"`
 	ValidityDays int             `json:"validity_days"`
 	Remark       string          `json:"remark"`
-	NotBefore    string          `json:"not_before,omitempty"`  // ISO8601
-	NotAfter     string          `json:"not_after,omitempty"`   // ISO8601
-	Extensions   *CertExtensions `json:"extensions,omitempty"`  // 证书扩展选项
+	NotBefore    string          `json:"not_before,omitempty"` // ISO8601
+	NotAfter     string          `json:"not_after,omitempty"`  // ISO8601
+	Extensions   *CertExtensions `json:"extensions,omitempty"` // 证书扩展选项
 }
 
 // IssueCertFromCSR 通过已有 CSR 和 CA 签发证书并持久化。
@@ -737,10 +737,10 @@ func IssueCertFromCSR(ctx context.Context,
 type ImportCertMode string
 
 const (
-	ImportModeCertOnly  ImportCertMode = "cert_only"  // 仅证书，自动匹配私钥
-	ImportModeCertKey   ImportCertMode = "cert_key"   // 证书 + 私钥
-	ImportModePKCS12    ImportCertMode = "pkcs12"     // PKCS#12
-	ImportModeKeyOnly   ImportCertMode = "key_only"   // 仅私钥
+	ImportModeCertOnly ImportCertMode = "cert_only" // 仅证书，自动匹配私钥
+	ImportModeCertKey  ImportCertMode = "cert_key"  // 证书 + 私钥
+	ImportModePKCS12   ImportCertMode = "pkcs12"    // PKCS#12
+	ImportModeKeyOnly  ImportCertMode = "key_only"  // 仅私钥
 )
 
 // ImportCertRequest 是导入证书的请求。
@@ -1207,9 +1207,9 @@ var oidCSPProvider = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 13, 2, 2}
 
 // cspProviderInfo 是 Microsoft CSP Provider 扩展的 ASN.1 结构。
 type cspProviderInfo struct {
-	KeySpec   int              `asn1:""`
-	CSPName   asn1.RawValue   `asn1:""`
-	Signature asn1.BitString  `asn1:""`
+	KeySpec   int            `asn1:""`
+	CSPName   asn1.RawValue  `asn1:""`
+	Signature asn1.BitString `asn1:""`
 }
 
 // buildCSPProviderExtension 构建 Microsoft CSP Provider 扩展。

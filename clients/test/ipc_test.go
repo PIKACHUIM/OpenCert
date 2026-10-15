@@ -160,14 +160,14 @@ func TestIPCOpenCloseSession(t *testing.T) {
 		t.Fatalf("OpenSession 失败: rv=0x%X", openResp.RV)
 	}
 
-	// 从响应中提取 session_handle
-	sessionHandle := extractUint32(t, openResp.Data, "session_handle")
+	// 从响应中提取 session_id
+	sessionHandle := extractUint32(t, openResp.Data, "session_id")
 	if sessionHandle == 0 {
-		t.Fatal("session_handle 为 0")
+		t.Fatal("session_id 为 0")
 	}
 
 	// CloseSession
-	closePayload := []byte(`{"session_handle":` + uint32Str(sessionHandle) + `}`)
+	closePayload := []byte(`{"session_id":` + uint32Str(sessionHandle) + `}`)
 	closeFrame := ipcCallConn(t, conn, ipc.CmdCloseSession, closePayload)
 	closeResp := parseIPCResponse(t, closeFrame)
 	if closeResp.RV != uint32(pkcs11types.CKR_OK) {
@@ -195,10 +195,10 @@ func TestIPCLoginAndFindObjects(t *testing.T) {
 	if openResp.RV != uint32(pkcs11types.CKR_OK) {
 		t.Fatalf("OpenSession 失败: rv=0x%X", openResp.RV)
 	}
-	sessionHandle := extractUint32(t, openResp.Data, "session_handle")
+	sessionHandle := extractUint32(t, openResp.Data, "session_id")
 
 	// Login（正确密码）
-	loginPayload := []byte(`{"session_handle":` + uint32Str(sessionHandle) + `,"user_type":1,"pin":"ipcpass123"}`)
+	loginPayload := []byte(`{"session_id":` + uint32Str(sessionHandle) + `,"user_type":1,"pin":"ipcpass123"}`)
 	loginFrame := ipcCallConn(t, conn, ipc.CmdLogin, loginPayload)
 	loginResp := parseIPCResponse(t, loginFrame)
 	if loginResp.RV != uint32(pkcs11types.CKR_OK) {
@@ -206,19 +206,19 @@ func TestIPCLoginAndFindObjects(t *testing.T) {
 	}
 
 	// FindObjectsInit
-	findInitPayload := []byte(`{"session_handle":` + uint32Str(sessionHandle) + `,"template":[]}`)
+	findInitPayload := []byte(`{"session_id":` + uint32Str(sessionHandle) + `,"template":[]}`)
 	findInitFrame := ipcCallConn(t, conn, ipc.CmdFindObjectsInit, findInitPayload)
 	findInitResp := parseIPCResponse(t, findInitFrame)
 	t.Logf("FindObjectsInit rv=0x%X", findInitResp.RV)
 
 	// FindObjects
-	findPayload := []byte(`{"session_handle":` + uint32Str(sessionHandle) + `,"max_count":10}`)
+	findPayload := []byte(`{"session_id":` + uint32Str(sessionHandle) + `,"max_count":10}`)
 	findFrame := ipcCallConn(t, conn, ipc.CmdFindObjects, findPayload)
 	findResp := parseIPCResponse(t, findFrame)
 	t.Logf("FindObjects rv=0x%X, data=%s", findResp.RV, findResp.Data)
 
 	// FindObjectsFinal
-	findFinalPayload := []byte(`{"session_handle":` + uint32Str(sessionHandle) + `}`)
+	findFinalPayload := []byte(`{"session_id":` + uint32Str(sessionHandle) + `}`)
 	ipcCallConn(t, conn, ipc.CmdFindObjectsFinal, findFinalPayload)
 }
 
@@ -237,10 +237,10 @@ func TestIPCLoginWrongPIN(t *testing.T) {
 
 	openFrame := ipcCallConn(t, conn, ipc.CmdOpenSession, []byte(`{"slot_id":1,"flags":4}`))
 	openResp := parseIPCResponse(t, openFrame)
-	sessionHandle := extractUint32(t, openResp.Data, "session_handle")
+	sessionHandle := extractUint32(t, openResp.Data, "session_id")
 
 	// 错误密码
-	loginPayload := []byte(`{"session_handle":` + uint32Str(sessionHandle) + `,"user_type":1,"pin":"wrongpassword"}`)
+	loginPayload := []byte(`{"session_id":` + uint32Str(sessionHandle) + `,"user_type":1,"pin":"wrongpassword"}`)
 	loginFrame := ipcCallConn(t, conn, ipc.CmdLogin, loginPayload)
 	loginResp := parseIPCResponse(t, loginFrame)
 	if loginResp.RV == uint32(pkcs11types.CKR_OK) {

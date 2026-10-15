@@ -1,0 +1,22 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="clients" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="PKCS11Driver" />
+    <working_directory value="$PROJECT_DIR$/clients" />
+    <sudo value="true" />
+    <kind value="FILE" />
+    <package value="github.com/globaltrusts/client-card" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/clients/cmd/client-card/main.go" />
+    <method v="2" />
+  </configuration>
+  <configuration default="false" name="clients" type="js.build_tools.npm">
+    <package-json value="$PROJECT_DIR$/clients/front/package.json" />
+    <command value="run" />
+    <scripts>
+      <script value="dev" />
+    </scripts>
+    <node-interpreter value="project" />
+    <envs />
+    <method v="2" />
+  </configuration>
+</component>

@@ -438,7 +438,7 @@ const LocalCAPage: React.FC = () => {
                         }}
                       >
                         <List.Item.Meta
-                          avatar={<BankOutlined style={{ color: '#1677ff', fontSize: 18 }} />}
+                          avatar={<BankOutlined style={{ color: 'var(--accent)', fontSize: 18 }} />}
                           title={<Text style={{ color: darkMode ? '#c9d1d9' : '#333' }}>{item.cn}</Text>}
                           description={
                             <Space size={8} style={{ fontSize: 11 }}>

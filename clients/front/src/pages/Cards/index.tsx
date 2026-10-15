@@ -333,7 +333,7 @@ const Cards: React.FC = () => {
         return (
           <div>
             <Space size={4}>
-              <SafetyCertificateOutlined style={{ color: slotColor(record.slot_type) === 'purple' ? '#722ed1' : slotColor(record.slot_type) === 'cyan' ? '#13c2c2' : '#52c41a' }} />
+              <SafetyCertificateOutlined style={{ color: slotColor(record.slot_type) === 'purple' ? '#8b5cf6' : slotColor(record.slot_type) === 'cyan' ? '#13c2c2' : '#52c41a' }} />
               <Text strong style={{ color: darkMode ? '#c9d1d9' : undefined }}>{record.card_name}</Text>
               {isDisabled ? (
                 <Tag color="red" style={{ fontSize: 10 }}>已禁用</Tag>

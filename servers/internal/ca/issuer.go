@@ -27,29 +27,29 @@ import (
 
 // IssueRequest 是证书签发请求。
 type IssueRequest struct {
-	CAUUID      string            // 签发 CA 的 UUID
-	Subject     pkix.Name         // 证书主体
-	KeyType     string            // 密钥类型（rsa2048/rsa4096/ec256/ec384/ec521）
-	ValidDays   int               // 有效期（天）
-	IsCA        bool              // 是否为 CA 证书
-	PathLen     int               // CA 路径长度（仅 IsCA=true 时有效）
-	KeyUsage    x509.KeyUsage     // 密钥用途
+	CAUUID      string             // 签发 CA 的 UUID
+	Subject     pkix.Name          // 证书主体
+	KeyType     string             // 密钥类型（rsa2048/rsa4096/ec256/ec384/ec521）
+	ValidDays   int                // 有效期（天）
+	IsCA        bool               // 是否为 CA 证书
+	PathLen     int                // CA 路径长度（仅 IsCA=true 时有效）
+	KeyUsage    x509.KeyUsage      // 密钥用途
 	ExtKeyUsage []x509.ExtKeyUsage // 扩展密钥用途
-	DNSNames    []string          // SAN DNS 名称
-	IPAddresses []net.IP          // SAN IP 地址
-	EmailAddrs  []string          // SAN 邮箱
-	URIs        []string          // SAN URI （写入证书的 Subject Alternative Name - uniformResourceIdentifier）
-	PolicyOIDs  []string          // 证书策略 OID 列表（Certificate Policies 扩展，与 EVPolicyOID 合并写入）
+	DNSNames    []string           // SAN DNS 名称
+	IPAddresses []net.IP           // SAN IP 地址
+	EmailAddrs  []string           // SAN 邮箱
+	URIs        []string           // SAN URI （写入证书的 Subject Alternative Name - uniformResourceIdentifier）
+	PolicyOIDs  []string           // 证书策略 OID 列表（Certificate Policies 扩展，与 EVPolicyOID 合并写入）
 
 	// 模板约束（可选，签发前验证）
 	IssuanceTmplUUID string // 颁发模板 UUID（用于约束验证）
 
 	// 证书拓展模板（可选，签发时写入扩展）
-	CRLDistPoints  []string // CRL 分发点
-	OCSPServers    []string // OCSP 服务器
-	AIAIssuers     []string // AIA 颁发者
-	CTServers      []string // CT 服务器
-	EVPolicyOID    string   // EV 策略 OID
+	CRLDistPoints []string // CRL 分发点
+	OCSPServers   []string // OCSP 服务器
+	AIAIssuers    []string // AIA 颁发者
+	CTServers     []string // CT 服务器
+	EVPolicyOID   string   // EV 策略 OID
 
 	// Netscape 扩展（对应 CertExtTemplate.NetscapeConfig）。
 	// JSON 形如 {"cert_type":176,"comment":"Issued by XCA","base_url":"https://ca.example.com"}。
@@ -365,6 +365,7 @@ func (s *Service) CreateSelfSignedCA(ctx context.Context, name string, subject p
 //   - ec256 / ec384 / ec521：NIST 椭圆曲线
 //   - sm2 / sm2p256v1：国密 SM2（需 `-tags gmsm` 构建以启用真实实现，
 //     否则返回明确错误提示）
+//
 // generateKey 根据 keyType 生成私钥。
 // 支持的 keyType：
 //   - RSA：rsa1024, rsa2048, rsa3072, rsa4096, rsa8192

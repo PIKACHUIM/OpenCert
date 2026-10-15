@@ -4,8 +4,10 @@ package revocation
 import (
 	"context"
 	"crypto"
+	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -13,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-	"golang.org/x/crypto/ocsp"
 	"github.com/globaltrusts/server-card/internal/ca"
 	"github.com/globaltrusts/server-card/internal/storage"
+	"github.com/google/uuid"
+	"golang.org/x/crypto/ocsp"
 )
 
 // ServiceConfig 是吊销服务配置模型。
@@ -51,6 +53,16 @@ type Service struct {
 	crlCacheMu   sync.RWMutex
 	schedulers   map[string]*crlScheduler // caUUID -> 独立调度器
 	schedulersMu sync.Mutex
+	signerLoader SignerLoader // OCSP 响应服务使用平台证书签名时的加载器
+}
+
+// parseCertPEM 解析 PEM 证书。
+func parseCertPEM(certPEM string) (*x509.Certificate, error) {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		return nil, fmt.Errorf("证书 PEM 格式错误")
+	}
+	return x509.ParseCertificate(block.Bytes)
 }
 
 // NewService 创建吊销服务。
@@ -187,10 +199,10 @@ func (s *Service) GetCAIssuerCert(ctx context.Context, caUUID string) (string, e
 
 // StartCRLRefreshLoop 启动 CRL 调度管理器。
 // 架构：
-//   1. 主循环每 60 秒扫描 revocation_services 表，同步各 CA 的独立调度器；
-//   2. 每个启用的 CRL 配置对应一个独立 goroutine，按自身 CRLInterval（分钟）刷新；
-//   3. 配置新增/删除/间隔变更时，对应调度器会被启动/停止/重建；
-//   4. 主 ctx 取消时，所有子调度器级联退出。
+//  1. 主循环每 60 秒扫描 revocation_services 表，同步各 CA 的独立调度器；
+//  2. 每个启用的 CRL 配置对应一个独立 goroutine，按自身 CRLInterval（分钟）刷新；
+//  3. 配置新增/删除/间隔变更时，对应调度器会被启动/停止/重建；
+//  4. 主 ctx 取消时，所有子调度器级联退出。
 func (s *Service) StartCRLRefreshLoop(ctx context.Context) {
 	go func() {
 		// 启动立即同步一次

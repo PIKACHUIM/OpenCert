@@ -3,11 +3,11 @@
 // 这是三组件 E2E 联调链路在服务端侧的端到端验证：模拟 client-card 经
 // HTTP 上送 attestation 到 servers，验证服务端 EK 校验策略：
 //
-//   1. 高安全等级 + 缺 attestation        → 拒绝
-//   2. 高安全等级 + 软件 EK              → 拒绝
-//   3. 高安全等级 + 真实 EK 证书 + 厂商根 → 通过
-//   4. 中/低安全等级 + 软件 EK             → 通过
-//   5. nonce 不一致                       → 拒绝（防重放）
+//  1. 高安全等级 + 缺 attestation        → 拒绝
+//  2. 高安全等级 + 软件 EK              → 拒绝
+//  3. 高安全等级 + 真实 EK 证书 + 厂商根 → 通过
+//  4. 中/低安全等级 + 软件 EK             → 通过
+//  5. nonce 不一致                       → 拒绝（防重放）
 package test
 
 import (
@@ -27,22 +27,24 @@ import (
 )
 
 // setupCardSvc 构造一个带 EK 信任库的 cardSvc，并预置一个用户。
-func setupCardSvc(t *testing.T) (*card.Service, string, []byte, func()) {
+// 数据库生命周期由 setupServerDB 的 t.Cleanup 管理，调用方无需清理。
+func setupCardSvc(t *testing.T) (*card.Service, string, []byte) {
 	t.Helper()
-	db, cleanup := setupServerDB(t)
+	db := setupServerDB(t)
 
 	userRepo := storage.NewUserRepo(db)
 	cardRepo := storage.NewCardRepo(db)
 	certRepo := storage.NewCertRepo(db)
 
+	// servers 的 users 表 username 有 UNIQUE 约束且无 user_type 概念
 	user := &storage.User{
-		UserType:    storage.UserTypeLocal,
+		Username:    "ek-test-user",
 		DisplayName: "EK 测试用户",
 		Email:       "ek@test.com",
+		Role:        "user",
 		Enabled:     true,
 	}
 	if err := userRepo.Create(context.Background(), user); err != nil {
-		cleanup()
 		t.Fatal(err)
 	}
 
@@ -51,11 +53,10 @@ func setupCardSvc(t *testing.T) (*card.Service, string, []byte, func()) {
 
 	svc := card.NewService(cardRepo, certRepo, testMasterKey)
 	if err := svc.EKTrust().RegisterEKTrustRoot(rootDER); err != nil {
-		cleanup()
 		t.Fatal(err)
 	}
 
-	return svc, user.UUID, rootDER, cleanup
+	return svc, user.UUID, rootDER
 }
 
 // makeTestRootCert 生成一个自签名 ECDSA 证书 DER（同时充当厂商根与 EK 证书）。
@@ -108,8 +109,7 @@ func makeAtt(t *testing.T, nonce, keyFP string, withCert bool, software bool, ek
 
 func TestE2E_CreateCard_HighSecurity_MissingAttestation(t *testing.T) {
 	t.Parallel()
-	svc, userUUID, _, cleanup := setupCardSvc(t)
-	defer cleanup()
+	svc, userUUID, _ := setupCardSvc(t)
 
 	_, err := svc.CreateCard(context.Background(), &card.CreateCardRequest{
 		UserUUID:      userUUID,
@@ -129,8 +129,7 @@ func TestE2E_CreateCard_HighSecurity_MissingAttestation(t *testing.T) {
 
 func TestE2E_CreateCard_HighSecurity_RejectsSoftwareEK(t *testing.T) {
 	t.Parallel()
-	svc, userUUID, _, cleanup := setupCardSvc(t)
-	defer cleanup()
+	svc, userUUID, _ := setupCardSvc(t)
 
 	att := makeAtt(t, "nonce-A", "keyfp-1", false, true, nil) // 软件 EK
 	_, err := svc.CreateCard(context.Background(), &card.CreateCardRequest{
@@ -152,8 +151,7 @@ func TestE2E_CreateCard_HighSecurity_RejectsSoftwareEK(t *testing.T) {
 
 func TestE2E_CreateCard_HighSecurity_AcceptValidEK(t *testing.T) {
 	t.Parallel()
-	svc, userUUID, rootDER, cleanup := setupCardSvc(t)
-	defer cleanup()
+	svc, userUUID, rootDER := setupCardSvc(t)
 
 	// 自签名同时充当厂商根与 EK 证书
 	att := makeAtt(t, "nonce-B", "keyfp-2", true, false, rootDER)
@@ -179,8 +177,7 @@ func TestE2E_CreateCard_HighSecurity_AcceptValidEK(t *testing.T) {
 
 func TestE2E_CreateCard_MediumSecurity_AcceptsSoftwareEK(t *testing.T) {
 	t.Parallel()
-	svc, userUUID, _, cleanup := setupCardSvc(t)
-	defer cleanup()
+	svc, userUUID, _ := setupCardSvc(t)
 
 	att := makeAtt(t, "nonce-C", "keyfp-3", false, true, nil)
 	c, err := svc.CreateCard(context.Background(), &card.CreateCardRequest{
@@ -203,8 +200,7 @@ func TestE2E_CreateCard_MediumSecurity_AcceptsSoftwareEK(t *testing.T) {
 
 func TestE2E_CreateCard_LowSecurity_NoAttestationRequired(t *testing.T) {
 	t.Parallel()
-	svc, userUUID, _, cleanup := setupCardSvc(t)
-	defer cleanup()
+	svc, userUUID, _ := setupCardSvc(t)
 
 	c, err := svc.CreateCard(context.Background(), &card.CreateCardRequest{
 		UserUUID:      userUUID,
@@ -227,8 +223,7 @@ func TestE2E_CreateCard_LowSecurity_NoAttestationRequired(t *testing.T) {
 
 func TestE2E_CreateCard_HighSecurity_NonceReplayBlocked(t *testing.T) {
 	t.Parallel()
-	svc, userUUID, rootDER, cleanup := setupCardSvc(t)
-	defer cleanup()
+	svc, userUUID, rootDER := setupCardSvc(t)
 
 	// attestation 内 nonce 与 server 期望不一致 → 应拒绝
 	att := makeAtt(t, "nonce-OLD", "keyfp", true, false, rootDER)
@@ -251,12 +246,11 @@ func TestE2E_CreateCard_HighSecurity_NonceReplayBlocked(t *testing.T) {
 
 func TestE2E_CreateCard_HighSecurity_NoTrustRoot(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	userRepo := storage.NewUserRepo(db)
 	user := &storage.User{
-		UserType: storage.UserTypeLocal, DisplayName: "u", Email: "u@t", Enabled: true,
+		Username: "u-no-trust", DisplayName: "u", Email: "u@t", Role: "user", Enabled: true,
 	}
 	userRepo.Create(context.Background(), user)
 

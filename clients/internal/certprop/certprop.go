@@ -25,12 +25,12 @@ type PropagateResult struct {
 
 // SyncResult 是一次完整同步的结果。
 type SyncResult struct {
-	Added   int                `json:"added"`
-	Updated int                `json:"updated"`
-	Removed int                `json:"removed"`
-	Skipped int                `json:"skipped"`
-	Errors  int                `json:"errors"`
-	Details []PropagateResult  `json:"details,omitempty"`
+	Added   int               `json:"added"`
+	Updated int               `json:"updated"`
+	Removed int               `json:"removed"`
+	Skipped int               `json:"skipped"`
+	Errors  int               `json:"errors"`
+	Details []PropagateResult `json:"details,omitempty"`
 }
 
 // CertInfo 是传递给平台实现的证书信息。

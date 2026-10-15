@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"golang.org/x/crypto/sha3"
+	"software.sslmate.com/src/go-pkcs12"
 
 	"github.com/globaltrusts/server-card/internal/storage"
 )
@@ -425,31 +426,91 @@ func (s *Service) Decrypt(ctx context.Context, certUUID, cardUUID, userUUID, mec
 	}
 }
 
-// ExportAsPKCS12 将证书和私钥导出为 PEM 格式的组合数据。
-// 注意：当前版本不支持 PKCS12 打包，返回 PEM 格式的私钥+证书。
-// 如需 PKCS12 支持，请添加 software.sslmate.com/src/go-pkcs12 依赖。
-func (s *Service) ExportAsPKCS12(ctx context.Context, cert *storage.Certificate, password string) ([]byte, error) {
-	// 解密私钥
+// ExportPKCS12 将证书、私钥与可选证书链打包为真正的 PKCS#12（PFX）。
+//
+// 早期实现返回的是"私钥 PEM + 证书 PEM"拼接，却被标注为 .p12，
+// 使用标准库解析必然失败；此处改为真实 PFX 编码。
+// 导出私钥属敏感操作，因此不接受空口令。
+func (s *Service) ExportPKCS12(ctx context.Context, cert *storage.Certificate, password string, caPEMs []string) ([]byte, error) {
+	if len(password) < 8 {
+		return nil, fmt.Errorf("导出 PKCS#12 需提供至少 8 位保护口令")
+	}
+	if len(cert.PrivateData) == 0 {
+		return nil, fmt.Errorf("证书没有关联的私钥")
+	}
+
 	privDER, err := decryptWithMasterKey(s.masterKey, cert.PrivateData)
 	if err != nil {
 		return nil, fmt.Errorf("解密私钥失败: %w", err)
 	}
+	privKey, err := parsePrivateKey(privDER)
+	if err != nil {
+		return nil, fmt.Errorf("解析私钥失败: %w", err)
+	}
 
-	// 将私钥编码为 PEM
-	privPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PRIVATE KEY",
-		Bytes: privDER,
-	})
+	leaf, err := x509.ParseCertificate(cert.CertContent)
+	if err != nil {
+		return nil, fmt.Errorf("解析证书失败: %w", err)
+	}
 
-	// 将证书编码为 PEM
-	certPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: cert.CertContent,
-	})
+	chain := make([]*x509.Certificate, 0, len(caPEMs))
+	for _, pemStr := range caPEMs {
+		if pemStr == "" {
+			continue
+		}
+		block, _ := pem.Decode([]byte(pemStr))
+		if block == nil {
+			continue
+		}
+		if c, err := x509.ParseCertificate(block.Bytes); err == nil {
+			chain = append(chain, c)
+		}
+	}
 
-	// 组合输出
-	result := append(privPEM, certPEM...)
-	return result, nil
+	pfx, err := pkcs12.Modern.Encode(privKey, leaf, chain, password)
+	if err != nil {
+		return nil, fmt.Errorf("打包 PKCS#12 失败: %w", err)
+	}
+	return pfx, nil
+}
+
+// ExportAsPKCS12 兼容旧调用：打包 PFX，不额外附带证书链。
+func (s *Service) ExportAsPKCS12(ctx context.Context, cert *storage.Certificate, password string) ([]byte, error) {
+	return s.ExportPKCS12(ctx, cert, password, nil)
+}
+
+// ExportPrivateKeyPEM 解密并以 PKCS#8 PEM 形式返回私钥（供受控下发链路使用）。
+// 调用方必须已完成授权与审计，本方法只负责格式转换。
+func (s *Service) ExportPrivateKeyPEM(ctx context.Context, cert *storage.Certificate) (string, error) {
+	if len(cert.PrivateData) == 0 {
+		return "", fmt.Errorf("证书没有关联的私钥")
+	}
+	privDER, err := decryptWithMasterKey(s.masterKey, cert.PrivateData)
+	if err != nil {
+		return "", fmt.Errorf("解密私钥失败: %w", err)
+	}
+	block, err := privateKeyToPKCS8PEM(privDER)
+	if err != nil {
+		return "", err
+	}
+	return string(block), nil
+}
+
+// privateKeyToPKCS8PEM 把 DER 私钥统一转换为 PKCS#8 PEM。
+// 客户端与本项目其他组件都按 PKCS#8 解析，避免 PKCS#1/EC 混用导致导入失败。
+func privateKeyToPKCS8PEM(der []byte) ([]byte, error) {
+	if _, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
+	}
+	key, err := parsePrivateKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("解析私钥失败: %w", err)
+	}
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("序列化私钥失败: %w", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8}), nil
 }
 
 // DecryptPrivateKey 解密证书的私钥（供外部使用）。

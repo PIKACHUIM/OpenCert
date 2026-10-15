@@ -33,6 +33,8 @@ type CreateCardRequest struct {
 	PUK             string `json:"puk"`               // 初始 PUK（可选）
 	AdminKey        string `json:"admin_key"`         // Admin Key（可选）
 	PINRetries      int    `json:"pin_retries"`       // PIN 错误最大次数，默认 3
+	// OrderNo 销售模式下必填：已支付的云智能卡订单号
+	OrderNo string `json:"order_no,omitempty"`
 
 	// 高安全等级卡片所需字段
 	SlotType         string            `json:"slot_type,omitempty"`         // software/tpmv2/apple_t2/apple_se
@@ -50,6 +52,18 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.CardName == "" {
 		writeError(w, http.StatusBadRequest, "卡片名称不能为空")
+		return
+	}
+	// 生产环境要求 PIN 保护：无 PIN 的卡片任何人拿到账号 Token 即可远程签名
+	if len(req.PIN) < 6 {
+		writeError(w, http.StatusBadRequest, "请设置至少 6 位的 PIN")
+		return
+	}
+
+	// 业务模式鉴权：管理员不受限；普通用户按「自助/销售」模式校验
+	orderNo, err := s.authorizeCardCreation(r, claims, req.OrderNo)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 
@@ -71,6 +85,25 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// 销售模式：原子绑定订单，防止同一订单被并发超额开卡
+	if orderNo != "" {
+		limit := s.cardOrderLimit(r, orderNo)
+		ok, bindErr := storage.NewCardRepo(s.db).BindOrder(r.Context(), c.UUID, orderNo, limit)
+		if bindErr != nil || !ok {
+			s.cardSvc.DeleteCard(r.Context(), c.UUID, claims.UserUUID) //nolint:errcheck
+			writeError(w, http.StatusForbidden, "该订单可开卡数量已用完")
+			return
+		}
+		c.OrderNo = orderNo
+		s.markCardOrderFulfilled(r, orderNo, limit)
+	}
+
+	s.logRepo.Create(r.Context(), &storage.Log{ //nolint:errcheck
+		UserUUID: claims.UserUUID,
+		Action:   fmt.Sprintf("create_card:%s:%s", c.UUID, orderNo),
+		IPAddr:   r.RemoteAddr,
+	})
 	writeJSON(w, http.StatusCreated, c)
 }
 
@@ -89,6 +122,12 @@ func (s *Server) handleGetCard(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteCard(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
 	cardUUID := r.PathValue("uuid")
+
+	// 托管容器保存着用户已签发的下载型证书，删除会连带删除证书，禁止用户自行删除
+	if c, err := s.cardSvc.GetCard(r.Context(), cardUUID, claims.UserUUID); err == nil && c.IsHosting() {
+		writeError(w, http.StatusForbidden, "证书托管容器由系统维护，不能删除")
+		return
+	}
 
 	if err := s.cardSvc.DeleteCard(r.Context(), cardUUID, claims.UserUUID); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -520,11 +559,16 @@ func (s *Server) handleExportCert(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "证书没有关联的私钥")
 			return
 		}
+		// 私钥导出必须提供保护口令，避免生成无口令的 PFX
+		if len(password) < 8 {
+			writeError(w, http.StatusBadRequest, "导出 PKCS#12 需通过 password 参数提供至少 8 位保护口令")
+			return
+		}
 
-		// 解密私钥并打包为 PKCS12
+		// 解密私钥并打包为真正的 PKCS#12
 		pfxData, err := s.cardSvc.ExportAsPKCS12(r.Context(), cert, password)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "导出 PKCS12 失败: "+err.Error())
+			writeError(w, http.StatusBadRequest, "导出 PKCS#12 失败: "+err.Error())
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-pkcs12")

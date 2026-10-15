@@ -1,9 +1,9 @@
 // Package pki - gpgkey.go：OpenPGP V4 公钥与 SubjectPublicKeyInfo 互转，及 keyid/fingerprint。
 //
 // 设计目标：在不引入 golang.org/x/crypto/openpgp（已弃用）的前提下，提供：
-//   1) RFC 4880 §12.2 V4 公钥指纹（SHA-1 over 0x99 || len(2B) || pubkey packet body）
-//   2) 由 V4 fingerprint 派生的 64-bit keyid（fingerprint 末 8 字节）
-//   3) RSA / Ed25519 / ECDSA(P-256/384/521) 公钥的 OpenPGP 包体打包，足够生成正确指纹
+//  1. RFC 4880 §12.2 V4 公钥指纹（SHA-1 over 0x99 || len(2B) || pubkey packet body）
+//  2. 由 V4 fingerprint 派生的 64-bit keyid（fingerprint 末 8 字节）
+//  3. RSA / Ed25519 / ECDSA(P-256/384/521) 公钥的 OpenPGP 包体打包，足够生成正确指纹
 //
 // 注意：本实现仅覆盖"枚举所需"的属性映射，不进行 OpenPGP 签名/加密。
 // 完整 OpenPGP 操作请使用第三方库（如 protonmail/go-crypto）。
@@ -27,10 +27,11 @@ import (
 // GPGV4PacketBody 构建 OpenPGP V4 公钥包体（不含包头），用于派生 fingerprint。
 //
 // 报文体格式（RFC 4880 §5.5.2 V4）：
-//   1B    version=4
-//   4B    创建时间（Unix 秒，大端）
-//   1B    公钥算法 ID
-//   ...   算法相关 MPI 序列
+//
+//	1B    version=4
+//	4B    创建时间（Unix 秒，大端）
+//	1B    公钥算法 ID
+//	...   算法相关 MPI 序列
 func GPGV4PacketBody(pub interface{}, createdAt time.Time) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteByte(0x04)

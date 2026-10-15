@@ -39,17 +39,17 @@ type CreateOrderReq struct {
 
 // CreateOrderResp 是创建订单响应。
 type CreateOrderResp struct {
-	PayURL    string // 支付链接
-	QRCode    string // 二维码内容（可选）
-	TradeNo   string // 第三方交易号（可选）
+	PayURL  string // 支付链接
+	QRCode  string // 二维码内容（可选）
+	TradeNo string // 第三方交易号（可选）
 }
 
 // QueryOrderResp 是查询订单响应。
 type QueryOrderResp struct {
-	OrderNo  string
-	TradeNo  string
-	Status   string // paid/pending/failed/closed
-	PaidAt   string // 支付时间（ISO 8601）
+	OrderNo string
+	TradeNo string
+	Status  string // paid/pending/failed/closed
+	PaidAt  string // 支付时间（ISO 8601）
 }
 
 // CallbackData 是回调解析后的数据。
@@ -63,16 +63,16 @@ type CallbackData struct {
 
 // RefundReq 是退款请求。
 type RefundReq struct {
-	OrderNo       string
-	RefundNo      string // 退款单号
-	AmountCents   int64  // 退款金额（分）
-	Reason        string
+	OrderNo     string
+	RefundNo    string // 退款单号
+	AmountCents int64  // 退款金额（分）
+	Reason      string
 }
 
 // RefundResp 是退款响应。
 type RefundResp struct {
-	RefundNo  string
-	Status    string // success/pending/failed
+	RefundNo string
+	Status   string // success/pending/failed
 }
 
 // Registry 是支付插件注册中心。
@@ -93,6 +93,60 @@ func (r *Registry) Register(p PaymentProvider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.providers[p.Type()] = p
+}
+
+// Replace 以一组新的插件整体替换当前注册表（热更新时使用）。
+// 整体替换保证被停用或删除的插件立即下线，而不是残留在内存中继续收款。
+func (r *Registry) Replace(providers map[string]PaymentProvider) {
+	next := make(map[string]PaymentProvider, len(providers))
+	for k, v := range providers {
+		next[k] = v
+	}
+	r.mu.Lock()
+	r.providers = next
+	r.mu.Unlock()
+}
+
+// ---- 插件工厂（扩展点）----
+
+// ProviderFactory 根据解密后的 JSON 配置构造支付插件。
+type ProviderFactory func(rawConfig []byte) (PaymentProvider, error)
+
+var (
+	factoryMu sync.RWMutex
+	factories = map[string]ProviderFactory{}
+)
+
+// RegisterFactory 注册新的支付插件类型。
+//
+// 新渠道只需实现 PaymentProvider 接口，并在包初始化时调用：
+//
+//	func init() { payment.RegisterFactory("unionpay", NewUnionPayProvider) }
+//
+// 管理端创建 plugin_type=unionpay 的插件后即可热加载，无需改动收银台与回调代码。
+func RegisterFactory(pluginType string, f ProviderFactory) {
+	factoryMu.Lock()
+	defer factoryMu.Unlock()
+	factories[pluginType] = f
+}
+
+// lookupFactory 查找已注册的插件工厂。
+func lookupFactory(pluginType string) (ProviderFactory, bool) {
+	factoryMu.RLock()
+	defer factoryMu.RUnlock()
+	f, ok := factories[pluginType]
+	return f, ok
+}
+
+// SupportedTypes 返回可创建的插件类型（内置 + 已注册工厂）。
+func SupportedTypes() []string {
+	types := []string{"alipay", "wechat", "stripe", "paypal"}
+	factoryMu.RLock()
+	defer factoryMu.RUnlock()
+	for t := range factories {
+		types = append(types, t)
+	}
+	return types
 }
 
 // Get 获取指定类型的支付插件。

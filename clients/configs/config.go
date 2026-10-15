@@ -61,14 +61,14 @@ type TrayConfig struct {
 // 这些字段通过 GET/PUT /api/settings 暴露给 UI 进行动态调整，修改后写回 config.yaml。
 type ClientConfig struct {
 	// 通用
-	Language       string `yaml:"language"`         // zh-CN / en-US
-	Theme          string `yaml:"theme"`            // light / dark / system
-	CloseToTray    bool   `yaml:"close_to_tray"`    // 关闭窗口时最小化到托盘
+	Language    string `yaml:"language"`      // zh-CN / en-US
+	Theme       string `yaml:"theme"`         // light / dark / system
+	CloseToTray bool   `yaml:"close_to_tray"` // 关闭窗口时最小化到托盘
 	// 云端
-	DefaultCloudURL      string `yaml:"default_cloud_url"`       // 新增云端账号时默认填充
-	AllowInsecureCloud   bool   `yaml:"allow_insecure_cloud"`    // 是否允许 http://
-	AutoSync             bool   `yaml:"auto_sync"`               // 是否自动同步
-	SyncIntervalMinutes  int    `yaml:"sync_interval_minutes"`   // 自动同步间隔（分钟），默认 5
+	DefaultCloudURL     string `yaml:"default_cloud_url"`     // 新增云端账号时默认填充
+	AllowInsecureCloud  bool   `yaml:"allow_insecure_cloud"`  // 是否允许 http://
+	AutoSync            bool   `yaml:"auto_sync"`             // 是否自动同步
+	SyncIntervalMinutes int    `yaml:"sync_interval_minutes"` // 自动同步间隔（分钟），默认 5
 	// 集成
 	RegisterPKCS11Mock bool `yaml:"register_pkcs11_mock"` // 是否让 Electron 主进程把 pkcs11-mock 注册到系统
 	// 安全

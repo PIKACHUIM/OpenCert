@@ -125,14 +125,14 @@ func (s *Server) handleGenerateLoginTOTP(w http.ResponseWriter, r *http.Request)
 	otpauthURL := buildOTPAuthURL(issuer, user.Username, secret)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"secret":       secret,
-		"otpauth_url":  otpauthURL,
-		"issuer":       issuer,
-		"account":      user.Username,
-		"algorithm":    "SHA1",
-		"digits":       6,
-		"period":       30,
-		"expires_in":   int(pendingBindLifetime.Seconds()),
+		"secret":      secret,
+		"otpauth_url": otpauthURL,
+		"issuer":      issuer,
+		"account":     user.Username,
+		"algorithm":   "SHA1",
+		"digits":      6,
+		"period":      30,
+		"expires_in":  int(pendingBindLifetime.Seconds()),
 	})
 }
 

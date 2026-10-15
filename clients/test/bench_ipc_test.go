@@ -126,7 +126,7 @@ func BenchmarkIPCDigestSHA256(b *testing.B) {
 	var openData map[string]json.RawMessage
 	json.Unmarshal(openResp.Data, &openData)
 	var sid uint32
-	json.Unmarshal(openData["session_handle"], &sid)
+	json.Unmarshal(openData["session_id"], &sid)
 
 	data := make([]byte, 1024)
 	for i := range data {
@@ -168,7 +168,7 @@ func BenchmarkIPCGenerateRandom256(b *testing.B) {
 	var openData map[string]json.RawMessage
 	json.Unmarshal(openResp.Data, &openData)
 	var sid uint32
-	json.Unmarshal(openData["session_handle"], &sid)
+	json.Unmarshal(openData["session_id"], &sid)
 
 	payload, _ := json.Marshal(map[string]interface{}{
 		"session_id": sid,
@@ -200,70 +200,4 @@ func BenchmarkLocalSHA256Baseline(b *testing.B) {
 		_ = sha256.Sum256(data)
 	}
 	b.SetBytes(int64(len(data)))
-}
-
-// ---- benchmark 专用 helper（与 *testing.T 版本对应） ----
-
-func setupIPCServerB(b *testing.B) (string, func()) {
-	b.Helper()
-	t := &testingTBShim{TB: b}
-	return setupIPCServer(t)
-}
-
-func ipcConnB(b *testing.B, sockPath string) (interface {
-	SetDeadline(time interface{}) error
-	Close() error
-}, func()) {
-	b.Helper()
-	t := &testingTBShim{TB: b}
-	c, closeFn := ipcConn(t, sockPath)
-	return ipcConnAdapter{c}, closeFn
-}
-
-func ipcCallConnB(b *testing.B, conn interface{}, cmd ipc.CmdCode, payload []byte) *ipc.Frame {
-	b.Helper()
-	t := &testingTBShim{TB: b}
-	if a, ok := conn.(ipcConnAdapter); ok {
-		return ipcCallConn(t, a.real(), cmd, payload)
-	}
-	b.Fatalf("ipcCallConnB: 不支持的 conn 类型 %T", conn)
-	return nil
-}
-
-func mustParseRespB(b *testing.B, frame *ipc.Frame) *ipc.Response {
-	b.Helper()
-	resp, err := ipc.ParseResponse(frame.Payload)
-	if err != nil {
-		b.Fatalf("解析响应失败: %v", err)
-	}
-	return resp
-}
-
-func mustExtractUint32B(b *testing.B, data []byte, key string) uint32 {
-	b.Helper()
-	if len(data) == 0 {
-		return 0
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(data, &m); err != nil {
-		b.Fatalf("extractUint32: %v", err)
-	}
-	raw, ok := m[key]
-	if !ok {
-		return 0
-	}
-	var v uint32
-	if err := json.Unmarshal(raw, &v); err != nil {
-		b.Fatalf("extractUint32 %s: %v", key, err)
-	}
-	return v
-}
-
-func mustJSONB(b *testing.B, v interface{}) []byte {
-	b.Helper()
-	out, err := json.Marshal(v)
-	if err != nil {
-		b.Fatalf("json.Marshal: %v", err)
-	}
-	return out
 }

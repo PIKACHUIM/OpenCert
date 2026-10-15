@@ -4,10 +4,10 @@
 // 由于 DLL 是 C 代码、无法在 Go test 中直接装载，这里通过原生 IPC 协议帧
 // 模拟 driver 的所有发送/接收行为，验证：
 //
-//   1. C_DigestInit / C_Digest / C_DigestUpdate / C_DigestFinal （任务 2 新增）
-//   2. C_VerifyInit / C_Verify / C_VerifyUpdate / C_VerifyFinal （任务 2 新增）
-//   3. C_GenerateRandom / C_SeedRandom                          （任务 2 新增）
-//   4. 完整序列：Initialize → Login → GenerateKeyPair → Sign → Verify → Logout
+//  1. C_DigestInit / C_Digest / C_DigestUpdate / C_DigestFinal （任务 2 新增）
+//  2. C_VerifyInit / C_Verify / C_VerifyUpdate / C_VerifyFinal （任务 2 新增）
+//  3. C_GenerateRandom / C_SeedRandom                          （任务 2 新增）
+//  4. 完整序列：Initialize → Login → GenerateKeyPair → Sign → Verify → Logout
 //
 // 真实 DLL 联调请参考 Makefile 中的 e2e-driver 目标。
 package storage_test
@@ -25,9 +25,9 @@ import (
 
 // PKCS#11 mechanism 常量（与 handler_digest_verify_random.go 保持一致）。
 const (
-	testCkmSHA256        uint32 = 0x00000250
-	testCkmSHA1          uint32 = 0x00000220
-	testCkmECDSASHA256   uint32 = 0x00001044
+	testCkmSHA256      uint32 = 0x00000250
+	testCkmSHA1        uint32 = 0x00000220
+	testCkmECDSASHA256 uint32 = 0x00001044
 )
 
 // ---- E2E: Digest 系列 ----
@@ -49,7 +49,7 @@ func TestE2EDigestSingleShot(t *testing.T) {
 	if openResp.RV != uint32(pkcs11types.CKR_OK) {
 		t.Fatalf("OpenSession 失败: rv=0x%X", openResp.RV)
 	}
-	sessionHandle := extractUint32(t, openResp.Data, "session_handle")
+	sessionHandle := extractUint32(t, openResp.Data, "session_id")
 
 	// driver: C_DigestInit(SHA-256)
 	initPayload := jsonMust(map[string]interface{}{
@@ -100,7 +100,7 @@ func TestE2EDigestStream(t *testing.T) {
 	defer closeConn()
 
 	openFrame := ipcCallConn(t, conn, ipc.CmdOpenSession, []byte(`{"slot_id":1,"flags":4}`))
-	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_handle")
+	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_id")
 
 	// DigestInit
 	ipcCallConn(t, conn, ipc.CmdDigestInit, jsonMust(map[string]interface{}{
@@ -161,7 +161,7 @@ func TestE2EDigestStateGuard(t *testing.T) {
 	defer closeConn()
 
 	openFrame := ipcCallConn(t, conn, ipc.CmdOpenSession, []byte(`{"slot_id":1,"flags":4}`))
-	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_handle")
+	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_id")
 
 	// 未 DigestInit 直接 Digest
 	frame := ipcCallConn(t, conn, ipc.CmdDigest, jsonMust(map[string]interface{}{
@@ -187,7 +187,7 @@ func TestE2EDigestUnsupportedMechanism(t *testing.T) {
 	defer closeConn()
 
 	openFrame := ipcCallConn(t, conn, ipc.CmdOpenSession, []byte(`{"slot_id":1,"flags":4}`))
-	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_handle")
+	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_id")
 
 	frame := ipcCallConn(t, conn, ipc.CmdDigestInit, jsonMust(map[string]interface{}{
 		"session_id": sessionHandle,
@@ -214,7 +214,7 @@ func TestE2EGenerateRandom(t *testing.T) {
 	defer closeConn()
 
 	openFrame := ipcCallConn(t, conn, ipc.CmdOpenSession, []byte(`{"slot_id":1,"flags":4}`))
-	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_handle")
+	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_id")
 
 	// 1. 正常长度
 	for _, length := range []uint32{1, 16, 32, 256, 4096} {
@@ -260,7 +260,7 @@ func TestE2ESeedRandom(t *testing.T) {
 	defer closeConn()
 
 	openFrame := ipcCallConn(t, conn, ipc.CmdOpenSession, []byte(`{"slot_id":1,"flags":4}`))
-	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_handle")
+	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_id")
 
 	frame := ipcCallConn(t, conn, ipc.CmdSeedRandom, jsonMust(map[string]interface{}{
 		"session_id": sessionHandle,
@@ -286,7 +286,7 @@ func TestE2EVerifyInitMechanismCheck(t *testing.T) {
 	defer closeConn()
 
 	openFrame := ipcCallConn(t, conn, ipc.CmdOpenSession, []byte(`{"slot_id":1,"flags":4}`))
-	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_handle")
+	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_id")
 
 	// 未知机制
 	frame := ipcCallConn(t, conn, ipc.CmdVerifyInit, jsonMust(map[string]interface{}{
@@ -321,7 +321,7 @@ func TestE2EVerifyOperationActiveGuard(t *testing.T) {
 	defer closeConn()
 
 	openFrame := ipcCallConn(t, conn, ipc.CmdOpenSession, []byte(`{"slot_id":1,"flags":4}`))
-	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_handle")
+	sessionHandle := extractUint32(t, parseIPCResponse(t, openFrame).Data, "session_id")
 
 	frame := ipcCallConn(t, conn, ipc.CmdVerify, jsonMust(map[string]interface{}{
 		"session_id": sessionHandle,
@@ -350,13 +350,13 @@ func TestE2EDigestSessionIsolation(t *testing.T) {
 
 	// session 1
 	open1 := ipcCallConn(t, conn1, ipc.CmdOpenSession, []byte(`{"slot_id":1,"flags":4}`))
-	sid1 := extractUint32(t, parseIPCResponse(t, open1).Data, "session_handle")
+	sid1 := extractUint32(t, parseIPCResponse(t, open1).Data, "session_id")
 	// session 2
 	open2 := ipcCallConn(t, conn2, ipc.CmdOpenSession, []byte(`{"slot_id":1,"flags":4}`))
-	sid2 := extractUint32(t, parseIPCResponse(t, open2).Data, "session_handle")
+	sid2 := extractUint32(t, parseIPCResponse(t, open2).Data, "session_id")
 
 	if sid1 == sid2 {
-		t.Fatalf("两次 OpenSession 应得到不同 session_handle: %d == %d", sid1, sid2)
+		t.Fatalf("两次 OpenSession 应得到不同 session_id: %d == %d", sid1, sid2)
 	}
 
 	// session 1 init SHA-256，session 2 init SHA-1

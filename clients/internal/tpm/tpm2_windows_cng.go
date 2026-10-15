@@ -87,16 +87,16 @@ var (
 	ncryptDll = windows.NewLazySystemDLL("ncrypt.dll")
 	crypt32   = windows.NewLazySystemDLL("crypt32.dll")
 
-	procNCryptOpenStorageProvider  = ncryptDll.NewProc("NCryptOpenStorageProvider")
-	procNCryptCreatePersistedKey   = ncryptDll.NewProc("NCryptCreatePersistedKey")
-	procNCryptSetProperty          = ncryptDll.NewProc("NCryptSetProperty")
-	procNCryptFinalizeKey          = ncryptDll.NewProc("NCryptFinalizeKey")
-	procNCryptOpenKey              = ncryptDll.NewProc("NCryptOpenKey")
-	procNCryptSignHash             = ncryptDll.NewProc("NCryptSignHash")
-	procNCryptDecrypt              = ncryptDll.NewProc("NCryptDecrypt")
-	procNCryptDeleteKey            = ncryptDll.NewProc("NCryptDeleteKey")
-	procNCryptExportKey            = ncryptDll.NewProc("NCryptExportKey")
-	procNCryptFreeObject           = ncryptDll.NewProc("NCryptFreeObject")
+	procNCryptOpenStorageProvider = ncryptDll.NewProc("NCryptOpenStorageProvider")
+	procNCryptCreatePersistedKey  = ncryptDll.NewProc("NCryptCreatePersistedKey")
+	procNCryptSetProperty         = ncryptDll.NewProc("NCryptSetProperty")
+	procNCryptFinalizeKey         = ncryptDll.NewProc("NCryptFinalizeKey")
+	procNCryptOpenKey             = ncryptDll.NewProc("NCryptOpenKey")
+	procNCryptSignHash            = ncryptDll.NewProc("NCryptSignHash")
+	procNCryptDecrypt             = ncryptDll.NewProc("NCryptDecrypt")
+	procNCryptDeleteKey           = ncryptDll.NewProc("NCryptDeleteKey")
+	procNCryptExportKey           = ncryptDll.NewProc("NCryptExportKey")
+	procNCryptFreeObject          = ncryptDll.NewProc("NCryptFreeObject")
 
 	procCryptProtectData   = crypt32.NewProc("CryptProtectData")
 	procCryptUnprotectData = crypt32.NewProc("CryptUnprotectData")
@@ -111,10 +111,10 @@ type dataBlob struct {
 // cngProvider 是 Windows CNG 后端。
 type cngProvider struct {
 	mu        sync.Mutex
-	hProv     uintptr   // NCrypt provider handle
-	provName  string    // 实际使用的 provider 名
-	nvDir     string    // NV 文件目录
-	nextNVH   uint32    // NV handle 分配器
+	hProv     uintptr                  // NCrypt provider handle
+	provName  string                   // 实际使用的 provider 名
+	nvDir     string                   // NV 文件目录
+	nextNVH   uint32                   // NV handle 分配器
 	loaded    map[LoadedHandle]uintptr // loaded key handles
 	nextLoadH uint32
 }
@@ -338,9 +338,9 @@ func (p *cngProvider) recoverNextNVH() {
 // cngWrappedKey 是 CNG 后端的 WrappedKey.Private 内容（JSON）。
 // 不含真实私钥字节——只存 keyName，CNG 通过名称找到持久化密钥。
 type cngWrappedKey struct {
-	KeyName  string `json:"key_name"`  // NCrypt 容器名
+	KeyName  string `json:"key_name"` // NCrypt 容器名
 	Alg      KeyAlg `json:"alg"`
-	Provider string `json:"provider"`  // provider 名
+	Provider string `json:"provider"` // provider 名
 }
 
 func (p *cngProvider) CreateKey(alg KeyAlg, authValue []byte) (*WrappedKey, crypto.PublicKey, error) {

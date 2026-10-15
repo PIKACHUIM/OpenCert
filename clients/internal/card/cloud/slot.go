@@ -11,8 +11,10 @@ package cloud
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +33,10 @@ type Slot struct {
 	// 登录状态
 	loggedIn bool
 	userUUID string
+	// pinAuthorized 表示云卡 PIN 已授权（敏感操作所需）
+	pinAuthorized bool
+	// pendingTOTPSession 保存待完成二次验证的会话令牌
+	pendingTOTPSession string
 
 	// 证书对象缓存：handle -> Cert
 	objects    map[pkcs11types.ObjectHandle]*Cert
@@ -125,28 +131,60 @@ func (s *Slot) Mechanisms() []pkcs11types.MechanismType {
 	}
 }
 
-// Login 使用 PIN（格式：username:password）登录 servers。
-// PIN 格式：`username:password`，例如 `alice:mypassword`
+// Login 登录云端卡。
+//
+// 支持两种凭据形式，语义严格区分：
+//   - "username:password"：登录云端平台账号，用于建立账号会话（C_Login 传入的账号凭据）
+//   - 纯字符：作为**云卡 PIN** 校验，用于授权签名/解密等敏感操作
+//
+// 历史实现把两者混为一谈（C_Login 只做账号登录），导致云卡启用 PIN 后
+// 所有敏感操作必然返回 401；此处按上述规则修正。
 func (s *Slot) Login(ctx context.Context, userType pkcs11types.UserType, pin string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.loggedIn {
-		return fmt.Errorf("%w", pkcs11types.CKR_USER_ALREADY_LOGGED_IN)
+	if pin == "" {
+		return fmt.Errorf("%w: 请输入账号密码或云卡 PIN", pkcs11types.CKR_PIN_INCORRECT)
 	}
 
-	// 解析 PIN：username:password
+	// 形式一：账号凭据（含冒号）
+	if strings.Contains(pin, ":") {
+		if s.loggedIn {
+			return fmt.Errorf("%w", pkcs11types.CKR_USER_ALREADY_LOGGED_IN)
+		}
+		return s.loginAccountLocked(ctx, pin)
+	}
+
+	// 形式二：云卡 PIN
+	if err := s.ensureAccountSessionLocked(ctx); err != nil {
+		return err
+	}
+	if _, err := s.client.VerifyPIN(ctx, s.card.CloudCardUUID, pin); err != nil {
+		// PIN 错误会消耗重试次数，这里不做任何自动重试
+		return fmt.Errorf("%w: %v", pkcs11types.CKR_PIN_INCORRECT, err)
+	}
+	s.pinAuthorized = true
+	slog.Info("Cloud Slot 云卡 PIN 已授权", "card", s.card.CloudCardUUID)
+	return nil
+}
+
+// loginAccountLocked 使用账号密码登录云端平台并预加载证书。
+func (s *Slot) loginAccountLocked(ctx context.Context, pin string) error {
 	username, password, err := parsePIN(pin)
 	if err != nil {
 		return fmt.Errorf("%w: %v", pkcs11types.CKR_PIN_INCORRECT, err)
 	}
 
-	// 登录 servers
 	resp, err := s.client.Login(ctx, username, password)
 	if err != nil {
 		if IsNetworkError(err) {
 			s.networkAvail = false
 			slog.Warn("Cloud Slot 网络不可用，登录失败", "error", err)
+		}
+		// 账号启用 TOTP 时保留会话令牌，交由上层界面完成二次验证
+		if errors.Is(err, ErrTOTPRequired) {
+			s.pendingTOTPSession = resp.SessionToken
+			return fmt.Errorf("%w: 该账号已启用动态验证码，请在客户端完成二次验证", pkcs11types.CKR_USER_NOT_LOGGED_IN)
 		}
 		return fmt.Errorf("%w: %v", pkcs11types.CKR_PIN_INCORRECT, err)
 	}
@@ -158,7 +196,6 @@ func (s *Slot) Login(ctx context.Context, userType pkcs11types.UserType, pin str
 	// 预加载证书列表
 	if err := s.loadObjects(ctx); err != nil {
 		slog.Warn("Cloud Slot 加载证书失败，尝试使用缓存", "error", err)
-		// 加载失败时尝试使用离线缓存
 		if len(s.cachedCerts) > 0 {
 			s.loadFromCache()
 			slog.Info("Cloud Slot 使用离线缓存", "count", len(s.cachedCerts))
@@ -168,18 +205,85 @@ func (s *Slot) Login(ctx context.Context, userType pkcs11types.UserType, pin str
 			return fmt.Errorf("加载云端证书失败且无缓存: %w", err)
 		}
 	}
-
 	return nil
 }
 
-// Logout 注销，清除 Token 和缓存。
+// ensureAccountSessionLocked 确保存在可用的账号会话。
+//
+// 本地不再单独保存账号 Token（账号凭据由本地用户记录管理），
+// 因此这里只复用当前会话：有效则直接通过，临近过期则刷新，否则要求先登录账号。
+func (s *Slot) ensureAccountSessionLocked(ctx context.Context) error {
+	if s.loggedIn && !s.client.IsTokenExpired() {
+		return nil
+	}
+	if s.loggedIn {
+		if _, err := s.client.Refresh(ctx); err == nil {
+			s.networkAvail = true
+			return nil
+		}
+		s.loggedIn = false
+	}
+	return fmt.Errorf("%w: 请先用账号密码登录（PIN 形式 username:password）", pkcs11types.CKR_USER_NOT_LOGGED_IN)
+}
+
+// CompleteTOTP 完成账号二次验证（由客户端界面调用）。
+// 验证成功后会建立账号会话并预加载证书。
+func (s *Slot) CompleteTOTP(ctx context.Context, code string) error {
+	s.mu.Lock()
+	session := s.pendingTOTPSession
+	s.mu.Unlock()
+
+	if session == "" {
+		return fmt.Errorf("当前没有待完成的二次验证")
+	}
+
+	resp, err := s.client.VerifyTOTP(ctx, session, code)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingTOTPSession = ""
+	s.userUUID = resp.UserUUID
+	s.loggedIn = true
+	s.networkAvail = true
+
+	if err := s.loadObjects(ctx); err != nil {
+		slog.Warn("Cloud Slot 二次验证后加载证书失败", "error", err)
+		if len(s.cachedCerts) > 0 {
+			s.loadFromCache()
+		}
+	}
+	return nil
+}
+
+// NeedsTOTP 返回是否存在待完成的二次验证。
+func (s *Slot) NeedsTOTP() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pendingTOTPSession != ""
+}
+
+// IsPINAuthorized 返回云卡 PIN 是否已授权。
+func (s *Slot) IsPINAuthorized() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pinAuthorized
+}
+
+// Logout 注销，清除 Token、云卡 PIN 会话与缓存。
 func (s *Slot) Logout(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.client.SetToken("")
+	// 账号登出时必须一并清除卡 PIN 会话，避免残留授权被后续使用者复用
+	s.client.ClearPINSession("")
 	s.loggedIn = false
 	s.userUUID = ""
+	s.pinAuthorized = false
+	s.pendingTOTPSession = ""
 	s.objects = make(map[pkcs11types.ObjectHandle]*Cert)
 	s.nextHandle = 1
 	return nil
@@ -258,6 +362,14 @@ func (s *Slot) Sign(ctx context.Context, handle pkcs11types.ObjectHandle, mechan
 			s.mu.Unlock()
 			return nil, pkcs11types.CKR_DEVICE_REMOVED
 		}
+		// 服务端要求云卡 PIN 而本地无有效授权：返回 PIN 相关错误，
+		// 由应用提示用户输入 PIN，而不是当作未知故障
+		if errors.Is(err, ErrPINRequired) {
+			s.mu.Lock()
+			s.pinAuthorized = false
+			s.mu.Unlock()
+			return nil, fmt.Errorf("%w: %v", pkcs11types.CKR_PIN_INCORRECT, err)
+		}
 		return nil, err
 	}
 
@@ -296,6 +408,12 @@ func (s *Slot) Decrypt(ctx context.Context, handle pkcs11types.ObjectHandle, mec
 			s.networkAvail = false
 			s.mu.Unlock()
 			return nil, pkcs11types.CKR_DEVICE_REMOVED
+		}
+		if errors.Is(err, ErrPINRequired) {
+			s.mu.Lock()
+			s.pinAuthorized = false
+			s.mu.Unlock()
+			return nil, fmt.Errorf("%w: %v", pkcs11types.CKR_PIN_INCORRECT, err)
 		}
 		return nil, err
 	}

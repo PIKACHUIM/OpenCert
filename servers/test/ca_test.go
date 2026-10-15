@@ -3,6 +3,7 @@ package test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,23 +11,28 @@ import (
 	"github.com/globaltrusts/server-card/internal/storage"
 )
 
-// setupServerDB 创建内存 SQLite 测试数据库。
-func setupServerDB(t *testing.T) (*storage.DB, func()) {
+// setupServerDB 创建临时文件 SQLite 测试数据库。
+// 数据库通过 t.Cleanup 关闭（而不是返回的清理函数），确保父测试中所有
+// t.Parallel() 子测试全部结束后才释放连接，否则子测试会命中
+// "sql: database is closed"。
+// 另外不使用 ":memory:"：在 database/sql 连接池下每个连接都是独立的内存库，
+// 并行子测试会因取到新连接而报 "no such table"。
+func setupServerDB(t *testing.T) *storage.DB {
 	t.Helper()
-	db, err := storage.Open(":memory:", "")
+	db, err := storage.Open(filepath.Join(t.TempDir(), "server-test.db"), "")
 	if err != nil {
-		t.Fatalf("打开内存数据库失败: %v", err)
+		t.Fatalf("打开测试数据库失败: %v", err)
 	}
-	return db, func() { db.Close() }
+	t.Cleanup(func() { db.Close() })
+	return db
 }
 
-// testMasterKey 是测试用主密钥（32 字节）。
-var testMasterKey = []byte("test-master-key-32bytes-padding!!")
+// testMasterKey 是测试用主密钥（AES-256 要求恰好 32 字节）。
+var testMasterKey = []byte("test-master-key-32bytes-padding!")
 
 func TestCACreate(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := ca.NewService(db, testMasterKey)
 	ctx := context.Background()
@@ -79,8 +85,7 @@ func TestCACreate(t *testing.T) {
 
 func TestCAGetByUUID(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := ca.NewService(db, testMasterKey)
 	ctx := context.Background()
@@ -115,8 +120,7 @@ func TestCAGetByUUID(t *testing.T) {
 
 func TestCAList(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := ca.NewService(db, testMasterKey)
 	ctx := context.Background()
@@ -146,8 +150,7 @@ func TestCAList(t *testing.T) {
 
 func TestCAUpdate(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := ca.NewService(db, testMasterKey)
 	ctx := context.Background()
@@ -175,8 +178,7 @@ func TestCAUpdate(t *testing.T) {
 
 func TestCADelete(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := ca.NewService(db, testMasterKey)
 	ctx := context.Background()
@@ -205,8 +207,7 @@ func TestCADelete(t *testing.T) {
 
 func TestCARevokeCert(t *testing.T) {
 	t.Parallel()
-	db, cleanup := setupServerDB(t)
-	defer cleanup()
+	db := setupServerDB(t)
 
 	svc := ca.NewService(db, testMasterKey)
 	ctx := context.Background()

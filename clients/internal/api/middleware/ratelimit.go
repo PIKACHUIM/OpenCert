@@ -18,10 +18,10 @@ type RateLimiter struct {
 }
 
 type bucket struct {
-	tokens    float64
-	lastTime  time.Time
-	rate      float64 // 每秒补充的 token 数
-	burst     float64
+	tokens   float64
+	lastTime time.Time
+	rate     float64 // 每秒补充的 token 数
+	burst    float64
 }
 
 // NewRateLimiter 创建速率限制器。

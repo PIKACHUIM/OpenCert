@@ -18,15 +18,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/globaltrusts/server-card/internal/ca"
 	"github.com/globaltrusts/server-card/internal/storage"
+	"github.com/google/uuid"
 )
 
 // Config 是 ACME 服务实例配置。
 type Config struct {
 	UUID             string `json:"uuid"`
-	Path             string `json:"path"`              // 路径前缀（如 "letsencrypt"）
+	Path             string `json:"path"`               // 路径前缀（如 "letsencrypt"）
 	CAUUID           string `json:"ca_uuid"`            // 关联的 CA
 	IssuanceTmplUUID string `json:"issuance_tmpl_uuid"` // 关联的颁发模板
 	Enabled          bool   `json:"enabled"`
@@ -45,38 +45,38 @@ type Account struct {
 
 // Order 是 ACME 订单。
 type Order struct {
-	UUID           string     `json:"uuid"`
-	AccountUUID    string     `json:"account_uuid"`
-	Status         string     `json:"status"` // pending/ready/processing/valid/invalid
-	Identifiers    string     `json:"identifiers"` // JSON 数组 [{"type":"dns","value":"example.com"}]
-	NotBefore      *time.Time `json:"not_before,omitempty"`
-	NotAfter       *time.Time `json:"not_after,omitempty"`
-	CertURL        string     `json:"cert_url,omitempty"`
-	FinalizeURL    string     `json:"finalize_url"`
-	Expires        time.Time  `json:"expires"`
-	CreatedAt      time.Time  `json:"created_at"`
+	UUID        string     `json:"uuid"`
+	AccountUUID string     `json:"account_uuid"`
+	Status      string     `json:"status"`      // pending/ready/processing/valid/invalid
+	Identifiers string     `json:"identifiers"` // JSON 数组 [{"type":"dns","value":"example.com"}]
+	NotBefore   *time.Time `json:"not_before,omitempty"`
+	NotAfter    *time.Time `json:"not_after,omitempty"`
+	CertURL     string     `json:"cert_url,omitempty"`
+	FinalizeURL string     `json:"finalize_url"`
+	Expires     time.Time  `json:"expires"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 // Authorization 是 ACME 授权。
 type Authorization struct {
-	UUID        string    `json:"uuid"`
-	OrderUUID   string    `json:"order_uuid"`
-	Identifier  string    `json:"identifier"` // JSON {"type":"dns","value":"example.com"}
-	Status      string    `json:"status"`     // pending/valid/invalid/deactivated/expired/revoked
-	Expires     time.Time `json:"expires"`
-	CreatedAt   time.Time `json:"created_at"`
+	UUID       string    `json:"uuid"`
+	OrderUUID  string    `json:"order_uuid"`
+	Identifier string    `json:"identifier"` // JSON {"type":"dns","value":"example.com"}
+	Status     string    `json:"status"`     // pending/valid/invalid/deactivated/expired/revoked
+	Expires    time.Time `json:"expires"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // Challenge 是 ACME 挑战。
 type Challenge struct {
-	UUID          string     `json:"uuid"`
-	AuthzUUID     string     `json:"authz_uuid"`
-	Type          string     `json:"type"`   // http-01/dns-01
-	Token         string     `json:"token"`
-	Status        string     `json:"status"` // pending/processing/valid/invalid
-	ValidatedAt   *time.Time `json:"validated_at,omitempty"`
-	ErrorJSON     string     `json:"error,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	UUID        string     `json:"uuid"`
+	AuthzUUID   string     `json:"authz_uuid"`
+	Type        string     `json:"type"` // http-01/dns-01
+	Token       string     `json:"token"`
+	Status      string     `json:"status"` // pending/processing/valid/invalid
+	ValidatedAt *time.Time `json:"validated_at,omitempty"`
+	ErrorJSON   string     `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 // Service 是 ACME 服务。

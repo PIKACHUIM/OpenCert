@@ -132,7 +132,11 @@ func TestCloudSlotLogin(t *testing.T) {
 		CloudCardUUID: "cloud-card-001",
 	}
 
-	slot := cloud.New(pkcs11types.SlotID(100), card)
+	// Mock 服务器使用 http://，测试场景显式允许非 HTTPS 连接
+	slot, err := cloud.New(pkcs11types.SlotID(100), card, true)
+	if err != nil {
+		t.Fatalf("创建 Cloud Slot 失败: %v", err)
+	}
 
 	// 错误密码应该失败
 	if err := slot.Login(ctx, pkcs11types.CKU_USER, "testuser:wrongpass"); err == nil {
@@ -180,7 +184,10 @@ func TestCloudSlotFindObjects(t *testing.T) {
 		CloudCardUUID: "cloud-card-001",
 	}
 
-	slot := cloud.New(pkcs11types.SlotID(101), card)
+	slot, err := cloud.New(pkcs11types.SlotID(101), card, true)
+	if err != nil {
+		t.Fatalf("创建 Cloud Slot 失败: %v", err)
+	}
 	if err := slot.Login(ctx, pkcs11types.CKU_USER, "testuser:testpass"); err != nil {
 		t.Fatalf("登录失败: %v", err)
 	}
@@ -227,7 +234,10 @@ func TestCloudSlotSign(t *testing.T) {
 		CloudCardUUID: "cloud-card-001",
 	}
 
-	slot := cloud.New(pkcs11types.SlotID(102), card)
+	slot, err := cloud.New(pkcs11types.SlotID(102), card, true)
+	if err != nil {
+		t.Fatalf("创建 Cloud Slot 失败: %v", err)
+	}
 	if err := slot.Login(ctx, pkcs11types.CKU_USER, "testuser:testpass"); err != nil {
 		t.Fatalf("登录失败: %v", err)
 	}
@@ -264,7 +274,10 @@ func TestCloudSlotTokenInfo(t *testing.T) {
 		CloudCardUUID: "cloud-card-001",
 	}
 
-	slot := cloud.New(pkcs11types.SlotID(103), card)
+	slot, err := cloud.New(pkcs11types.SlotID(103), card, true)
+	if err != nil {
+		t.Fatalf("创建 Cloud Slot 失败: %v", err)
+	}
 
 	info := slot.TokenInfo()
 	if info.Label == "" {

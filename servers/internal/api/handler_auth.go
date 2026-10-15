@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,12 +20,51 @@ import (
 
 // ---- 认证处理器 ----
 
+// protocolPathPrefixes 是必须由后端处理、不允许回退到前端页面的路径前缀。
+var protocolPathPrefixes = []string{"/api/", "/crl/", "/ocsp/", "/ca/", "/pki/", "/acme/", "/ct/", "/policy/"}
+
+// handlePortal 提供门户与控制台前端资源（SPA）。
+//
+// 行为约定：
+//   - 命中真实静态文件（如 /assets/xxx.js）直接返回；
+//   - 其余前端路由回退 index.html，支持刷新深链接；
+//   - API 与 PKI 协议路径不回退，避免把接口 404 变成 HTML 响应。
 func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, "web/index.html")
+
+	path := r.URL.Path
+	for _, prefix := range protocolPathPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			writeError(w, http.StatusNotFound, "接口不存在")
+			return
+		}
+	}
+
+	root := s.cfg.ResolveWebRoot()
+
+	// 1) 直接命中静态文件
+	if path != "/" {
+		clean := filepath.Clean(strings.TrimPrefix(path, "/"))
+		if clean != "." && !strings.HasPrefix(clean, "..") && !filepath.IsAbs(clean) {
+			full := filepath.Join(root, clean)
+			if info, err := os.Stat(full); err == nil && !info.IsDir() {
+				http.ServeFile(w, r, full)
+				return
+			}
+		}
+	}
+
+	// 2) SPA 回退到入口页
+	index := filepath.Join(root, "index.html")
+	if _, err := os.Stat(index); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "前端资源未部署，请将前端构建产物放入 "+root)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeFile(w, r, index)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

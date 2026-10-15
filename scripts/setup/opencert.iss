@@ -32,16 +32,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "{#PkgDir}\client\client-card.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 ; Native client binary
 Source: "{#PkgDir}\native\native-client.exe"; DestDir: "{app}"; Flags: ignoreversion
-; Desktop (Electron unpacked) — productName from package.json is "OpenCert Manager"
-Source: "{#PkgDir}\desktop\*"; DestDir: "{app}\desktop"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Desktop（Go + Wails 客户端，单文件可执行程序）
+Source: "{#PkgDir}\desktop\OpenCertManager.exe"; DestDir: "{app}\desktop"; Flags: ignoreversion
 ; Drivers — preserve setup/ + build/ sibling structure (installer_all.bat uses %SCRIPT_DIR%..\build)
 Source: "{#PkgDir}\drivers\build\*"; DestDir: "{app}\drivers\build"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PkgDir}\drivers\setup\*"; DestDir: "{app}\drivers\setup"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{commondesktop}\OpenCert Manager"; Filename: "{app}\desktop\OpenCert Manager.exe"
+Name: "{commondesktop}\OpenCert Manager"; Filename: "{app}\desktop\OpenCertManager.exe"
 Name: "{commondesktop}\OpenCert Native"; Filename: "{app}\native-client.exe"
-Name: "{commonstartmenu}\{#AppName}\OpenCert Manager"; Filename: "{app}\desktop\OpenCert Manager.exe"
+Name: "{commonstartmenu}\{#AppName}\OpenCert Manager"; Filename: "{app}\desktop\OpenCertManager.exe"
 Name: "{commonstartmenu}\{#AppName}\OpenCert Native"; Filename: "{app}\native-client.exe"
 Name: "{commonstartmenu}\{#AppName}\Uninstall"; Filename: "{uninstallexe}"
 

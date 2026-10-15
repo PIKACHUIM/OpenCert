@@ -7,10 +7,10 @@
 // 兼容 crypto.Signer 接口，可用于签名。
 //
 // 注意：
-//   1. Go 标准库 x509.CreateCertificate 不能直接签发 SM2 证书，
-//      需要调用 gmsm 提供的 sm2.CreateCertificateToPem；
-//   2. 本占位文件仅实现密钥生成；完整 SM2 证书链签发需要在
-//      后续 Phase 中重构 issuer.go 的 CreateCertificate 调用。
+//  1. Go 标准库 x509.CreateCertificate 不能直接签发 SM2 证书，
+//     需要调用 gmsm 提供的 sm2.CreateCertificateToPem；
+//  2. 本占位文件仅实现密钥生成；完整 SM2 证书链签发需要在
+//     后续 Phase 中重构 issuer.go 的 CreateCertificate 调用。
 package ca
 
 import (

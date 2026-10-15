@@ -1,0 +1,11 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="user-go" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="PKCS11Driver" />
+    <working_directory value="$PROJECT_DIR$/natives" />
+    <kind value="FILE" />
+    <package value="github.com/globaltrusts/native-client" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/natives/cmd/native/main.go" />
+    <method v="2" />
+  </configuration>
+</component>

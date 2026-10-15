@@ -71,7 +71,8 @@ jobs:
         run: go test -v -race -count=1 -timeout=120s ./test/...
 
   # ================================================================
-  # Job 2: 跨平台构建 beta 二进制
+  # Job 2: client-card 跨平台二进制（Linux / macOS）
+  #        Windows 客户端见 Job 2b（含 Wails 桌面端，x64 + arm64）
   # ================================================================
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -93,9 +94,6 @@ jobs:
           - goos: darwin
             goarch: arm64
             asset_name: clients-darwin-arm64
-          - goos: windows
-            goarch: amd64
-            asset_name: clients-windows-amd64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -117,19 +115,11 @@ jobs:
             -o ${{ matrix.asset_name }} \
             ./cmd/client-card
 
-      - name: Compress (non-Windows)
-        if: matrix.goos != 'windows'
+      - name: Compress
         working-directory: clients
         run: |
           tar czf ${{ matrix.asset_name }}.tar.gz ${{ matrix.asset_name }}
           echo "ASSET_FILE=${{ matrix.asset_name }}.tar.gz" >> $GITHUB_ENV
-
-      - name: Compress (Windows)
-        if: matrix.goos == 'windows'
-        working-directory: clients
-        run: |
-          zip ${{ matrix.asset_name }}.zip ${{ matrix.asset_name }}
-          echo "ASSET_FILE=${{ matrix.asset_name }}.zip" >> $GITHUB_ENV
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -137,6 +127,139 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: clients/${{ env.ASSET_FILE }}
           retention-days: 7
+
+  # ================================================================
+  # Job 2b: Windows 客户端（x64 + arm64）
+  #   OpenCertManager.exe 桌面客户端（Go + Wails）
+  #   client-card.exe     本地管理端后端（可注册为 Windows 服务）
+  # ================================================================
+  build-clients-windows:
+    name: Build clients (Windows x64/arm64)
+    runs-on: ubuntu-latest
+    needs: [version, test]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            clients/go.sum
+            desktop/wails/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: clients/front/package-lock.json
+
+      - name: Build clients
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: bash scripts/build-clients.sh "$VERSION"
+
+      - name: Package
+        run: |
+          cd dist/clients
+          zip -r "${GITHUB_WORKSPACE}/clients-windows-amd64.zip" \
+            OpenCertManager-windows-amd64.exe client-card-windows-amd64.exe SHA256SUMS
+          zip -r "${GITHUB_WORKSPACE}/clients-windows-arm64.zip" \
+            OpenCertManager-windows-arm64.exe client-card-windows-arm64.exe SHA256SUMS
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clients-windows
+          path: |
+            clients-windows-amd64.zip
+            clients-windows-arm64.zip
+          retention-days: 7
+
+  # ================================================================
+  # Job 2c: 服务端二进制（linux x64 + arm64）
+  # ================================================================
+  build-server:
+    name: Build server (linux x64/arm64)
+    runs-on: ubuntu-latest
+    needs: [version, test]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: servers/go.sum
+
+      - name: Build server binaries
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: bash scripts/build-server.sh "$VERSION"
+
+      - name: Package
+        run: |
+          cd dist/server
+          tar czf "${GITHUB_WORKSPACE}/server-card-linux-amd64.tar.gz" server-card-linux-amd64 web SHA256SUMS
+          tar czf "${GITHUB_WORKSPACE}/server-card-linux-arm64.tar.gz" server-card-linux-arm64 web SHA256SUMS
+
+      - name: Upload binaries artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-binaries
+          path: dist/server
+          retention-days: 7
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-release
+          path: |
+            server-card-linux-amd64.tar.gz
+            server-card-linux-arm64.tar.gz
+          retention-days: 7
+
+  # ================================================================
+  # Job 2d: 服务端 Docker 镜像（多架构，推送 GHCR）
+  # ================================================================
+  publish-docker:
+    name: Publish server image (GHCR)
+    runs-on: ubuntu-latest
+    needs: [version, build-server]
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download server binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: server-binaries
+          path: dist/server
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/server-card
+          PLATFORMS: linux/amd64,linux/arm64
+          PUSH: "1"
+          ALSO_LATEST: "1"
+          VERSION: ${{ needs.version.outputs.version }}
+        run: bash scripts/build-docker.sh "$VERSION"
 
   # ================================================================
   # Job 3: 构建 pkcs11-mock C 驱动
@@ -186,7 +309,7 @@ jobs:
   release:
     name: Create Beta Release
     runs-on: ubuntu-latest
-    needs: [version, build, build-driver]
+    needs: [version, build, build-clients-windows, build-server, build-driver, publish-docker]
     permissions:
       contents: write
 
@@ -234,8 +357,19 @@ jobs:
           echo "此版本为 **Beta 测试版**，可能存在未知问题，请勿用于生产环境。" >> CHANGELOG.md
           echo "" >> CHANGELOG.md
           echo "### 安装说明" >> CHANGELOG.md
-          echo "- Linux/macOS: 解压 \`.tar.gz\` 后运行 \`./client-card\`" >> CHANGELOG.md
-          echo "- Windows: 解压 \`.zip\` 后运行 \`client-card.exe\`" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "**客户端（Windows）**" >> CHANGELOG.md
+          echo "- \`clients-windows-amd64.zip\` / \`clients-windows-arm64.zip\`" >> CHANGELOG.md
+          echo "  - \`OpenCertManager.exe\`：桌面客户端（Go + Wails，需 WebView2 运行时）" >> CHANGELOG.md
+          echo "  - \`client-card.exe\`：本地管理端后端（可注册为 Windows 服务）" >> CHANGELOG.md
+          echo ""
+          echo "**客户端后端（Linux / macOS）**" >> CHANGELOG.md
+          echo "- 解压 \`clients-*.tar.gz\` 后运行 \`./client-card\`" >> CHANGELOG.md
+          echo ""
+          echo "**服务端（server-card）**" >> CHANGELOG.md
+          echo "- 二进制：解压 \`server-card-linux-{amd64,arm64}.tar.gz\`，在解压目录直接运行 \`./server-card-*\`（需保留同级 \`web/\` 目录）" >> CHANGELOG.md
+          echo "- 容器镜像：\`docker pull ghcr.io/${{ github.repository }}/server-card:${{ needs.version.outputs.version }}\`（linux/amd64、linux/arm64）" >> CHANGELOG.md
+          echo "- 容器数据（数据库与主密钥）持久化在 \`/data\` 卷；建议用 \`SERVER_CARD_MASTER_KEY\`（Base64，32 字节）注入主密钥" >> CHANGELOG.md
           echo "" >> CHANGELOG.md
           echo "**Commit**: ${{ github.sha }}" >> CHANGELOG.md
           echo "**Branch**: ${{ github.ref_name }}" >> CHANGELOG.md

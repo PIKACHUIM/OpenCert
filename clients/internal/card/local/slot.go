@@ -985,7 +985,7 @@ func buildAttributes(cert *storage.Certificate, attrTypes []pkcs11types.Attribut
 			}
 		case pkcs11types.CKA_ID:
 			attr.Value = computeCKAID(cert)
-	case pkcs11types.CKA_VALUE:
+		case pkcs11types.CKA_VALUE:
 			attr.Value = certContentDER(cert)
 		case pkcs11types.CKA_PUBLIC_KEY_INFO:
 			// SubjectPublicKeyInfo DER：SSH/GPG 也尽量返回标准格式

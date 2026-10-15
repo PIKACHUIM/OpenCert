@@ -15,9 +15,9 @@ import (
 
 // LoginDialog 登录对话框
 type LoginDialog struct {
-	appCore  *appcore.App
-	window   fyne.Window
-	dialog   dialog.Dialog
+	appCore *appcore.App
+	window  fyne.Window
+	dialog  dialog.Dialog
 
 	// 本地登录表单
 	localUsername *widget.Entry

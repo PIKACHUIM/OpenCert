@@ -261,12 +261,16 @@ func (r *CardRepo) Create(ctx context.Context, c *Card) error {
 	if c.PINRetries == 0 {
 		c.PINRetries = 3
 	}
+	if c.Kind == "" {
+		c.Kind = CardKindUser
+	}
 
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO cards (uuid, user_uuid, card_name, remark, storage_zone_uuid, pin_data, puk_data, admin_key_data, pin_retries, pin_failed_count, pin_locked, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO cards (uuid, user_uuid, card_name, remark, storage_zone_uuid, pin_data, puk_data, admin_key_data,
+		 pin_retries, pin_failed_count, pin_locked, card_kind, order_no, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.UUID, c.UserUUID, c.CardName, c.Remark, c.StorageZoneUUID, c.PINData, c.PUKData, c.AdminKeyData,
-		c.PINRetries, c.PINFailedCount, boolToInt(c.PINLocked), c.CreatedAt, c.UpdatedAt,
+		c.PINRetries, c.PINFailedCount, boolToInt(c.PINLocked), c.Kind, c.OrderNo, c.CreatedAt, c.UpdatedAt,
 	)
 	return err
 }
@@ -276,10 +280,11 @@ func (r *CardRepo) GetByUUID(ctx context.Context, cardUUID string) (*Card, error
 	c := &Card{}
 	var pinLocked int
 	err := r.db.QueryRowContext(ctx,
-		`SELECT uuid, user_uuid, card_name, remark, storage_zone_uuid, pin_data, puk_data, admin_key_data, pin_retries, pin_failed_count, pin_locked, created_at, updated_at
+		`SELECT uuid, user_uuid, card_name, remark, storage_zone_uuid, pin_data, puk_data, admin_key_data,
+		        pin_retries, pin_failed_count, pin_locked, card_kind, order_no, created_at, updated_at
 		 FROM cards WHERE uuid = ?`, cardUUID,
 	).Scan(&c.UUID, &c.UserUUID, &c.CardName, &c.Remark, &c.StorageZoneUUID, &c.PINData, &c.PUKData, &c.AdminKeyData,
-		&c.PINRetries, &c.PINFailedCount, &pinLocked, &c.CreatedAt, &c.UpdatedAt)
+		&c.PINRetries, &c.PINFailedCount, &pinLocked, &c.Kind, &c.OrderNo, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("卡片不存在: %s", cardUUID)
 	}
@@ -287,10 +292,109 @@ func (r *CardRepo) GetByUUID(ctx context.Context, cardUUID string) (*Card, error
 	return c, err
 }
 
+// CountUserCards 统计用户的智能卡数量（不含系统托管容器）。
+func (r *CardRepo) CountUserCards(ctx context.Context, userUUID string) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM cards WHERE user_uuid = ? AND card_kind <> ?`, userUUID, CardKindHosting,
+	).Scan(&n)
+	return n, err
+}
+
+// CountByOrderNo 统计凭某订单开出的卡片数量。
+func (r *CardRepo) CountByOrderNo(ctx context.Context, orderNo string) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cards WHERE order_no = ?`, orderNo).Scan(&n)
+	return n, err
+}
+
+// BindOrder 把卡片绑定到订单，仅当该订单已开卡数量未达上限时成功（防并发超开）。
+func (r *CardRepo) BindOrder(ctx context.Context, cardUUID, orderNo string, limit int) (bool, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE cards SET order_no = ?, updated_at = ?
+		 WHERE uuid = ? AND (SELECT COUNT(*) FROM cards WHERE order_no = ?) < ?`,
+		orderNo, time.Now(), cardUUID, orderNo, limit)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// GetOrCreateHostingCard 获取（不存在则创建）用户的系统证书托管容器。
+//
+// 文件下载 / 自带 CSR 类证书不需要远程密码运算，但证书表要求归属某张卡片，
+// 因此统一落到每个用户唯一的托管容器中；该容器不计入开卡数量。
+func (r *CardRepo) GetOrCreateHostingCard(ctx context.Context, userUUID string) (*Card, error) {
+	var cardUUID string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT uuid FROM cards WHERE user_uuid = ? AND card_kind = ? ORDER BY created_at LIMIT 1`,
+		userUUID, CardKindHosting,
+	).Scan(&cardUUID)
+	if err == nil {
+		return r.GetByUUID(ctx, cardUUID)
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("查询托管容器失败: %w", err)
+	}
+	c := &Card{
+		UserUUID: userUUID,
+		CardName: "证书托管容器",
+		Remark:   "系统自动创建，用于存放文件下载型证书",
+		Kind:     CardKindHosting,
+	}
+	if err := r.Create(ctx, c); err != nil {
+		return nil, fmt.Errorf("创建托管容器失败: %w", err)
+	}
+	return c, nil
+}
+
+// ListAll 查询全部卡片（管理员视图，不返回密钥材料）。
+func (r *CardRepo) ListAll(ctx context.Context, userUUID string, page, pageSize int) ([]*Card, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	where := ` WHERE 1=1`
+	args := []interface{}{}
+	if userUUID != "" {
+		where += ` AND user_uuid = ?`
+		args = append(args, userUUID)
+	}
+	var total int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cards`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT uuid, user_uuid, card_name, remark, storage_zone_uuid, pin_retries, pin_failed_count, pin_locked,
+		        card_kind, order_no, created_at, updated_at
+		 FROM cards`+where+` ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		append(args, pageSize, (page-1)*pageSize)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	cards := []*Card{}
+	for rows.Next() {
+		c := &Card{}
+		var pinLocked int
+		if err := rows.Scan(&c.UUID, &c.UserUUID, &c.CardName, &c.Remark, &c.StorageZoneUUID,
+			&c.PINRetries, &c.PINFailedCount, &pinLocked, &c.Kind, &c.OrderNo, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		c.PINLocked = pinLocked == 1
+		cards = append(cards, c)
+	}
+	return cards, total, rows.Err()
+}
+
 // ListByUser 查询用户的所有卡片（不含敏感 PIN 数据）。
 func (r *CardRepo) ListByUser(ctx context.Context, userUUID string) ([]*Card, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT uuid, user_uuid, card_name, remark, storage_zone_uuid, pin_retries, pin_failed_count, pin_locked, created_at, updated_at
+		`SELECT uuid, user_uuid, card_name, remark, storage_zone_uuid, pin_retries, pin_failed_count, pin_locked,
+		        card_kind, order_no, created_at, updated_at
 		 FROM cards WHERE user_uuid = ? ORDER BY created_at DESC`, userUUID,
 	)
 	if err != nil {
@@ -298,12 +402,12 @@ func (r *CardRepo) ListByUser(ctx context.Context, userUUID string) ([]*Card, er
 	}
 	defer rows.Close()
 
-	var cards []*Card
+	cards := []*Card{}
 	for rows.Next() {
 		c := &Card{}
 		var pinLocked int
 		if err := rows.Scan(&c.UUID, &c.UserUUID, &c.CardName, &c.Remark, &c.StorageZoneUUID,
-			&c.PINRetries, &c.PINFailedCount, &pinLocked, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.PINRetries, &c.PINFailedCount, &pinLocked, &c.Kind, &c.OrderNo, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		c.PINLocked = pinLocked == 1

@@ -38,13 +38,13 @@ const (
 type Entry struct {
 	UUID      string    `json:"uuid"`
 	CardUUID  string    `json:"card_uuid"`
-	OTPType   Type      `json:"otp_type"`   // totp 或 hotp
-	Issuer    string    `json:"issuer"`     // 发行者
-	Account   string    `json:"account"`    // 账户名
-	Algorithm Algorithm `json:"algorithm"`  // SHA1/SHA256/SHA512
-	Digits    int       `json:"digits"`     // 6 或 8
-	Period    int       `json:"period"`     // TOTP 周期（秒），默认 30
-	Counter   uint64    `json:"counter"`    // HOTP 计数器
+	OTPType   Type      `json:"otp_type"`  // totp 或 hotp
+	Issuer    string    `json:"issuer"`    // 发行者
+	Account   string    `json:"account"`   // 账户名
+	Algorithm Algorithm `json:"algorithm"` // SHA1/SHA256/SHA512
+	Digits    int       `json:"digits"`    // 6 或 8
+	Period    int       `json:"period"`    // TOTP 周期（秒），默认 30
+	Counter   uint64    `json:"counter"`   // HOTP 计数器
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

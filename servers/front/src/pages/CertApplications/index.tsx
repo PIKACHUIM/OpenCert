@@ -5,7 +5,7 @@ import {
 } from 'antd';
 import {
   AuditOutlined, ReloadOutlined, CheckOutlined, CloseOutlined,
-  FileSearchOutlined, SearchOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons';
 import {
   listCertApplications, approveCertApplication, rejectCertApplication,
@@ -173,8 +173,7 @@ const CertApplicationsPage: React.FC = () => {
               size="small" style={{ marginBottom: 24 }}
               current={
                 detail.status === 'pending' ? 0
-                : detail.status === 'approved' ? 1
-                : detail.status === 'issued' ? 2
+                : detail.status === 'approved' ? (detail.cert_uuid ? 2 : 1)
                 : detail.status === 'rejected' ? 0
                 : 0
               }
@@ -190,7 +189,9 @@ const CertApplicationsPage: React.FC = () => {
               <Descriptions.Item label="用户 UUID">{detail.user_uuid}</Descriptions.Item>
               <Descriptions.Item label="订单 UUID">{detail.order_uuid || '-'}</Descriptions.Item>
               <Descriptions.Item label="主体信息 UUID">{detail.subject_info_uuid || '-'}</Descriptions.Item>
-              <Descriptions.Item label="扩展信息 UUID">{detail.extension_info_uuid || '-'}</Descriptions.Item>
+              <Descriptions.Item label="扩展信息 UUID">
+                {detail.extension_info_uuids?.length ? detail.extension_info_uuids.join(', ') : '-'}
+              </Descriptions.Item>
               <Descriptions.Item label="状态">
                 <Tag color={statusColors[detail.status]}>{statusTexts[detail.status] || detail.status}</Tag>
               </Descriptions.Item>

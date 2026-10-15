@@ -23,13 +23,13 @@ type OCSFile struct {
 // OCSPayload 是 .ocs 文件中加密的有效载荷。
 type OCSPayload struct {
 	// 卡片元信息
-	CardUUID      string                `json:"card_uuid"`
-	CardName      string                `json:"card_name"`
-	SecurityLevel storage.SecurityLevel `json:"security_level"`
-	SlotType      storage.SlotType      `json:"slot_type"`
-	CreatedAt     string                `json:"created_at"`
-	ExpiresAt     string                `json:"expires_at,omitempty"`
-	Remark        string                `json:"remark,omitempty"`
+	CardUUID      string                 `json:"card_uuid"`
+	CardName      string                 `json:"card_name"`
+	SecurityLevel storage.SecurityLevel  `json:"security_level"`
+	SlotType      storage.SlotType       `json:"slot_type"`
+	CreatedAt     string                 `json:"created_at"`
+	ExpiresAt     string                 `json:"expires_at,omitempty"`
+	Remark        string                 `json:"remark,omitempty"`
 	CardKeys      []storage.CardKeyEntry `json:"card_keys"`
 	// TPM 证书密钥（仅 medium 安全等级）
 	TPMCertKeyEnc  []byte `json:"tpm_cert_key_enc,omitempty"`

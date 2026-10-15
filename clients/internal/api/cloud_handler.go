@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -209,22 +210,32 @@ func (s *Server) syncOneCloudCard(ctx context.Context, client *cloud.Client, c *
 		return 0, 0
 	}
 
-	// 读取本地已有证书用于去重
+	// 读取本地已有证书：既用于去重，也用于"新增 + 更新"对账
 	existing, err := s.certRepo.ListByCard(ctx, c.UUID)
 	if err != nil {
 		slog.Warn("读取本地证书失败", "error", err)
 		return len(cloudCerts), 0
 	}
-	have := make(map[string]struct{}, len(existing))
+	have := make(map[string]*storage.Certificate, len(existing))
 	for _, e := range existing {
-		have[e.UUID] = struct{}{}
+		have[e.UUID] = e
 	}
 
-	added := 0
+	added, updated := 0, 0
 	for _, cc := range cloudCerts {
+		meta := buildCloudCertMeta(cc)
+
 		if _, ok := have[cc.UUID]; ok {
-			continue // 已存在：跳过（后续可按需实现 Update）
+			// 已存在：更新公开内容与元数据，使客户端能反映云端最新状态
+			// （例如证书续期后有效期变化、证书被吊销）
+			if err := s.certRepo.UpdateCloudCert(ctx, cc.UUID, cc.CertContent, cc.Remark, meta); err != nil {
+				slog.Warn("证书更新失败", "cert_uuid", cc.UUID, "error", err)
+				continue
+			}
+			updated++
+			continue
 		}
+
 		cert := &storage.Certificate{
 			UUID:        cc.UUID,
 			SlotType:    storage.SlotTypeCloud,
@@ -233,6 +244,7 @@ func (s *Server) syncOneCloudCard(ctx context.Context, client *cloud.Client, c *
 			KeyType:     cc.KeyType,
 			CertContent: cc.CertContent,
 			Remark:      cc.Remark,
+			CloudMeta:   meta,
 		}
 		if err := s.certRepo.Create(ctx, cert); err != nil {
 			slog.Warn("证书落库失败", "cert_uuid", cc.UUID, "error", err)
@@ -240,7 +252,32 @@ func (s *Server) syncOneCloudCard(ctx context.Context, client *cloud.Client, c *
 		}
 		added++
 	}
+	if updated > 0 {
+		slog.Debug("云卡证书已同步更新", "card", c.CardName, "updated", updated)
+	}
 	return len(cloudCerts), added
+}
+
+// buildCloudCertMeta 把云端证书元数据序列化为本地 JSON 列。
+// 序列化失败时返回空串，不影响证书主体落库。
+func buildCloudCertMeta(cc *cloud.Cert) string {
+	meta := storage.CloudCertMeta{
+		SubjectDN:        cc.SubjectDN,
+		IssuerDN:         cc.IssuerDN,
+		SerialHex:        nonEmpty(cc.SerialHex, cc.SerialNumber),
+		CAUUID:           cc.CAUUID,
+		NotBefore:        cc.NotBefore,
+		NotAfter:         cc.NotAfter,
+		RevocationStatus: cc.RevocationStatus,
+		SANDNS:           cc.SANDNS,
+		SANEmail:         cc.SANEmail,
+		SyncedAt:         time.Now(),
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // handleCloudStatus GET /api/cloud/status
@@ -263,18 +300,18 @@ func nonEmpty(a, b string) string {
 // Target：database 表示下发到本地 pki_certs 表；card 表示下发到本地/TPM2 智能卡。
 type deliverRequest struct {
 	CertUUID     string `json:"cert_uuid"`
-	SourceCloud  string `json:"source_cloud_url,omitempty"`  // 可选，明确来源云端 URL；不填则从 CardUUID 推断
-	SourceCard   string `json:"source_card_uuid,omitempty"`  // 可选，本地云卡 UUID（用于拿 AuthToken）
-	Target       string `json:"target"`                      // "database" | "card"
-	TargetCard   string `json:"target_card_uuid,omitempty"`  // Target=card 时必填（目的本地卡）
-	CardPassword string `json:"card_password,omitempty"`     // Target=card 时必填
+	SourceCloud  string `json:"source_cloud_url,omitempty"` // 可选，明确来源云端 URL；不填则从 CardUUID 推断
+	SourceCard   string `json:"source_card_uuid,omitempty"` // 可选，本地云卡 UUID（用于拿 AuthToken）
+	Target       string `json:"target"`                     // "database" | "card"
+	TargetCard   string `json:"target_card_uuid,omitempty"` // Target=card 时必填（目的本地卡）
+	CardPassword string `json:"card_password,omitempty"`    // Target=card 时必填
 	Remark       string `json:"remark,omitempty"`
 }
 
 // deliverResponse 是下发成功的响应体。
 type deliverResponse struct {
 	Target     string `json:"target"`
-	UUID       string `json:"uuid"`                // 下发后本地新记录的 UUID（pki_certs.uuid 或 certificates.uuid）
+	UUID       string `json:"uuid"` // 下发后本地新记录的 UUID（pki_certs.uuid 或 certificates.uuid）
 	CommonName string `json:"common_name,omitempty"`
 	CardUUID   string `json:"card_uuid,omitempty"` // Target=card 时填
 }

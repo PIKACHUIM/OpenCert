@@ -1,30 +1,46 @@
-import React from 'react';
-import {
-  Layout, Menu, Typography, Space, Tag, Avatar, Dropdown, Switch, Tooltip,
-} from 'antd';
+import React, { useMemo, useState } from 'react';
+import { Layout, Menu, Avatar, Dropdown, Grid, Tooltip } from 'antd';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import {
   DashboardOutlined, ApartmentOutlined, AppstoreOutlined,
   SafetyCertificateOutlined, UserOutlined, WalletOutlined,
   IdcardOutlined, ShoppingOutlined, AuditOutlined, SettingOutlined,
-  FileTextOutlined, LogoutOutlined, ProfileOutlined, BulbOutlined,
-  CreditCardOutlined, DatabaseOutlined, NumberOutlined, StopOutlined,
+  FileTextOutlined, LogoutOutlined, ProfileOutlined,
+  CreditCardOutlined, DatabaseOutlined, StopOutlined,
   CloudServerOutlined, ClockCircleOutlined, SafetyOutlined, LinkOutlined,
+  ShopOutlined, GlobalOutlined, HomeOutlined, GiftOutlined, BookOutlined,
+  MenuFoldOutlined, MenuUnfoldOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/auth';
-import { useThemeStore } from '../store/theme';
 import { logout } from '../api';
+import ThemeToggle from '../components/ThemeToggle';
 
 const { Sider, Content, Header } = Layout;
-const { Text } = Typography;
+
+/** 角色展示名 */
+const ROLE_LABEL: Record<string, string> = {
+  super_admin: '超级管理员',
+  admin: '管理员',
+  operator: '操作员',
+  readonly: '只读成员',
+  user: '普通用户',
+};
+
+const SIDER_WIDTH = 232;
+const SIDER_COLLAPSED_WIDTH = 76;
 
 const MainLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const screens = Grid.useBreakpoint();
   const { role, username, clearAuth } = useAuthStore();
-  const { darkMode, toggleDarkMode } = useThemeStore();
+  const [collapsed, setCollapsed] = useState(false);
 
-  const selectedKey = '/' + location.pathname.split('/')[1] || '/dashboard';
+  // 小屏：侧栏改为 0 宽抽屉式覆盖，避免内容被挤压
+  const isMobile = screens.lg === false;
+
+  // 菜单 key 使用完整路径（/console/xxx），避免多级路径被截断后无法高亮
+  const selectedKey = location.pathname === '/console' ? '/console/dashboard' : location.pathname;
 
   const handleLogout = async () => {
     try { await logout(); } catch {}
@@ -37,171 +53,231 @@ const MainLayout: React.FC = () => {
   // 判断是否为操作员或以上
   const isOperatorOrAbove = isAdmin || role === 'operator';
 
-  // 构建分组菜单
-  const menuItems: any[] = [
-    { key: '/dashboard', icon: <DashboardOutlined />, label: '平台概览' },
+  // 构建分组菜单（路径统一加 /console 前缀）
+  const menuItems: any[] = useMemo(() => [
+    { key: '/console/dashboard', icon: <DashboardOutlined />, label: '平台概览' },
     {
       key: 'group-card', icon: <CreditCardOutlined />, label: '个人业务',
       children: [
-        { key: '/cards', icon: <CreditCardOutlined />, label: '智能卡片管理' },
-        { key: '/certs', icon: <SafetyCertificateOutlined />, label: '个人证书管理' },
-        { key: '/cloud-totp', icon: <ClockCircleOutlined />, label: 'TOTP认证管理' },
+        { key: '/console/cards', icon: <CreditCardOutlined />, label: '智能卡片管理' },
+        { key: '/console/certs', icon: <SafetyCertificateOutlined />, label: '我的证书' },
+        { key: '/console/cloud-totp', icon: <ClockCircleOutlined />, label: '认证信息管理' },
+        { key: '/console/cert-orders', icon: <ShoppingOutlined />, label: '支付订单管理' },
+        // 财务（余额、充值、订阅与兑换）已合并到账号信息管理
+        { key: '/console/profile', icon: <WalletOutlined />, label: '账号信息管理' },
       ],
     },
     {
       key: 'group-apply', icon: <ShoppingOutlined />, label: '证书申请',
       children: [
-        { key: '/subject-infos', icon: <IdcardOutlined />, label: '证书主体信息' },
-        { key: '/extension-infos', icon: <LinkOutlined />, label: '证书扩展信息' },
-        { key: '/cert-orders', icon: <ShoppingOutlined />, label: '个人订单管理' },
-        { key: '/identity', icon: <IdcardOutlined />, label: '身份认证管理' },
-        { key: '/payment', icon: <WalletOutlined />, label: '财务支付管理' },
+        { key: '/console/apply', icon: <ShoppingOutlined />, label: '申请证书' },
+        { key: '/console/apply-records', icon: <AuditOutlined />, label: '我的证书申请' },
+        { key: '/console/subject-infos', icon: <IdcardOutlined />, label: '证书主体信息' },
+        { key: '/console/extension-infos', icon: <LinkOutlined />, label: '证书扩展信息' },
       ],
     },
-    // 平台管理分组：admin / super_admin / operator 可见
+    // 证书颁发分组：admin / super_admin / operator 可见
     ...(isOperatorOrAbove ? [{
-      key: 'group-admin', icon: <ApartmentOutlined />, label: '平台管理',
+      key: 'group-admin', icon: <ApartmentOutlined />, label: '证书颁发',
       children: [
-        { key: '/ca', icon: <ApartmentOutlined />, label: '颁发机构管理' },
-        { key: '/all-certs', icon: <SafetyCertificateOutlined />, label: '全局证书管理' },
-        { key: '/cert-applications', icon: <AuditOutlined />, label: '证书申请审核' },
-        { key: '/users', icon: <UserOutlined />, label: '平台用户管理' },
-        { key: '/ct-records', icon: <AuditOutlined />, label: '证书透明度CT' },
-        { key: '/audit-logs', icon: <FileTextOutlined />, label: '证书审计日志' },
+        { key: '/console/ca', icon: <ApartmentOutlined />, label: '证书颁发机构' },
+        { key: '/console/identity-reviews', icon: <IdcardOutlined />, label: '身份认证审核' },
+        { key: '/console/cert-applications', icon: <AuditOutlined />, label: '证书申请审核' },
+        { key: '/console/all-certs', icon: <SafetyCertificateOutlined />, label: '全部证书' },
+        // CT 记录已合并到审计日志（透明度选项卡）
+        { key: '/console/audit-logs', icon: <FileTextOutlined />, label: '证书审计日志' },
       ],
     }] : []),
-    // 模板管理分组：admin / super_admin 可见
+    // 证书模板分组：admin / super_admin 可见
     ...(isAdmin ? [{
-      key: 'group-template', icon: <AppstoreOutlined />, label: '模板管理',
+      key: 'group-template', icon: <AppstoreOutlined />, label: '证书模板',
       children: [
-        { key: '/templates', icon: <AppstoreOutlined />, label: '证书颁发模板' },
-        { key: '/key-storage-templates', icon: <SafetyOutlined />, label: '密钥存储模板' },
-        { key: '/cert-apply-templates', icon: <AppstoreOutlined />, label: '证书申请模板' },
-        { key: '/oids', icon: <NumberOutlined />, label: '证书OID 管理' },
+        { key: '/console/cert-apply-templates', icon: <AppstoreOutlined />, label: '证书开通模板' },
+        { key: '/console/templates', icon: <AppstoreOutlined />, label: '证书颁发模板' },
+        { key: '/console/key-storage-templates', icon: <SafetyOutlined />, label: '密钥存储模板' },
       ],
     }] : []),
-    // 服务配置分组：admin / super_admin 可见
+    // 证书服务分组：admin / super_admin 可见
     ...(isAdmin ? [{
-      key: 'group-service', icon: <CloudServerOutlined />, label: '服务配置',
+      key: 'group-service', icon: <CloudServerOutlined />, label: '证书服务',
       children: [
-        { key: '/storage-zones', icon: <DatabaseOutlined />, label: '存储区域配置' },
-        { key: '/revocation-services', icon: <StopOutlined />, label: '证书吊销服务' },
-        { key: '/acme-configs', icon: <CloudServerOutlined />, label: '证书ACME服务' },
-        { key: '/payment-plugins', icon: <WalletOutlined />, label: '支付插件配置' },
+        { key: '/console/storage-zones', icon: <DatabaseOutlined />, label: '证书存储区域' },
+        { key: '/console/revocation-services', icon: <StopOutlined />, label: '证书吊销服务' },
+        { key: '/console/ocsp-responders', icon: <SafetyOutlined />, label: '证书OCSP服务' },
+        { key: '/console/acme-configs', icon: <CloudServerOutlined />, label: '证书ACME服务' },
+        { key: '/console/cert-policies', icon: <FileTextOutlined />, label: '证书策略管理' },
+      ],
+    }] : []),
+    // 销售管理分组：admin / super_admin 可见
+    ...(isAdmin ? [{
+      key: 'group-commerce', icon: <ShopOutlined />, label: '销售管理',
+      children: [
+        { key: '/console/products', icon: <ShopOutlined />, label: '销售商品管理' },
+        { key: '/console/admin-orders', icon: <ProfileOutlined />, label: '订单管理' },
+        { key: '/console/promo', icon: <GiftOutlined />, label: '订阅优惠管理' },
+        { key: '/console/payment-plugins', icon: <WalletOutlined />, label: '支付渠道配置' },
       ],
     }] : []),
     {
       key: 'group-system', icon: <SettingOutlined />, label: '系统管理',
       children: [
-        { key: '/logs', icon: <FileTextOutlined />, label: '操作日志审计' },
-        { key: '/settings', icon: <SettingOutlined />, label: '全局系统设置' },
+        // 用户管理：仅管理员可见，普通用户不可见
+        ...(isAdmin ? [{ key: '/console/users', icon: <UserOutlined />, label: '平台用户管理' }] : []),
+        { key: '/console/logs', icon: <FileTextOutlined />, label: '平台操作日志' },
+        { key: '/console/help', icon: <BookOutlined />, label: '帮助中心' },
+        ...(isAdmin ? [
+          { key: '/console/site-settings', icon: <GlobalOutlined />, label: '全局站点设置' },
+          { key: '/console/settings', icon: <SettingOutlined />, label: '全局系统设置' },
+        ] : []),
       ],
     },
-  ];
+  ], [isAdmin, isOperatorOrAbove]);
+
+  /** 路径 → 页面标题，用于顶栏面包屑 */
+  const pageTitle = useMemo(() => {
+    const flat: Record<string, string> = {};
+    const collect = (items: any[]) => {
+      items.forEach((item) => {
+        if (item.children) collect(item.children);
+        else flat[item.key] = String(item.label);
+      });
+    };
+    collect(menuItems);
+    return flat[selectedKey] ?? '控制台';
+  }, [menuItems, selectedKey]);
+
+  const roleLabel = ROLE_LABEL[role ?? 'user'] ?? '普通用户';
+  const initial = (username || 'U').trim().charAt(0).toUpperCase();
 
   const userMenuItems = [
-    { key: 'profile', icon: <ProfileOutlined />, label: '个人中心', onClick: () => navigate('/profile') },
+    {
+      key: 'account',
+      label: (
+        <div style={{ padding: '2px 2px', minWidth: 150 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--oc-text)' }}>{username || '未登录'}</div>
+          <div style={{ fontSize: 12, color: 'var(--oc-text-3)', marginTop: 2 }}>{roleLabel}</div>
+        </div>
+      ),
+    },
+    { type: 'divider' as const },
+    { key: 'portal', icon: <HomeOutlined />, label: '访问官网', onClick: () => navigate('/') },
+    { key: 'profile', icon: <ProfileOutlined />, label: '个人中心', onClick: () => navigate('/console/profile') },
     { type: 'divider' as const },
     { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true, onClick: handleLogout },
   ];
 
+  const siderWidth = collapsed ? (isMobile ? 0 : SIDER_COLLAPSED_WIDTH) : SIDER_WIDTH;
+
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout className="oc-console" style={{ minHeight: '100vh' }}>
+      {/* 小屏展开侧栏时的遮罩 */}
+      {isMobile && !collapsed && (
+        <div
+          onClick={() => setCollapsed(true)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 15,
+            background: 'rgba(8, 13, 24, 0.52)', backdropFilter: 'blur(2px)',
+          }}
+        />
+      )}
+
       {/* 侧边栏 */}
       <Sider
-        width={220}
-        style={{
-          background: darkMode ? '#0d1117' : '#001529',
-          borderRight: darkMode ? '1px solid #21262d' : 'none',
-          overflow: 'auto',
-          height: '100vh',
-          position: 'fixed',
-          left: 0, top: 0, bottom: 0,
-        }}
+        className="oc-sider"
+        width={SIDER_WIDTH}
+        collapsedWidth={isMobile ? 0 : SIDER_COLLAPSED_WIDTH}
+        collapsed={collapsed}
+        collapsible
+        trigger={null}
+        breakpoint="lg"
+        onBreakpoint={(broken) => setCollapsed(broken)}
+        style={{ zIndex: 20 }}
       >
-        {/* Logo 区域 */}
-        <div style={{
-          padding: '20px 16px 16px',
-          borderBottom: '1px solid rgba(255,255,255,0.08)',
-          marginBottom: 8,
-        }}>
-          <Space align="center">
-            <SafetyCertificateOutlined style={{ fontSize: 24, color: '#1677ff' }} />
-            <div>
-              <div style={{ color: '#fff', fontWeight: 700, fontSize: 14, lineHeight: 1.2 }}>OpenCert Platform</div>
-              <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11 }}>
-                云端平台管理 - {role === 'admin' ? '管理员' : '证书管理平台'}
-              </div>
+        {/* 品牌区 */}
+        <div className="oc-sider__brand" style={{ justifyContent: collapsed && !isMobile ? 'center' : 'flex-start' }}>
+          <span className="oc-logo-mark">
+            <SafetyCertificateOutlined style={{ color: '#fff', fontSize: 18 }} />
+          </span>
+          {!(collapsed && !isMobile) && (
+            <div className="oc-sider__brand-text">
+              <div className="oc-sider__brand-name">OpenCert Platform</div>
+              <div className="oc-sider__brand-sub">云端证书 · 智能卡管理</div>
             </div>
-          </Space>
+          )}
         </div>
 
         <Menu
           theme="dark"
           mode="inline"
           selectedKeys={[selectedKey]}
-          defaultOpenKeys={['group-card', 'group-apply', 'group-admin', 'group-template', 'group-service', 'group-system']}
+          defaultOpenKeys={['group-card', 'group-apply', 'group-admin', 'group-commerce', 'group-template', 'group-service', 'group-system']}
           items={menuItems}
-          onClick={({ key }) => navigate(key)}
-          style={{ background: 'transparent', border: 'none' }}
+          onClick={({ key }) => {
+            navigate(key);
+            if (isMobile) setCollapsed(true);
+          }}
+          style={{ background: 'transparent', border: 'none', paddingBottom: 24 }}
         />
       </Sider>
 
-      <Layout style={{ marginLeft: 220 }}>
+      <Layout
+        style={{
+          marginInlineStart: siderWidth,
+          transition: 'margin-inline-start 0.28s cubic-bezier(0.16, 1, 0.3, 1)',
+          background: 'var(--oc-page-bg)',
+        }}
+      >
         {/* 顶部栏 */}
-        <Header style={{
-          background: darkMode ? '#161b22' : '#fff',
-          padding: '0 24px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          borderBottom: darkMode ? '1px solid #21262d' : '1px solid #f0f0f0',
-          height: 56,
-          position: 'sticky',
-          top: 0,
-          zIndex: 10,
-        }}>
-          {/* 连接状态 */}
-          <Space>
-            <Tag color="green" style={{ fontSize: 12 }}>● server-card :1027</Tag>
-          </Space>
-
-          {/* 右侧工具栏 */}
-          <Space>
-            <Tooltip title={darkMode ? '切换亮色模式' : '切换暗色模式'}>
-              <Switch
-                checkedChildren={<BulbOutlined />}
-                unCheckedChildren={<BulbOutlined />}
-                checked={darkMode}
-                onChange={toggleDarkMode}
-                size="small"
-              />
+        <Header className="oc-header">
+          <div className="oc-header__crumb">
+            <Tooltip title={collapsed ? '展开侧边栏' : '收起侧边栏'}>
+              <button
+                type="button"
+                className="oc-icon-btn"
+                aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+                onClick={() => setCollapsed((v) => !v)}
+              >
+                {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              </button>
             </Tooltip>
+            <span>控制台</span>
+            <span className="oc-header__crumb-sep">/</span>
+            <span className="oc-header__crumb-current">{pageTitle}</span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {screens.sm !== false && (
+              <span className="oc-status-pill" title="已连接 OpenCert Platform 服务节点">
+                <i className="oc-dot" />
+                server-card :1027
+              </span>
+            )}
+            <ThemeToggle variant="ghost" />
             <Dropdown menu={{ items: userMenuItems as any }} placement="bottomRight" arrow>
-              <Space style={{ cursor: 'pointer' }}>
+              <div className="oc-user-trigger">
                 <Avatar
-                  size={32}
-                  style={{ background: 'linear-gradient(135deg, #1677ff, #722ed1)', cursor: 'pointer' }}
-                  icon={<UserOutlined />}
-                />
-                <Text style={{ fontSize: 13, color: darkMode ? '#c9d1d9' : undefined }}>{username}</Text>
-              {role === 'admin' && <Tag color="gold" style={{ fontSize: 11 }}>管理员</Tag>}
-              {role === 'super_admin' && <Tag color="red" style={{ fontSize: 11 }}>超级管理员</Tag>}
-              {role === 'operator' && <Tag color="blue" style={{ fontSize: 11 }}>操作员</Tag>}
-              {role === 'readonly' && <Tag color="default" style={{ fontSize: 11 }}>只读</Tag>}
-              </Space>
+                  size={30}
+                  style={{
+                    background: 'linear-gradient(135deg, #1d4ed8, #0891b2)',
+                    fontSize: 13,
+                    fontWeight: 600,
+                  }}
+                >
+                  {initial}
+                </Avatar>
+                {screens.sm !== false && (
+                  <span className="oc-user-trigger__name">{username}</span>
+                )}
+              </div>
             </Dropdown>
-          </Space>
+          </div>
         </Header>
 
         {/* 主内容区 */}
-        <Content style={{
-          background: darkMode ? '#0d1117' : '#f5f5f5',
-          minHeight: 'calc(100vh - 56px)',
-          overflow: 'auto',
-          padding: 24,
-        }}>
-          <Outlet />
+        <Content className="oc-content">
+          <div className="oc-content__inner">
+            <Outlet />
+          </div>
         </Content>
       </Layout>
     </Layout>

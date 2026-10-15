@@ -1,233 +1,215 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Card, Table, Button, Space, Tag, Typography, Modal, Form, Input, Select,
-  message, Popconfirm, Drawer, Descriptions,
+  Card, Table, Button, Space, Tag, Typography, Modal, Form, Input, Select, message,
+  Popconfirm, Alert, Descriptions,
 } from 'antd';
 import {
-  IdcardOutlined, PlusOutlined, ReloadOutlined, CheckOutlined, CloseOutlined, DeleteOutlined,
+  IdcardOutlined, PlusOutlined, ReloadOutlined, DeleteOutlined, SafetyOutlined, EditOutlined,
 } from '@ant-design/icons';
 import {
-  listSubjectInfos, createSubjectInfo, deleteSubjectInfo,
-  approveSubjectInfo, rejectSubjectInfo, listSubjectTemplates,
+  listSubjectInfos, createSubjectInfo, resubmitSubjectInfo, deleteSubjectInfo,
+  startSubjectIdentity, listSubjectTemplates,
 } from '../../api';
-import type { SubjectInfo, SubjectTemplate } from '../../types';
-import { useAuthStore } from '../../store/auth';
+import type { SubjectInfo, SubjectTemplate, SubjectTemplateField } from '../../types';
+import HelpLink from '../../components/HelpLink';
 
 const { Title, Text } = Typography;
 
+const STATUS: Record<string, { text: string; color: string }> = {
+  pending: { text: '待人工审核', color: 'orange' },
+  verifying: { text: '待实名认证', color: 'purple' },
+  approved: { text: '已通过', color: 'green' },
+  rejected: { text: '已驳回', color: 'red' },
+};
+
+const VERIFY_TEXT: Record<string, string> = {
+  manual: '人工审核', auto: '实名认证', none: '免验证',
+};
+
 /**
- * SubjectInfos 页面：主体信息管理。
- * - 用户自建主体信息（按主体模板填写）
- * - 管理员审核：通过 / 拒绝
+ * 证书主体信息：提交证书主体字段（CN/O/OU/C…）并跟踪审核/实名认证状态。
+ *
+ * 字段、验证方式（人工/自动实名接口/免验证、派生）与有效期由主体模板决定；
+ * 审核通过后在有效期内可直接用于证书申请，过期需重新提交。
  */
 const SubjectInfosPage: React.FC = () => {
-  const { role } = useAuthStore();
-  const isAdmin = role === 'admin' || role === 'super_admin';
-
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<SubjectInfo[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-
-  const [tmpls, setTmpls] = useState<SubjectTemplate[]>([]);
-  const [createOpen, setCreateOpen] = useState(false);
+  const [templates, setTemplates] = useState<SubjectTemplate[]>([]);
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<SubjectInfo | null>(null);
+  const [tmplUUID, setTmplUUID] = useState<string>('');
   const [form] = Form.useForm();
-  const [selectedTmpl, setSelectedTmpl] = useState<SubjectTemplate | null>(null);
 
-  const [detail, setDetail] = useState<SubjectInfo | null>(null);
-  const [rejectOpen, setRejectOpen] = useState<SubjectInfo | null>(null);
-  const [rejectForm] = Form.useForm();
-
-  const fetchData = async (p = page, ps = pageSize) => {
+  const load = async () => {
     setLoading(true);
     try {
-      const res = await listSubjectInfos({ page: p, page_size: ps });
-      setData(Array.isArray(res?.items) ? res.items : []);
-      setTotal(res?.total ?? 0);
-    } catch (e: any) {
-      message.error(e.message || '加载失败');
-    } finally { setLoading(false); }
+      const r = await listSubjectInfos({ page: 1, page_size: 100 });
+      setData(r.items ?? []);
+      setTemplates(await listSubjectTemplates().catch(() => []));
+    } catch (e: any) { message.error(e.message || '加载失败'); }
+    finally { setLoading(false); }
   };
 
-  const fetchTmpls = async () => {
-    try { const r = await listSubjectTemplates(); setTmpls(Array.isArray(r) ? r : (r as any)?.items || []); } catch { /* ignore */ }
+  useEffect(() => { load(); }, []);
+
+  const currentFields: SubjectTemplateField[] = useMemo(() => {
+    const t = templates.find((x) => x.uuid === tmplUUID);
+    return (t?.fields ?? []).filter((f) => !f.derive);
+  }, [templates, tmplUUID]);
+
+  const openCreate = () => {
+    setEditing(null);
+    form.resetFields();
+    const first = templates[0]?.uuid ?? '';
+    setTmplUUID(first);
+    form.setFieldsValue({ subject_tmpl_uuid: first });
+    setOpen(true);
   };
 
-  useEffect(() => { fetchData(); fetchTmpls(); /* eslint-disable-next-line */ }, []);
-  useEffect(() => { fetchData(page, pageSize); /* eslint-disable-next-line */ }, [page, pageSize]);
+  const openEdit = (r: SubjectInfo) => {
+    setEditing(r);
+    setTmplUUID(r.template_uuid);
+    form.resetFields();
+    form.setFieldsValue({ subject_tmpl_uuid: r.template_uuid, ...r.fields });
+    setOpen(true);
+  };
 
-  const handleCreate = async (values: any) => {
-    if (!selectedTmpl) { message.error('请选择主体模板'); return; }
+  const submit = async (v: any) => {
     const fields: Record<string, string> = {};
-    selectedTmpl.fields.forEach((f) => { fields[f.name] = values[f.name] || ''; });
+    currentFields.forEach((f) => {
+      const val = v[f.key];
+      if (val !== undefined && val !== null && val !== '') fields[f.key] = String(val);
+    });
     try {
-      await createSubjectInfo({ template_uuid: selectedTmpl.uuid, fields });
-      message.success('主体信息已提交，等待审核');
-      setCreateOpen(false);
-      form.resetFields();
-      setSelectedTmpl(null);
-      fetchData();
+      if (editing) {
+        await resubmitSubjectInfo(editing.uuid, fields);
+        message.success('已重新提交，等待验证');
+      } else {
+        const info = await createSubjectInfo({ template_uuid: tmplUUID, fields });
+        message.success(info.status === 'approved' ? '已通过验证' : '已提交，等待验证');
+      }
+      setOpen(false);
+      load();
     } catch (e: any) { message.error(e.message || '提交失败'); }
   };
 
-  const handleApprove = async (uuid: string) => {
-    try { await approveSubjectInfo(uuid); message.success('已通过审核'); fetchData(); }
-    catch (e: any) { message.error(e.message || '审核失败'); }
-  };
-
-  const handleReject = async () => {
-    if (!rejectOpen) return;
+  const handleIdentity = async (r: SubjectInfo) => {
     try {
-      const reason = rejectForm.getFieldValue('reason');
-      await rejectSubjectInfo(rejectOpen.uuid, reason);
-      message.success('已拒绝');
-      setRejectOpen(null);
-      rejectForm.resetFields();
-      fetchData();
-    } catch (e: any) { message.error(e.message || '拒绝失败'); }
+      const { redirect_url } = await startSubjectIdentity(r.uuid, '/console/subject-infos');
+      window.location.href = redirect_url;
+    } catch (e: any) { message.error(e.message || '实名认证接口不可用，请等待人工审核'); }
   };
 
-  const handleDelete = async (uuid: string) => {
-    try { await deleteSubjectInfo(uuid); message.success('已删除'); fetchData(); }
-    catch (e: any) { message.error(e.message || '删除失败'); }
-  };
-
-  const columns = useMemo(() => [
-    {
-      title: 'UUID', dataIndex: 'uuid', key: 'uuid', width: 120, ellipsis: true,
-      render: (v: string) => <Text copyable={{ text: v }}>{v.substring(0, 8)}...</Text>,
-    },
-    { title: '主体模板', dataIndex: 'template_name', key: 'template_name',
-      render: (v: string) => v || <Text type="secondary">-</Text> },
-    {
-      title: '主要字段', key: 'fields',
-      render: (_: any, r: SubjectInfo) => {
-        const keys = Object.keys(r.fields || {}).slice(0, 3);
+  const columns = [
+    { title: '主体内容', dataIndex: 'fields', key: 'fields',
+      render: (fields: Record<string, string>) => (
+        <Space direction="vertical" size={0}>
+          {Object.entries(fields ?? {}).map(([k, v]) => (
+            <Text key={k} style={{ fontSize: 12 }}>{k} = {v}</Text>
+          ))}
+        </Space>
+      ) },
+    { title: '模板', dataIndex: 'template_uuid', key: 'template_uuid',
+      render: (v: string) => templates.find((t) => t.uuid === v)?.name || (v ? v.slice(0, 8) : '—') },
+    { title: '验证方式', dataIndex: 'verify_mode', key: 'verify_mode', width: 110,
+      render: (v: string) => <Tag>{VERIFY_TEXT[v] ?? v ?? '人工审核'}</Tag> },
+    { title: '状态', dataIndex: 'status', key: 'status', width: 130,
+      render: (v: string, r: SubjectInfo) => {
+        const s = STATUS[v] ?? { text: v, color: 'default' };
         return (
-          <Space size={4} wrap>
-            {keys.map((k) => <Tag key={k}>{k}={r.fields[k]}</Tag>)}
-            {Object.keys(r.fields || {}).length > 3 && <Tag>...</Tag>}
+          <Space direction="vertical" size={0}>
+            <Tag color={s.color}>{s.text}</Tag>
+            {r.reject_reason && <Text type="danger" style={{ fontSize: 12 }}>{r.reject_reason}</Text>}
+            {r.expires_at && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                有效期至 {new Date(r.expires_at).toLocaleDateString('zh-CN')}
+              </Text>
+            )}
           </Space>
         );
-      },
-    },
+      } },
     {
-      title: '状态', dataIndex: 'status', key: 'status',
-      render: (v: string) => {
-        const colors: Record<string, string> = { pending: 'processing', approved: 'success', rejected: 'error' };
-        const texts: Record<string, string> = { pending: '待审核', approved: '已通过', rejected: '已拒绝' };
-        return <Tag color={colors[v]}>{texts[v] || v}</Tag>;
-      },
-    },
-    { title: '拒绝原因', dataIndex: 'reject_reason', key: 'reject_reason', ellipsis: true },
-    { title: '创建时间', dataIndex: 'created_at', key: 'created_at',
-      render: (v: string) => new Date(v).toLocaleString('zh-CN') },
-    {
-      title: '操作', key: 'actions', width: 260,
+      title: '操作', key: 'actions', width: 220,
       render: (_: any, r: SubjectInfo) => (
-        <Space>
-          <Button type="link" size="small" onClick={() => setDetail(r)}>详情</Button>
-          {isAdmin && r.status === 'pending' && (
-            <>
-              <Popconfirm title="确认通过审核？" onConfirm={() => handleApprove(r.uuid)}>
-                <Button type="link" size="small" icon={<CheckOutlined />}>通过</Button>
-              </Popconfirm>
-              <Button type="link" size="small" danger icon={<CloseOutlined />} onClick={() => setRejectOpen(r)}>
-                拒绝
-              </Button>
-            </>
+        <Space size={4}>
+          {r.status === 'verifying' && (
+            <Button type="link" size="small" icon={<SafetyOutlined />} onClick={() => handleIdentity(r)}>实名认证</Button>
           )}
-          <Popconfirm title="确认删除？" onConfirm={() => handleDelete(r.uuid)}>
+          {(r.status === 'rejected' || (r.status === 'approved' && r.expires_at && new Date(r.expires_at) < new Date())) && (
+            <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>修改并重提</Button>
+          )}
+          <Popconfirm title="删除后不可恢复，确认？" onConfirm={async () => {
+            try { await deleteSubjectInfo(r.uuid); message.success('已删除'); load(); }
+            catch (e: any) { message.error(e.message || '删除失败'); }
+          }}>
             <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
         </Space>
       ),
     },
-  ], [isAdmin]);
+  ];
 
   return (
     <div>
       <Card
-        title={<Space><IdcardOutlined />
-          <Title level={4} style={{ margin: 0 }}>主体信息管理</Title></Space>}
+        title={<Space><IdcardOutlined /><Title level={4} style={{ margin: 0 }}>证书主体信息</Title>
+          <HelpLink doc="user-03-apply-certificate" /></Space>}
         extra={
           <Space>
-            <Button icon={<ReloadOutlined />} onClick={() => fetchData()}>刷新</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建主体信息</Button>
+            <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建主体信息</Button>
           </Space>
         }
       >
-        <Table
-          rowKey="uuid" loading={loading} dataSource={data} columns={columns as any}
-          pagination={{
-            current: page, pageSize, total, showSizeChanger: true,
-            onChange: (p, ps) => { setPage(p); setPageSize(ps); },
-          }}
-        />
+        <Alert type="info" showIcon style={{ marginBottom: 16 }}
+          message="主体信息按主体模板验证：人工审核 / 实名认证接口 / 免验证"
+          description="审核或认证通过后在有效期内可直接用于证书申请；过期或被驳回可修改后重新提交。域名/邮箱证书的主体字段可配置为「派生」，无需在此填写。" />
+        <Table rowKey="uuid" loading={loading} dataSource={data} columns={columns as any} />
       </Card>
 
-      <Modal
-        open={createOpen} title="新建主体信息"
-        onCancel={() => { setCreateOpen(false); setSelectedTmpl(null); form.resetFields(); }}
-        onOk={() => form.submit()}
-        width={640} destroyOnClose
-      >
-        <Form form={form} layout="vertical" onFinish={handleCreate}>
-          <Form.Item label="主体模板" required>
+      <Modal open={open} title={editing ? '修改并重新提交主体信息' : '新建主体信息'}
+        onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnClose width={620}>
+        <Form form={form} layout="vertical" onFinish={submit}>
+          <Form.Item name="subject_tmpl_uuid" label="主体模板" rules={[{ required: true, message: '请选择主体模板' }]}
+            extra="模板决定需要填写的字段与验证方式">
             <Select
-              value={selectedTmpl?.uuid} placeholder="请选择主体模板"
-              onChange={(v) => setSelectedTmpl(tmpls.find((t) => t.uuid === v) || null)}
-              options={tmpls.map((t) => ({ label: t.name, value: t.uuid }))}
+              disabled={!!editing}
+              onChange={(v) => {
+                setTmplUUID(v);
+                const t = templates.find((x) => x.uuid === v);
+                if (t) {
+                  const init: Record<string, string> = {};
+                  (t.fields ?? []).forEach((f) => { if (f.default) init[f.key] = f.default; });
+                  form.setFieldsValue(init);
+                }
+              }}
+              options={templates.map((t) => ({ label: t.name, value: t.uuid }))}
             />
           </Form.Item>
-          {selectedTmpl && selectedTmpl.fields.map((f) => (
+          {currentFields.map((f) => (
             <Form.Item
-              key={f.name} name={f.name} label={f.name}
-              rules={f.required ? [{ required: true, message: `请输入${f.name}` }] : []}
-              initialValue={f.default_value}
+              key={f.key} name={f.key} label={`${f.label || f.key}（${f.key}）`}
+              rules={f.required ? [{ required: true, message: `请填写${f.label || f.key}` }] : undefined}
+              extra={[
+                f.min_len || f.max_len ? `长度 ${f.min_len || 1}-${f.max_len || 128}` : '',
+                f.format ? `格式：${f.format}` : '',
+                f.verify === 'auto' ? '需实名认证' : f.verify === 'manual' ? '需管理员审核' : '免验证',
+                f.help || '',
+              ].filter(Boolean).join(' · ') || undefined}
             >
-              <Input maxLength={f.max_length || undefined} placeholder={`模板字段：${f.name}`} />
+              <Input maxLength={f.max_len || 128} placeholder={f.default ? `默认值 ${f.default}` : ''} />
             </Form.Item>
           ))}
-        </Form>
-      </Modal>
-
-      <Modal
-        open={!!rejectOpen} title="拒绝主体信息"
-        onCancel={() => { setRejectOpen(null); rejectForm.resetFields(); }}
-        onOk={handleReject} destroyOnClose
-      >
-        <Form form={rejectForm} layout="vertical">
-          <Form.Item name="reason" label="拒绝原因" rules={[{ required: true, message: '请输入拒绝原因' }]}>
-            <Input.TextArea rows={3} maxLength={200} />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      <Drawer width={560} open={!!detail} onClose={() => setDetail(null)} title="主体信息详情">
-        {detail && (
-          <>
-            <Descriptions column={1} bordered size="small">
-              <Descriptions.Item label="UUID">{detail.uuid}</Descriptions.Item>
-              <Descriptions.Item label="主体模板">{detail.template_name || detail.template_uuid}</Descriptions.Item>
-              <Descriptions.Item label="状态"><Tag>{detail.status}</Tag></Descriptions.Item>
-              <Descriptions.Item label="拒绝原因">{detail.reject_reason || '-'}</Descriptions.Item>
-              <Descriptions.Item label="创建时间">
-                {new Date(detail.created_at).toLocaleString('zh-CN')}
+          {currentFields.length === 0 && (
+            <Descriptions column={1} size="small">
+              <Descriptions.Item>
+                该模板字段全部由扩展信息派生，无需填写；请在申请证书时添加对应域名/邮箱。
               </Descriptions.Item>
             </Descriptions>
-            <div style={{ marginTop: 16 }}>
-              <Title level={5}>字段内容</Title>
-              <Descriptions column={1} bordered size="small">
-                {Object.entries(detail.fields || {}).map(([k, v]) => (
-                  <Descriptions.Item key={k} label={k}>{v}</Descriptions.Item>
-                ))}
-              </Descriptions>
-            </div>
-          </>
-        )}
-      </Drawer>
+          )}
+        </Form>
+      </Modal>
     </div>
   );
 };

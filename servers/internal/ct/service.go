@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/globaltrusts/server-card/internal/storage"
+	"github.com/google/uuid"
 )
 
 // DefaultSubmitTimeout 是 CT 提交 HTTP 调用的默认超时时间。
@@ -30,16 +30,16 @@ const DefaultSubmitTimeout = 30 * time.Second
 
 // CTEntry 是 CT 提交记录模型。
 type CTEntry struct {
-	UUID         string    `json:"uuid"`
-	CertUUID     string    `json:"cert_uuid"`
-	CAUUID       string    `json:"ca_uuid"`
-	CertHash     string    `json:"cert_hash"`      // 证书 SHA-256 指纹
-	CTServer     string    `json:"ct_server"`       // CT 日志服务器地址
-	SCTData      []byte    `json:"sct_data"`        // Signed Certificate Timestamp 数据
-	Status       string    `json:"status"`          // pending/submitted/failed
-	SubmittedBy  string    `json:"submitted_by"`    // 提交者用户 UUID
-	SubmittedAt  *time.Time `json:"submitted_at,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	UUID        string     `json:"uuid"`
+	CertUUID    string     `json:"cert_uuid"`
+	CAUUID      string     `json:"ca_uuid"`
+	CertHash    string     `json:"cert_hash"`    // 证书 SHA-256 指纹
+	CTServer    string     `json:"ct_server"`    // CT 日志服务器地址
+	SCTData     []byte     `json:"sct_data"`     // Signed Certificate Timestamp 数据
+	Status      string     `json:"status"`       // pending/submitted/failed
+	SubmittedBy string     `json:"submitted_by"` // 提交者用户 UUID
+	SubmittedAt *time.Time `json:"submitted_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 // SCTResponse 描述 RFC 6962 add-chain 的响应体。

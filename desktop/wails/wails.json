@@ -1,0 +1,14 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "opencert-desktop",
+  "outputfilename": "OpenCertManager",
+  "info": {
+    "productName": "OpenCert Manager",
+    "productVersion": "2.1.0",
+    "comments": "本地管理端桌面客户端（内嵌 client-card 后端）"
+  },
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "http://127.0.0.1:1026"
+}

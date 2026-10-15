@@ -1,111 +1,580 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenCert Platform — 开源证书管理平台</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1a1a2e; background: #f8f9fa; }
-        .hero { background: linear-gradient(135deg, #0f3460 0%, #16213e 50%, #1a1a2e 100%); color: #fff; padding: 80px 20px; text-align: center; }
-        .hero h1 { font-size: 3rem; margin-bottom: 16px; letter-spacing: -1px; }
-        .hero h1 span { color: #e94560; }
-        .hero p { font-size: 1.25rem; opacity: 0.85; max-width: 700px; margin: 0 auto 32px; line-height: 1.6; }
-        .hero .btn-group { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
-        .btn { display: inline-block; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 1rem; transition: transform 0.2s, box-shadow 0.2s; }
-        .btn-primary { background: #e94560; color: #fff; }
-        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(233,69,96,0.3); }
-        .btn-outline { border: 2px solid rgba(255,255,255,0.5); color: #fff; }
-        .btn-outline:hover { border-color: #fff; transform: translateY(-2px); }
-        .features { max-width: 1100px; margin: -40px auto 60px; padding: 0 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
-        .card { background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); transition: transform 0.2s; }
-        .card:hover { transform: translateY(-4px); }
-        .card .icon { font-size: 2.5rem; margin-bottom: 16px; }
-        .card h3 { font-size: 1.25rem; margin-bottom: 8px; color: #0f3460; }
-        .card p { color: #666; line-height: 1.6; font-size: 0.95rem; }
-        .section { max-width: 1100px; margin: 0 auto 60px; padding: 0 20px; }
-        .section h2 { font-size: 2rem; text-align: center; margin-bottom: 40px; color: #0f3460; }
-        .cert-types { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
-        .cert-type { background: #fff; border-radius: 8px; padding: 20px; text-align: center; border: 1px solid #eee; }
-        .cert-type h4 { color: #0f3460; margin: 8px 0 4px; }
-        .cert-type p { color: #888; font-size: 0.85rem; }
-        .arch { background: #16213e; color: #fff; padding: 60px 20px; text-align: center; }
-        .arch h2 { font-size: 2rem; margin-bottom: 16px; }
-        .arch p { opacity: 0.7; max-width: 600px; margin: 0 auto 32px; }
-        .arch pre { background: rgba(255,255,255,0.08); border-radius: 8px; padding: 24px; max-width: 600px; margin: 0 auto; text-align: left; font-size: 0.9rem; line-height: 1.8; overflow-x: auto; }
-        footer { background: #1a1a2e; color: rgba(255,255,255,0.5); text-align: center; padding: 24px; font-size: 0.85rem; }
-        footer a { color: #e94560; text-decoration: none; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenCert Platform — 开源证书管理平台</title>
+<meta name="description" content="OpenCert Platform：开源的 CA + 智能卡 + X.509 证书管理平台，提供证书生命周期管理、虚拟智能卡驱动与 PKCS#11 标准兼容接口。">
+<script>
+  // 首屏前同步主题，避免暗色用户看到闪烁
+  (function () {
+    try {
+      var mode = localStorage.getItem('platform_themeMode') || 'light';
+      var dark = mode === 'dark' ||
+        (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    } catch (e) {
+      document.documentElement.dataset.theme = 'light';
+    }
+  })();
+</script>
+<style>
+  :root {
+    --brand: #1d4ed8;
+    --brand-soft: #eff4ff;
+    --brand-border: #dbe6ff;
+    --cyan: #0891b2;
+    --page-bg: #ffffff;
+    --page-alt: #f7f9fc;
+    --card-bg: #ffffff;
+    --border: #e6ebf2;
+    --border-soft: #eef2f7;
+    --text: #0f172a;
+    --text-2: #5b6472;
+    --text-3: #94a3b8;
+    --deep: #0b1220;
+    --deep-2: #101a2d;
+    --shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 16px 40px -30px rgba(15, 23, 42, .3);
+    --shadow-lift: 0 2px 6px rgba(15, 23, 42, .06), 0 26px 52px -26px rgba(15, 23, 42, .35);
+    --grid-line: rgba(148, 163, 184, .18);
+    color-scheme: light;
+  }
+
+  html[data-theme='dark'] {
+    --brand: #3b82f6;
+    --brand-soft: rgba(59, 130, 246, .16);
+    --brand-border: rgba(59, 130, 246, .34);
+    --cyan: #38bdf8;
+    --page-bg: #0b1220;
+    --page-alt: #0d1524;
+    --card-bg: #111a2b;
+    --border: rgba(148, 163, 184, .16);
+    --border-soft: rgba(148, 163, 184, .1);
+    --text: #e6edf3;
+    --text-2: #94a3b8;
+    --text-3: #64748b;
+    --deep: #070d18;
+    --deep-2: #0b1220;
+    --shadow: 0 1px 2px rgba(2, 6, 16, .5), 0 20px 48px -30px rgba(2, 6, 16, .9);
+    --shadow-lift: 0 4px 10px rgba(2, 6, 16, .5), 0 30px 60px -30px rgba(2, 6, 16, .95);
+    --grid-line: rgba(148, 163, 184, .12);
+    color-scheme: dark;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--page-bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    transition: background-color .28s ease, color .28s ease;
+  }
+
+  a { color: inherit; text-decoration: none; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 32px; }
+
+  ::selection { background: var(--brand-soft); }
+
+  /* ---------- 顶栏 ---------- */
+  header {
+    position: sticky; top: 0; z-index: 20; height: 64px;
+    display: flex; align-items: center;
+    background: var(--page-bg);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  @supports (backdrop-filter: blur(4px)) {
+    header {
+      background: color-mix(in srgb, var(--page-bg) 84%, transparent);
+      backdrop-filter: blur(14px);
+    }
+  }
+  header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 20px; width: 100%; }
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .mark {
+    width: 34px; height: 34px; flex: 0 0 34px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #1d4ed8, #0891b2);
+    box-shadow: 0 10px 26px -12px rgba(29, 78, 216, .9);
+  }
+  .mark svg { width: 18px; height: 18px; stroke: #fff; }
+  .brand-name { font-size: 16.5px; font-weight: 700; letter-spacing: -.2px; }
+  .brand-name span { color: var(--brand); }
+
+  nav { display: flex; align-items: center; gap: 4px; }
+  nav a {
+    padding: 7px 13px; border-radius: 9px; font-size: 13.5px; color: var(--text-2);
+    transition: background-color .2s ease, color .2s ease;
+  }
+  nav a:hover { background: var(--brand-soft); color: var(--brand); }
+
+  .actions { display: flex; align-items: center; gap: 10px; }
+  .icon-btn {
+    width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 10px; border: 1px solid var(--border); background: var(--card-bg);
+    color: var(--text-2); cursor: pointer;
+    transition: border-color .22s ease, color .22s ease, transform .22s cubic-bezier(.16, 1, .3, 1);
+  }
+  .icon-btn:hover { color: var(--brand); border-color: var(--brand-border); }
+  .icon-btn:active { transform: scale(.94); }
+  .icon-btn svg { width: 17px; height: 17px; transition: transform .4s cubic-bezier(.16, 1, .3, 1); }
+  .icon-btn:hover svg { transform: rotate(24deg); }
+  .icon-btn .moon { display: none; }
+  html[data-theme='dark'] .icon-btn .sun { display: none; }
+  html[data-theme='dark'] .icon-btn .moon { display: block; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    height: 40px; padding: 0 18px; border-radius: 10px;
+    font-size: 13.5px; font-weight: 600; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card-bg); color: var(--text);
+    transition: transform .22s cubic-bezier(.16, 1, .3, 1), box-shadow .22s ease,
+      border-color .22s ease, background-color .22s ease;
+  }
+  .btn:hover { transform: translateY(-1px); border-color: var(--brand-border); }
+  .btn:active { transform: translateY(0) scale(.985); }
+  .btn svg { width: 15px; height: 15px; }
+  .btn-primary {
+    border-color: transparent; color: #fff;
+    background: linear-gradient(135deg, #1d4ed8, #2563eb);
+    box-shadow: 0 12px 26px -16px rgba(29, 78, 216, .95);
+  }
+  .btn-lg { height: 46px; padding: 0 26px; font-size: 14.5px; }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    position: relative; overflow: hidden;
+    padding: 82px 0 74px;
+    background:
+      radial-gradient(90% 120% at 8% 0%, var(--brand-soft) 0%, transparent 58%),
+      linear-gradient(180deg, var(--page-alt) 0%, var(--page-bg) 100%);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .hero::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none; opacity: .55;
+    background-image: linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 52px 52px;
+    -webkit-mask-image: radial-gradient(80% 70% at 22% 10%, #000 20%, transparent 100%);
+    mask-image: radial-gradient(80% 70% at 22% 10%, #000 20%, transparent 100%);
+  }
+  .hero .wrap { position: relative; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 56px; align-items: center; }
+
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 13px; border-radius: 999px;
+    border: 1px solid var(--brand-border); background: var(--brand-soft); color: var(--brand);
+    font-size: 12px; letter-spacing: .02em;
+  }
+  h1 {
+    margin: 22px 0 18px; font-size: 46px; line-height: 1.18;
+    letter-spacing: -1.4px; font-weight: 700;
+  }
+  h1 em { font-style: normal; color: var(--brand); }
+  .lede { max-width: 540px; font-size: 15.5px; line-height: 1.9; color: var(--text-2); }
+  .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 32px; }
+  .hero-note { margin-top: 22px; font-size: 12.5px; color: var(--text-3); }
+
+  .steps {
+    padding: 26px; border-radius: 20px;
+    background: var(--card-bg); border: 1px solid var(--border); box-shadow: var(--shadow);
+  }
+  .steps h2 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .steps p { font-size: 12.5px; color: var(--text-3); margin-bottom: 20px; }
+  .step { display: flex; gap: 14px; padding: 11px 0; border-top: 1px solid var(--border-soft); }
+  .step-no {
+    flex: 0 0 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--brand-soft); color: var(--brand);
+    font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+  }
+  .step h3 { font-size: 13.5px; font-weight: 600; }
+  .step p { margin: 3px 0 0; font-size: 12.5px; line-height: 1.7; color: var(--text-2); }
+
+  /* ---------- 通用区块 ---------- */
+  section.block { padding: 72px 0; }
+  section.block.alt { background: var(--page-alt); border-block: 1px solid var(--border-soft); }
+  .block-head { max-width: 620px; margin-bottom: 40px; }
+  .block-head h2 { font-size: 27px; letter-spacing: -.6px; font-weight: 700; }
+  .block-head p { margin-top: 10px; font-size: 14px; line-height: 1.85; color: var(--text-2); }
+
+  .grid-2 { display: grid; grid-template-columns: 1.25fr 1fr; gap: 18px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
+
+  .card {
+    padding: 26px; border-radius: 18px;
+    background: var(--card-bg); border: 1px solid var(--border); box-shadow: var(--shadow);
+    transition: transform .3s cubic-bezier(.16, 1, .3, 1), box-shadow .3s ease, border-color .3s ease;
+  }
+  .card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lift); border-color: var(--brand-border); }
+  .card-icon {
+    width: 42px; height: 42px; border-radius: 12px; margin-bottom: 16px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--brand-soft); color: var(--brand);
+  }
+  .card-icon svg { width: 20px; height: 20px; }
+  .card h3 { font-size: 15.5px; font-weight: 700; letter-spacing: -.2px; }
+  .card p { margin-top: 8px; font-size: 13.5px; line-height: 1.85; color: var(--text-2); }
+
+  .card.wide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 26px; align-items: center; }
+  .card.wide .card-icon { margin-bottom: 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+  .chip {
+    padding: 5px 11px; border-radius: 999px; font-size: 12px;
+    border: 1px solid var(--border); color: var(--text-2); background: var(--page-alt);
+  }
+
+  /* 证书类型：用分隔线而非卡片堆叠 */
+  .types { border-top: 1px solid var(--border); }
+  .type {
+    display: grid; grid-template-columns: 150px minmax(0, 1fr) auto;
+    gap: 20px; align-items: center;
+    padding: 18px 4px; border-bottom: 1px solid var(--border);
+    transition: background-color .2s ease, padding-inline .24s ease;
+  }
+  .type:hover { background: var(--brand-soft); padding-inline: 12px; }
+  .type h3 { font-size: 14.5px; font-weight: 600; }
+  .type p { font-size: 13px; color: var(--text-2); line-height: 1.7; }
+  .type code {
+    font-size: 12px; color: var(--text-3);
+    font-family: ui-monospace, SFMono-Regular, 'JetBrains Mono', Consolas, monospace;
+  }
+
+  /* ---------- 架构（深色区块） ---------- */
+  .arch { padding: 72px 0; background: var(--deep); color: #fff; }
+  .arch h2 { font-size: 26px; letter-spacing: -.6px; font-weight: 700; }
+  .arch .lede { color: rgba(226, 232, 240, .62); margin-top: 10px; }
+  .arch-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 44px; align-items: center; margin-top: 34px; }
+  .layer {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 18px; border-radius: 12px;
+    background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .1);
+  }
+  .layer + .layer { margin-top: 10px; }
+  .layer-dot { width: 8px; height: 8px; border-radius: 50%; background: #38bdf8; flex: 0 0 8px; }
+  .layer strong { font-size: 13.5px; font-weight: 600; }
+  .layer span { display: block; font-size: 12px; color: rgba(226, 232, 240, .58); margin-top: 2px; }
+  pre {
+    padding: 22px 24px; border-radius: 14px; overflow-x: auto;
+    background: rgba(255, 255, 255, .04);
+    border: 1px solid rgba(255, 255, 255, .1);
+    color: rgba(226, 232, 240, .82);
+    font-family: ui-monospace, SFMono-Regular, 'JetBrains Mono', Consolas, monospace;
+    font-size: 12.5px; line-height: 1.9;
+  }
+  pre .c { color: #7dd3fc; }
+  pre .d { color: rgba(226, 232, 240, .5); }
+
+  /* ---------- 页脚 ---------- */
+  footer { padding: 40px 0 30px; background: var(--deep-2); color: rgba(226, 232, 240, .6); }
+  footer .wrap { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+  footer .brand-name { color: #fff; }
+  footer .meta { font-size: 12.5px; }
+  footer .links { display: flex; gap: 18px; font-size: 12.5px; }
+  footer .links a { color: rgba(226, 232, 240, .72); transition: color .2s ease; }
+  footer .links a:hover { color: #7dd3fc; }
+
+  /* ---------- 入场动效 ---------- */
+  @keyframes rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+  .rise { animation: rise .7s cubic-bezier(.16, 1, .3, 1) both; }
+  .rise-2 { animation-delay: .08s; }
+  .rise-3 { animation-delay: .16s; }
+  .rise-4 { animation-delay: .24s; }
+
+  /* ---------- 响应式 ---------- */
+  @media (max-width: 1000px) {
+    .hero .wrap, .arch-grid { grid-template-columns: minmax(0, 1fr); gap: 34px; }
+    .grid-2, .grid-3 { grid-template-columns: minmax(0, 1fr); }
+    .card.wide { grid-template-columns: minmax(0, 1fr); }
+    h1 { font-size: 34px; letter-spacing: -.9px; }
+    nav { display: none; }
+  }
+  @media (max-width: 640px) {
+    .wrap { padding: 0 18px; }
+    .hero { padding: 54px 0 48px; }
+    h1 { font-size: 28px; }
+    section.block, .arch { padding: 52px 0; }
+    .type { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .type code { display: none; }
+    .btn { height: 38px; padding: 0 14px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+    }
+  }
+</style>
 </head>
 <body>
-    <div class="hero">
-        <h1>🔐 Open<span>Cert</span> Platform</h1>
-        <p>开源的 CA + 智能卡 + X.509/GPG/SSH 证书管理平台，提供完整的证书生命周期管理、虚拟智能卡驱动和 PKCS#11 标准兼容接口。</p>
-        <div class="btn-group">
-            <a href="/api/health" class="btn btn-primary">API 状态</a>
-            <a href="https://github.com/globaltrusts/opencert" class="btn btn-outline">GitHub</a>
-        </div>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="/">
+      <span class="mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l7 3v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6l7-3Z"/>
+          <path d="M9.2 12.2l2 2 3.6-3.9"/>
+        </svg>
+      </span>
+      <span class="brand-name">Open<span>Cert</span> Platform</span>
+    </a>
+
+    <nav>
+      <a href="#capability">平台能力</a>
+      <a href="#types">证书类型</a>
+      <a href="#architecture">系统架构</a>
+      <a href="/api/health">API 状态</a>
+    </nav>
+
+    <div class="actions">
+      <button type="button" class="icon-btn" id="themeToggle" aria-label="切换深浅色主题">
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <circle cx="12" cy="12" r="4.2"/>
+          <path d="M12 2.6v2.2M12 19.2v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.6 12h2.2M19.2 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/>
+        </svg>
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20.4 14.2A8.4 8.4 0 1 1 9.8 3.6a6.9 6.9 0 0 0 10.6 10.6Z"/>
+        </svg>
+      </button>
+      <a class="btn btn-primary" href="/console">
+        进入控制台
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h13M13 6.5 18.5 12 13 17.5"/>
+        </svg>
+      </a>
+    </div>
+  </div>
+</header>
+
+<!-- ---------- Hero ---------- -->
+<div class="hero">
+  <div class="wrap">
+    <div class="rise">
+      <span class="eyebrow">开源 · CA 与云端智能卡</span>
+      <h1>把证书签发与密钥托管<br>收进<em>一套平台</em></h1>
+      <p class="lede">
+        OpenCert Platform 覆盖 X.509 / SSH / GPG 证书的申请、验证、签发、吊销全流程，
+        并以虚拟智能卡托管私钥，通过标准 PKCS#11 接口被系统与应用直接调用。
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary btn-lg" href="/products">
+          查看产品与价格
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h13M13 6.5 18.5 12 13 17.5"/>
+          </svg>
+        </a>
+        <a class="btn btn-lg" href="/api/health">检查服务状态</a>
+      </div>
+      <p class="hero-note">AES-256-GCM 三层加密 · Argon2id 密钥派生 · TPM 硬件保护</p>
     </div>
 
-    <div class="features">
-        <div class="card">
-            <div class="icon">🏛️</div>
-            <h3>CA 证书颁发</h3>
-            <p>完整的 CA 管理功能，支持根 CA 创建、中间 CA 签发、证书模板管理、CRL/OCSP 吊销服务和 ACME 自动化签发。</p>
-        </div>
-        <div class="card">
-            <div class="icon">💳</div>
-            <h3>虚拟智能卡</h3>
-            <p>三种安全等级的虚拟智能卡（TPM 高安全/本地中安全/密码低安全），兼容 PKCS#11 标准，可被系统和应用直接调用。</p>
-        </div>
-        <div class="card">
-            <div class="icon">🔑</div>
-            <h3>多类型凭据</h3>
-            <p>统一管理 X.509 证书、SSH 密钥、GPG 证书、TOTP/FIDO 认证、登录信息、安全笔记等多种安全凭据。</p>
-        </div>
-        <div class="card">
-            <div class="icon">☁️</div>
-            <h3>云端同步</h3>
-            <p>证书和密钥可安全存储在云端智能卡中，支持离线缓存、自动重连和端到端加密的私钥备份与恢复。</p>
-        </div>
-        <div class="card">
-            <div class="icon">🛡️</div>
-            <h3>安全架构</h3>
-            <p>AES-256-GCM 三层加密、Argon2id 密钥派生、TPM 硬件保护、JWT Token 轮换、RBAC 权限控制。</p>
-        </div>
-        <div class="card">
-            <div class="icon">💰</div>
-            <h3>支付与订单</h3>
-            <p>灵活的支付插件系统，支持多种支付渠道，完整的充值、订单、余额管理和退款审批工作流。</p>
-        </div>
+    <div class="steps rise rise-3">
+      <h2>四步完成接入</h2>
+      <p>从注册到设备可用，链路可预期</p>
+      <div class="step"><span class="step-no">1</span><div><h3>创建账号与 CA</h3><p>初始化根 CA 或接入既有中间 CA，配置签发策略与模板。</p></div></div>
+      <div class="step"><span class="step-no">2</span><div><h3>提交证书申请</h3><p>填写主体与扩展信息，按域名、邮箱或组织资料完成验证。</p></div></div>
+      <div class="step"><span class="step-no">3</span><div><h3>签发与托管</h3><p>证书签发后写入云端智能卡，私钥不出服务端。</p></div></div>
+      <div class="step"><span class="step-no">4</span><div><h3>设备端调用</h3><p>安装 PKCS#11 驱动，现有业务系统无需改造即可签名解密。</p></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- 平台能力 ---------- -->
+<section class="block" id="capability">
+  <div class="wrap">
+    <div class="block-head">
+      <h2>平台能力</h2>
+      <p>面向私有化部署与云端服务两种形态，模块可独立启用。</p>
     </div>
 
-    <div class="section">
-        <h2>支持的证书类型</h2>
-        <div class="cert-types">
-            <div class="cert-type"><div style="font-size:2rem">📜</div><h4>SSL/TLS 证书</h4><p>DV / OV / EV</p></div>
-            <div class="cert-type"><div style="font-size:2rem">✍️</div><h4>代码签名</h4><p>软件发布签名</p></div>
-            <div class="cert-type"><div style="font-size:2rem">📧</div><h4>S/MIME 邮件</h4><p>邮件加密签名</p></div>
-            <div class="cert-type"><div style="font-size:2rem">🔗</div><h4>客户端证书</h4><p>双向 TLS 认证</p></div>
-            <div class="cert-type"><div style="font-size:2rem">🗝️</div><h4>SSH 密钥</h4><p>服务器登录认证</p></div>
-            <div class="cert-type"><div style="font-size:2rem">🔏</div><h4>GPG 证书</h4><p>文件/Git 签名</p></div>
+    <div class="grid-2">
+      <article class="card wide">
+        <div>
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2.5" y="5" width="19" height="14" rx="3"/>
+              <path d="M2.5 10h19M6.5 15h4"/>
+            </svg>
+          </div>
         </div>
+        <div>
+          <h3>虚拟智能卡</h3>
+          <p>
+            三种安全等级的虚拟卡片：TPM 高安全、本地中安全与口令低安全。
+            私钥由云端托管，卡 PIN 与账号二次验证双重保护签名操作。
+          </p>
+          <div class="chips">
+            <span class="chip">PKCS#11</span>
+            <span class="chip">KSP</span>
+            <span class="chip">离线缓存</span>
+            <span class="chip">端到端加密备份</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l7 3v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6l7-3Z"/>
+            <path d="M9.2 12.2l2 2 3.6-3.9"/>
+          </svg>
+        </div>
+        <h3>证书生命周期</h3>
+        <p>根 CA 与中间 CA 管理、模板化签发、CRL / OCSP 吊销服务以及 ACME 自动化签发，链路完整可追溯。</p>
+      </article>
     </div>
 
-    <div class="arch">
-        <h2>系统架构</h2>
-        <p>三层架构设计，驱动层通过 IPC 与管理端通信，管理端通过 REST API 与云端平台交互。</p>
-        <pre>
-OpenCert Driver  (pkcs11-mock.dll/so)    — PKCS#11 标准驱动
-       ↕  IPC (Named Pipe / Unix Socket)
-OpenCert Manager (client-card + webpage) — 本地管理端
-       ↕  REST API (HTTPS)
-OpenCert Platform (server-card)          — 云端平台服务
-        </pre>
+    <div class="grid-3">
+      <article class="card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 4h8.5a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1Z"/>
+            <path d="M9 9h6M9 13h6M9 17h3"/>
+          </svg>
+        </div>
+        <h3>多类型凭据</h3>
+        <p>统一管理 X.509 证书、SSH 密钥、GPG 证书、TOTP / FIDO 认证、登录信息与安全笔记。</p>
+      </article>
+
+      <article class="card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3Z"/>
+            <path d="M12 12l8-4.5M12 12v9M12 12 4 7.5"/>
+          </svg>
+        </div>
+        <h3>云端同步</h3>
+        <p>证书与元数据安全同步至云端卡片，支持离线缓存、自动重连与加密私钥备份恢复。</p>
+      </article>
+
+      <article class="card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l7.5 3.5v5c0 4.4-3.1 8.2-7.5 9.5-4.4-1.3-7.5-5.1-7.5-9.5v-5L12 3Z"/>
+            <path d="M12 8.5v4M12 15.6v.1"/>
+          </svg>
+        </div>
+        <h3>安全架构</h3>
+        <p>AES-256-GCM 三层加密、Argon2id 密钥派生、TPM 硬件保护、JWT Token 轮换与 RBAC 权限控制。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ---------- 证书类型 ---------- -->
+<section class="block alt" id="types">
+  <div class="wrap">
+    <div class="block-head">
+      <h2>支持的证书类型</h2>
+      <p>按验证等级与用途选择，签发后可直接写入云端智能卡。</p>
     </div>
 
-    <footer>
-        <p>© 2024 OpenCert Project · <a href="https://github.com/globaltrusts/opencert">开源项目</a> · 基于 Go + React + C 构建</p>
-    </footer>
+    <div class="types">
+      <div class="type">
+        <h3>SSL/TLS 证书</h3>
+        <p>面向网站与 API 网关，支持 DV / OV / EV 三种验证等级。</p>
+        <code>serverAuth</code>
+      </div>
+      <div class="type">
+        <h3>代码签名证书</h3>
+        <p>为桌面软件、驱动与安装包签名，保障发布链路完整性。</p>
+        <code>codeSigning</code>
+      </div>
+      <div class="type">
+        <h3>S/MIME 邮件证书</h3>
+        <p>邮件加密与数字签名，满足合规归档与身份确认需求。</p>
+        <code>emailProtection</code>
+      </div>
+      <div class="type">
+        <h3>客户端证书</h3>
+        <p>双向 TLS 认证，用于设备接入、内网访问与零信任网关。</p>
+        <code>clientAuth</code>
+      </div>
+      <div class="type">
+        <h3>SSH 密钥</h3>
+        <p>服务器登录凭据集中托管，支持按主机与有效期下发。</p>
+        <code>ssh-ed25519</code>
+      </div>
+      <div class="type">
+        <h3>GPG 证书</h3>
+        <p>用于文件加密与 Git 提交签名，公私钥统一纳管。</p>
+        <code>openpgp</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ---------- 系统架构 ---------- -->
+<section class="arch" id="architecture">
+  <div class="wrap">
+    <h2>系统架构</h2>
+    <p class="lede">驱动层通过 IPC 与管理端通信，管理端通过 REST API 与云端平台交互。</p>
+
+    <div class="arch-grid">
+      <div>
+        <div class="layer">
+          <span class="layer-dot"></span>
+          <div><strong>OpenCert Driver</strong><span>pkcs11-mock.dll / .so — PKCS#11 标准驱动</span></div>
+        </div>
+        <div class="layer">
+          <span class="layer-dot"></span>
+          <div><strong>OpenCert Manager</strong><span>client-card + 本地管理界面</span></div>
+        </div>
+        <div class="layer">
+          <span class="layer-dot"></span>
+          <div><strong>OpenCert Platform</strong><span>server-card — 云端平台服务（:1027）</span></div>
+        </div>
+      </div>
+
+      <pre>Windows / Linux 应用
+  <span class="d">|</span>  PKCS#11 (C_Initialize / C_Sign / C_Decrypt)
+  <span class="d">v</span>
+<span class="c">OpenCert Driver</span>  (pkcs11-mock.dll / .so)
+  <span class="d">|</span>  IPC (Named Pipe / Unix Socket)
+  <span class="d">v</span>
+<span class="c">OpenCert Manager</span> (client-card + 管理界面)
+  <span class="d">|</span>  REST API (HTTPS)
+  <span class="d">v</span>
+<span class="c">OpenCert Platform</span> (server-card)</pre>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="brand">
+      <span class="mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l7 3v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6l7-3Z"/>
+          <path d="M9.2 12.2l2 2 3.6-3.9"/>
+        </svg>
+      </span>
+      <span class="brand-name">Open<span>Cert</span> Platform</span>
+    </div>
+    <div class="links">
+      <a href="/api/health">API 状态</a>
+      <a href="/trust">信任服务</a>
+      <a href="/downloads">下载与接入</a>
+      <a href="https://github.com/globaltrusts/opencert">GitHub</a>
+    </div>
+    <div class="meta">基于 Go + React + C 构建 · 开源证书管理平台</div>
+  </div>
+</footer>
+
+<script>
+  // 主题切换：与前端控制台共用 platform_themeMode，保持整站一致
+  (function () {
+    var toggle = document.getElementById('themeToggle');
+    toggle.addEventListener('click', function () {
+      var next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem('platform_themeMode', next); } catch (e) {}
+    });
+  })();
+</script>
+
 </body>
 </html>

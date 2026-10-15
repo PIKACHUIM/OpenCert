@@ -1,11 +1,11 @@
 // Package payment - 支付渠道单元测试。
 //
 // 覆盖核心安全路径：
-//   1. Alipay: RSA2 签名往返 + 异步通知验签 + 状态映射
-//   2. WeChat: AES-GCM 回调解密 + 状态映射
-//   3. Stripe: HMAC-SHA256 Webhook 验签 + 防重放 + 状态映射
-//   4. PayPal: OAuth2 token 缓存 + 状态映射
-//   5. Loader:  按 plugin_type 路由
+//  1. Alipay: RSA2 签名往返 + 异步通知验签 + 状态映射
+//  2. WeChat: AES-GCM 回调解密 + 状态映射
+//  3. Stripe: HMAC-SHA256 Webhook 验签 + 防重放 + 状态映射
+//  4. PayPal: OAuth2 token 缓存 + 状态映射
+//  5. Loader:  按 plugin_type 路由
 package payment
 
 import (
