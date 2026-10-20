@@ -11,6 +11,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
@@ -19,6 +20,7 @@ import (
 	"crypto/x509"
 	"encoding/binary"
 	"fmt"
+	"github.com/emmansun/gmsm/sm2"
 	"hash"
 	"strings"
 	"sync"
@@ -47,6 +49,11 @@ type Slot struct {
 	// 对象缓存：handle -> certificate
 	objects    map[pkcs11types.ObjectHandle]*storage.Certificate
 	nextHandle uint32
+
+	// 对称密钥对象（CKO_SECRET_KEY，仅存在于本进程会话中，不落库）。
+	// 句柄从独立区段分配，避免与证书对象在 loadObjects 重置时冲突。
+	secretKeys map[pkcs11types.ObjectHandle]*secretKeyObject
+	secretNext uint32
 }
 
 // New 创建本地 Slot 实例（无 TPM Provider；仅 low 等级卡可正常工作）。
@@ -57,6 +64,8 @@ func New(slotID pkcs11types.SlotID, card *storage.Card, certRepo *storage.CertRe
 		certRepo:   certRepo,
 		objects:    make(map[pkcs11types.ObjectHandle]*storage.Certificate),
 		nextHandle: 1,
+		secretKeys: make(map[pkcs11types.ObjectHandle]*secretKeyObject),
+		secretNext: secretHandleBase,
 	}
 }
 
@@ -142,6 +151,10 @@ func (s *Slot) Mechanisms() []pkcs11types.MechanismType {
 		pkcs11types.CKM_ECDSA_SHA512,
 		// EdDSA
 		pkcs11types.CKM_EDDSA,
+		// 国密（SM2 签名 / 验签 / 加解密，SM3 摘要）
+		pkcs11types.CKM_SM2_KEY_PAIR_GEN,
+		pkcs11types.CKM_SM2,
+		pkcs11types.CKM_SM3,
 		// 摘要
 		pkcs11types.CKM_SHA256,
 		pkcs11types.CKM_SHA384,
@@ -149,9 +162,11 @@ func (s *Slot) Mechanisms() []pkcs11types.MechanismType {
 		pkcs11types.CKM_SHA3_256,
 		pkcs11types.CKM_SHA3_384,
 		pkcs11types.CKM_SHA3_512,
-		// 对称加密
+		// 对称加密（密钥来自 CKO_SECRET_KEY 对象）
 		pkcs11types.CKM_AES_CBC,
 		pkcs11types.CKM_AES_GCM,
+		pkcs11types.CKM_SM4_CBC,
+		pkcs11types.CKM_SM4_GCM,
 		pkcs11types.CKM_CHACHA20_POLY1305,
 	}
 }
@@ -282,6 +297,11 @@ func (s *Slot) FindObjects(ctx context.Context, template []pkcs11types.Attribute
 			result = append(result, handle)
 		}
 	}
+	for handle, key := range s.secretKeys {
+		if matchSecretKey(key, template) {
+			result = append(result, handle)
+		}
+	}
 	return result, nil
 }
 
@@ -289,11 +309,15 @@ func (s *Slot) FindObjects(ctx context.Context, template []pkcs11types.Attribute
 func (s *Slot) GetAttributes(ctx context.Context, handle pkcs11types.ObjectHandle, attrTypes []pkcs11types.AttributeType) ([]pkcs11types.Attribute, error) {
 	s.mu.RLock()
 	cert, ok := s.objects[handle]
-	s.mu.RUnlock()
-
 	if !ok {
-		return nil, fmt.Errorf("对象句柄 %d 不存在", handle)
+		key, keyOK := s.lookupSecretKey(handle)
+		s.mu.RUnlock()
+		if !keyOK {
+			return nil, fmt.Errorf("对象句柄 %d 不存在", handle)
+		}
+		return buildSecretKeyAttributes(key, attrTypes), nil
 	}
+	s.mu.RUnlock()
 
 	return buildAttributes(cert, attrTypes)
 }
@@ -337,12 +361,16 @@ func (s *Slot) Sign(ctx context.Context, handle pkcs11types.ObjectHandle, mechan
 func (s *Slot) Decrypt(ctx context.Context, handle pkcs11types.ObjectHandle, mechanism pkcs11types.Mechanism, ciphertext []byte) ([]byte, error) {
 	s.mu.RLock()
 	cert, ok := s.objects[handle]
+	if !ok {
+		key, keyOK := s.lookupSecretKey(handle)
+		s.mu.RUnlock()
+		if !keyOK {
+			return nil, fmt.Errorf("对象句柄 %d 不存在", handle)
+		}
+		return cryptSecretKey(key, mechanism, ciphertext, false)
+	}
 	masterKey := s.masterKey
 	s.mu.RUnlock()
-
-	if !ok {
-		return nil, fmt.Errorf("对象句柄 %d 不存在", handle)
-	}
 
 	// high 模式：在 TPM 内部完成解密
 	if string(cert.TPMPlatform) == "high-v1" {
@@ -361,11 +389,15 @@ func (s *Slot) Decrypt(ctx context.Context, handle pkcs11types.ObjectHandle, mec
 func (s *Slot) Encrypt(ctx context.Context, handle pkcs11types.ObjectHandle, mechanism pkcs11types.Mechanism, plaintext []byte) ([]byte, error) {
 	s.mu.RLock()
 	cert, ok := s.objects[handle]
-	s.mu.RUnlock()
-
 	if !ok {
-		return nil, fmt.Errorf("对象句柄 %d 不存在", handle)
+		key, keyOK := s.lookupSecretKey(handle)
+		s.mu.RUnlock()
+		if !keyOK {
+			return nil, fmt.Errorf("对象句柄 %d 不存在", handle)
+		}
+		return cryptSecretKey(key, mechanism, plaintext, true)
 	}
+	s.mu.RUnlock()
 
 	pubKey, err := parsePublicKey(cert)
 	if err != nil {
@@ -721,9 +753,12 @@ func (s *Slot) decryptHighImportPrivateKey(cert *storage.Certificate, masterKey 
 	return parsePrivateKey(privDER)
 }
 
-// parsePrivateKey 解析 DER 格式私钥（支持 RSA/EC/Ed25519）。
+// parsePrivateKey 解析 DER 格式私钥（支持 RSA/EC/Ed25519/SM2）。
 func parsePrivateKey(der []byte) (crypto.PrivateKey, error) {
-	// 尝试 PKCS#8
+	// 尝试 PKCS#8（先走国密库，可识别 SM2 OID，其余算法内部回退标准库）
+	if key, err := parseGMPKCS8(der); err == nil {
+		return key, nil
+	}
 	if key, err := x509.ParsePKCS8PrivateKey(der); err == nil {
 		return key, nil
 	}
@@ -749,8 +784,15 @@ func parsePublicKey(cert *storage.Certificate) (crypto.PublicKey, error) {
 	if x509Cert, err := parseCertLenient(der); err == nil {
 		return x509Cert.PublicKey, nil
 	}
+	// 国密证书：标准库无法识别 SM2 签名算法，需要用 smx509 解析
+	if gmCert, err := parseGMCertificate(der); err == nil {
+		return gmCert.PublicKey, nil
+	}
 
-	// 尝试解析 DER 公钥
+	// 尝试解析 DER 公钥（支持 SM2 曲线）
+	if pub, err := parseGMPKIX(der); err == nil {
+		return pub, nil
+	}
 	if pub, err := x509.ParsePKIXPublicKey(der); err == nil {
 		return pub, nil
 	}
@@ -763,6 +805,12 @@ func signData(privKey crypto.PrivateKey, mechanism pkcs11types.Mechanism, data [
 	switch key := privKey.(type) {
 	case *rsa.PrivateKey:
 		return signRSA(key, mechanism, data)
+	case *sm2.PrivateKey:
+		// CKM_SM2 的输入是原文，由实现计算 Z 值与 SM3 摘要
+		if mechanism.Type != pkcs11types.CKM_SM2 {
+			return nil, fmt.Errorf("SM2 私钥仅支持 CKM_SM2（当前 0x%X）", uint32(mechanism.Type))
+		}
+		return sm2SignRaw(key, data)
 	case *ecdsa.PrivateKey:
 		return signECDSA(key, mechanism, data)
 	case ed25519.PrivateKey:
@@ -867,9 +915,15 @@ func signEd25519(key ed25519.PrivateKey, data []byte) ([]byte, error) {
 
 // decryptData 使用私钥解密数据。
 func decryptData(privKey crypto.PrivateKey, mechanism pkcs11types.Mechanism, ciphertext []byte) ([]byte, error) {
+	if sm2Key, ok := asSM2PrivateKey(privKey); ok {
+		if mechanism.Type != pkcs11types.CKM_SM2 {
+			return nil, fmt.Errorf("SM2 私钥仅支持 CKM_SM2 解密（当前 0x%X）", uint32(mechanism.Type))
+		}
+		return sm2Decrypt(sm2Key, ciphertext)
+	}
 	rsaKey, ok := privKey.(*rsa.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("解密仅支持 RSA 私钥")
+		return nil, fmt.Errorf("解密仅支持 RSA / SM2 私钥")
 	}
 
 	switch mechanism.Type {
@@ -882,11 +936,17 @@ func decryptData(privKey crypto.PrivateKey, mechanism pkcs11types.Mechanism, cip
 	}
 }
 
-// encryptData 使用公钥加密数据。
+// encryptData 使用公钥加密数据（支持 RSA / SM2）。
 func encryptData(pubKey crypto.PublicKey, mechanism pkcs11types.Mechanism, plaintext []byte) ([]byte, error) {
+	if ecKey, ok := pubKey.(*ecdsa.PublicKey); ok {
+		if mechanism.Type != pkcs11types.CKM_SM2 {
+			return nil, fmt.Errorf("EC/SM2 公钥仅支持 CKM_SM2 加密（当前 0x%X）", uint32(mechanism.Type))
+		}
+		return sm2Encrypt(ecKey, plaintext)
+	}
 	rsaKey, ok := pubKey.(*rsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("加密仅支持 RSA 公钥")
+		return nil, fmt.Errorf("加密仅支持 RSA / SM2 公钥")
 	}
 
 	switch mechanism.Type {
@@ -1019,6 +1079,9 @@ func buildAttributes(cert *storage.Certificate, attrTypes []pkcs11types.Attribut
 		case pkcs11types.CKA_KEY_TYPE:
 			// 从 cert.KeyType 字符串推断 PKCS#11 密钥类型
 			attr.Value = keyTypeToBytes(cert.KeyType)
+		case pkcs11types.CKA_EC_PARAMS:
+			// 曲线参数：SM2 与各 EC 曲线的 namedCurve OID（DER）
+			attr.Value = ecParamsForKeyType(cert.KeyType)
 		case pkcs11types.CKA_MODULUS_BITS:
 			// 从 cert.KeyType 字符串推断密钥位数
 			attr.Value = uint32ToBytes(keyTypeToBits(cert.KeyType))
@@ -1039,14 +1102,34 @@ func uint32ToBytes(v uint32) []byte {
 // keyTypeToBytes 将 cert.KeyType 字符串转换为 PKCS#11 CKK_* 值的字节表示。
 func keyTypeToBytes(keyType string) []byte {
 	switch {
+	case keyType == "sm2":
+		// 国密密钥类型：沿用厂商区段，避免与标准 CKK_EC 混淆
+		return uint32ToBytes(uint32(pkcs11types.CKK_SM2))
 	case strings.HasPrefix(keyType, "rsa"):
-		return uint32ToBytes(0x00000000) // CKK_RSA
+		return uint32ToBytes(uint32(pkcs11types.CKK_RSA))
 	case strings.HasPrefix(keyType, "ec") || strings.HasPrefix(keyType, "p256") || strings.HasPrefix(keyType, "p384") || strings.HasPrefix(keyType, "p521"):
-		return uint32ToBytes(0x00000003) // CKK_EC
+		return uint32ToBytes(uint32(pkcs11types.CKK_EC))
 	case strings.HasPrefix(keyType, "ed25519") || strings.HasPrefix(keyType, "ed"):
-		return uint32ToBytes(0x00000040) // CKK_EC_EDWARDS
+		return uint32ToBytes(uint32(pkcs11types.CKK_EC_EDWARDS))
 	default:
-		return uint32ToBytes(0x00000000) // 默认 RSA
+		return uint32ToBytes(uint32(pkcs11types.CKK_RSA))
+	}
+}
+
+// ecParamsForKeyType 返回密钥类型对应的 CKA_EC_PARAMS（namedCurve OID DER）。
+// 非 EC 类密钥返回 nil。
+func ecParamsForKeyType(keyType string) []byte {
+	switch keyType {
+	case "sm2":
+		return pkcs11types.CurveSM2DER
+	case "ec256", "p256":
+		return pkcs11types.CurveP256DER
+	case "ec384", "p384":
+		return pkcs11types.CurveP384DER
+	case "ec521", "p521":
+		return pkcs11types.CurveP521DER
+	default:
+		return nil
 	}
 }
 
@@ -1066,6 +1149,9 @@ func keyTypeToBits(keyType string) uint32 {
 	case "ec521", "p521":
 		return 521
 	case "ed25519":
+		return 256
+	case "sm2":
+		// SM2 曲线位宽为 256
 		return 256
 	default:
 		// 尝试从字符串中提取数字

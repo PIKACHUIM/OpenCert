@@ -479,12 +479,14 @@ func (r *CertRepo) Create(ctx context.Context, c *Certificate) error {
 		`INSERT INTO certificates (uuid, card_uuid, user_uuid, cert_type, key_type, cert_content, private_data, remark,
 		 order_no, ca_uuid, serial_number, serial_hex, subject_dn, issuer_dn, not_before, not_after,
 		 key_usage, ext_key_usage, san_dns, san_ip, san_email, san_uris, certificate_policies,
-		 issuance_tmpl_uuid, template_uuid, storage_policy, revocation_status, revoke_reason, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 issuance_tmpl_uuid, template_uuid, storage_policy, revocation_status, revoke_reason,
+		 key_backend, key_ref, key_storage_tmpl_uuid, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.UUID, c.CardUUID, c.UserUUID, c.CertType, c.KeyType, c.CertContent, c.PrivateData, c.Remark,
 		c.OrderNo, c.CAUUID, c.SerialNumber, c.SerialHex, c.SubjectDN, c.IssuerDN, c.NotBefore, c.NotAfter,
 		c.KeyUsage, c.ExtKeyUsage, c.SANDNS, c.SANIP, c.SANEmail, c.SANURI, c.CertificatePolicies,
-		c.IssuanceTmplUUID, c.TemplateUUID, c.StoragePolicy, c.RevocationStatus, c.RevokeReason, c.CreatedAt, c.UpdatedAt,
+		c.IssuanceTmplUUID, c.TemplateUUID, c.StoragePolicy, c.RevocationStatus, c.RevokeReason,
+		c.KeyBackend, c.KeyRef, c.KeyStorageTmplUUID, c.CreatedAt, c.UpdatedAt,
 	)
 	return err
 }
@@ -498,12 +500,14 @@ func (r *CertRepo) GetByUUID(ctx context.Context, certUUID string) (*Certificate
 		`SELECT uuid, card_uuid, user_uuid, cert_type, key_type, cert_content, private_data, remark,
 		 order_no, ca_uuid, serial_number, serial_hex, subject_dn, issuer_dn, not_before, not_after,
 		 key_usage, ext_key_usage, san_dns, san_ip, san_email, san_uris, certificate_policies,
-		 issuance_tmpl_uuid, template_uuid, storage_policy, revocation_status, revoke_reason, revoked_at, created_at, updated_at
+		 issuance_tmpl_uuid, template_uuid, storage_policy, revocation_status, revoke_reason, revoked_at,
+		 key_backend, key_ref, key_storage_tmpl_uuid, created_at, updated_at
 		 FROM certificates WHERE uuid = ?`, certUUID,
 	).Scan(&c.UUID, &c.CardUUID, &c.UserUUID, &c.CertType, &c.KeyType, &c.CertContent, &c.PrivateData, &c.Remark,
 		&c.OrderNo, &c.CAUUID, &c.SerialNumber, &c.SerialHex, &c.SubjectDN, &c.IssuerDN, &notBefore, &notAfter,
 		&c.KeyUsage, &c.ExtKeyUsage, &c.SANDNS, &c.SANIP, &c.SANEmail, &c.SANURI, &c.CertificatePolicies,
-		&c.IssuanceTmplUUID, &c.TemplateUUID, &c.StoragePolicy, &c.RevocationStatus, &c.RevokeReason, &revokedAt, &c.CreatedAt, &c.UpdatedAt)
+		&c.IssuanceTmplUUID, &c.TemplateUUID, &c.StoragePolicy, &c.RevocationStatus, &c.RevokeReason, &revokedAt,
+		&c.KeyBackend, &c.KeyRef, &c.KeyStorageTmplUUID, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("证书不存在: %s", certUUID)
 	}
@@ -525,7 +529,8 @@ func (r *CertRepo) ListByCard(ctx context.Context, cardUUID string) ([]*Certific
 		`SELECT uuid, card_uuid, user_uuid, cert_type, key_type, cert_content, remark,
 		 order_no, ca_uuid, serial_number, serial_hex, subject_dn, issuer_dn, not_before, not_after,
 		 key_usage, ext_key_usage, san_dns, san_ip, san_email, san_uris, certificate_policies,
-		 issuance_tmpl_uuid, template_uuid, storage_policy, revocation_status, revoke_reason, revoked_at, created_at, updated_at
+		 issuance_tmpl_uuid, template_uuid, storage_policy, revocation_status, revoke_reason, revoked_at,
+		 key_backend, created_at, updated_at
 		 FROM certificates WHERE card_uuid = ? ORDER BY created_at DESC`, cardUUID,
 	)
 	if err != nil {
@@ -541,7 +546,8 @@ func (r *CertRepo) ListByCard(ctx context.Context, cardUUID string) ([]*Certific
 		if err := rows.Scan(&c.UUID, &c.CardUUID, &c.UserUUID, &c.CertType, &c.KeyType, &c.CertContent, &c.Remark,
 			&c.OrderNo, &c.CAUUID, &c.SerialNumber, &c.SerialHex, &c.SubjectDN, &c.IssuerDN, &notBefore, &notAfter,
 			&c.KeyUsage, &c.ExtKeyUsage, &c.SANDNS, &c.SANIP, &c.SANEmail, &c.SANURI, &c.CertificatePolicies,
-			&c.IssuanceTmplUUID, &c.TemplateUUID, &c.StoragePolicy, &c.RevocationStatus, &c.RevokeReason, &revokedAt, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.IssuanceTmplUUID, &c.TemplateUUID, &c.StoragePolicy, &c.RevocationStatus, &c.RevokeReason, &revokedAt,
+			&c.KeyBackend, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if revokedAt.Valid {
@@ -604,7 +610,8 @@ func (r *CertRepo) ListFiltered(ctx context.Context, userUUID, caUUID, tmplUUID,
 	selectQuery := `SELECT c.uuid, c.card_uuid, c.user_uuid, c.cert_type, c.key_type, c.cert_content, c.remark,
 		 c.order_no, c.ca_uuid, c.serial_number, c.serial_hex, c.subject_dn, c.issuer_dn, c.not_before, c.not_after,
 		 c.key_usage, c.ext_key_usage, c.san_dns, c.san_ip, c.san_email, c.san_uris, c.certificate_policies,
-		 c.issuance_tmpl_uuid, c.template_uuid, c.storage_policy, c.revocation_status, c.revoke_reason, c.revoked_at, c.created_at, c.updated_at
+		 c.issuance_tmpl_uuid, c.template_uuid, c.storage_policy, c.revocation_status, c.revoke_reason, c.revoked_at,
+		 c.key_backend, c.created_at, c.updated_at
 		 FROM certificates c ` + where + ` ORDER BY c.created_at DESC LIMIT ? OFFSET ?`
 	selectArgs := append(args, pageSize, offset)
 
@@ -622,7 +629,8 @@ func (r *CertRepo) ListFiltered(ctx context.Context, userUUID, caUUID, tmplUUID,
 		if err := rows.Scan(&c.UUID, &c.CardUUID, &c.UserUUID, &c.CertType, &c.KeyType, &c.CertContent, &c.Remark,
 			&c.OrderNo, &c.CAUUID, &c.SerialNumber, &c.SerialHex, &c.SubjectDN, &c.IssuerDN, &notBefore, &notAfter,
 			&c.KeyUsage, &c.ExtKeyUsage, &c.SANDNS, &c.SANIP, &c.SANEmail, &c.SANURI, &c.CertificatePolicies,
-			&c.IssuanceTmplUUID, &c.TemplateUUID, &c.StoragePolicy, &c.RevocationStatus, &c.RevokeReason, &revokedAt, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.IssuanceTmplUUID, &c.TemplateUUID, &c.StoragePolicy, &c.RevocationStatus, &c.RevokeReason, &revokedAt,
+			&c.KeyBackend, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		if revokedAt.Valid {

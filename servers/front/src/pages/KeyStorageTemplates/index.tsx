@@ -11,8 +11,15 @@ import {
   updateKeyStorageTemplate, deleteKeyStorageTemplate,
 } from '../../api';
 import type { KeyStorageTemplate } from '../../types';
+import StorageZoneSelect from '../../components/StorageZoneSelect';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
+
+const genLocationText: Record<string, string> = {
+  server: '服务端存储区域',
+  csr: '用户自带 CSR',
+  card: '智能卡内生成',
+};
 
 /**
  * KeyStorageTemplates 页面：密钥存储类型模板。
@@ -41,7 +48,8 @@ const KeyStorageTemplatesPage: React.FC = () => {
       allow_file_download: true, allow_cloud_card: true,
       allow_physical_card: false, allow_virtual_card: false,
       virtual_card_security: 'medium', allow_reimport: false,
-      cloud_backup: false, allow_reissue: true, max_reissue_count: 3,
+      cloud_backup: false, allow_reissue: true, max_reissue_count: -1,
+      key_gen_location: 'server', download_formats: ['pem', 'pkcs12'],
     });
     setModal({ open: true, editing: null });
   };
@@ -79,12 +87,23 @@ const KeyStorageTemplatesPage: React.FC = () => {
         <Space size={4} wrap>
           {r.allow_file_download && <Tag color="blue">文件下载</Tag>}
           {r.allow_cloud_card && <Tag color="green">云端卡</Tag>}
-          {r.allow_physical_card && <Tag color="orange">物理卡</Tag>}
+          {r.allow_physical_card && <Tag color="orange">实体卡</Tag>}
           {r.allow_virtual_card && <Tag color="purple">虚拟卡({r.virtual_card_security})</Tag>}
           {r.cloud_backup && <Tag color="cyan">云备份</Tag>}
           {r.allow_reimport && <Tag color="gold">可重导入</Tag>}
-          {r.allow_reissue && <Tag>可重颁发({r.max_reissue_count}次)</Tag>}
+          {r.allow_reissue && (
+            <Tag>可重颁发({r.max_reissue_count === -1 ? '不限' : `${r.max_reissue_count} 次`})</Tag>
+          )}
         </Space>
+      ),
+    },
+    {
+      title: '密钥位置', key: 'key_gen', width: 150,
+      render: (_: any, r: KeyStorageTemplate) => (
+        <div>
+          <Tag>{genLocationText[r.key_gen_location || 'server'] || r.key_gen_location}</Tag>
+          <div><Text type="secondary" style={{ fontSize: 12 }}>{r.storage_zone_uuid ? '指定区域' : '默认区域'}</Text></div>
+        </div>
       ),
     },
     { title: '创建时间', dataIndex: 'created_at', key: 'created_at',
@@ -152,8 +171,25 @@ const KeyStorageTemplatesPage: React.FC = () => {
             <Form.Item name="cloud_backup" label="云端备份" valuePropName="checked"><Switch /></Form.Item>
             <Form.Item name="allow_reissue" label="允许重颁发" valuePropName="checked"><Switch /></Form.Item>
           </Space>
-          <Form.Item name="max_reissue_count" label="最大重颁发次数">
-            <InputNumber min={0} max={20} style={{ width: '100%' }} />
+          <Form.Item name="max_reissue_count" label="最大重颁发次数" extra="填 -1 表示不限次数">
+            <InputNumber min={-1} max={100} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="key_gen_location" label="密钥生成位置"
+            extra="选择「用户自带 CSR」时私钥不经过平台；选择「智能卡内生成」需至少勾选一种卡下发方式">
+            <Select options={[
+              { label: '服务端存储区域', value: 'server' },
+              { label: '用户自带 CSR', value: 'csr' },
+              { label: '智能卡上生成', value: 'card' },
+            ]} />
+          </Form.Item>
+          <Form.Item name="storage_zone_uuid" label="存储区域" extra="密钥生成并保存的位置；留空使用默认区域">
+            <StorageZoneSelect />
+          </Form.Item>
+          <Form.Item name="download_formats" label="文件下载格式" extra="国密 SM2 证书不提供 PKCS#12">
+            <Select mode="multiple" options={[
+              { label: 'PEM', value: 'pem' },
+              { label: 'PKCS#12', value: 'pkcs12' },
+            ]} />
           </Form.Item>
         </Form>
       </Modal>

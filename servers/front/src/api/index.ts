@@ -10,6 +10,7 @@ import type {
   CertOrder, CertApplication,
   PaymentOrder, UserBalance, RechargeRequest, RefundRequest, PaymentPlugin,
   StorageZone, CustomOID, RevocationService, ACMEConfig,
+  KeyBackendDriver, DiscoveredKeyModule, KeyBackendProbeResult,
   CTEntry, CloudTOTPEntry, TOTPCodeResponse, Log,
   Card, CreateCardRequest, VerifyPINRequest, UnlockPUKRequest, ResetAdminKeyRequest,
   PortalProduct, PortalProductSKU, PortalCategory, ProductView, PortalQuote, SiteSettings,
@@ -18,6 +19,8 @@ import type {
   OcspResponder, CertPolicy, VerifyProvider, VerifyProviderDriver,
   Coupon, PromoPlan, Subscription, RedeemCode, ApplyContext, SubjectFieldMeta,
   CertApplyTemplateInfo,
+  AlgorithmCatalog, SystemInfo, SystemMailView,
+  AdminApplyContext, AdminCreateApplicationRequest, ImportCARequest,
 } from '../types';
 
 // API 基础地址，连接 server-card :1027
@@ -93,8 +96,12 @@ const parseJSON = <T,>(v: unknown, fallback: T): T => {
 const fromIssuanceTemplate = (raw: any): IssuanceTemplate => ({
   ...raw,
   validity_options: parseJSON<number[]>(raw?.valid_days, []),
+  default_valid_days: raw?.default_valid_days ?? 0,
   allowed_key_types: parseJSON<string[]>(raw?.allowed_key_types, []),
+  allowed_sig_algs: parseJSON<string[]>(raw?.allowed_sig_algs, []),
   allowed_ca_uuids: parseJSON<string[]>(raw?.allowed_ca_uuids, []),
+  default_ca_uuid: raw?.default_ca_uuid ?? '',
+  path_len: raw?.path_len ?? 0,
   subject_template_uuid: raw?.subject_tmpl_uuid ?? '',
   extension_template_uuid: raw?.extension_tmpl_uuid ?? '',
   key_usage_template_uuid: raw?.key_usage_tmpl_uuid ?? '',
@@ -109,8 +116,11 @@ const toIssuanceTemplate = (t: Partial<IssuanceTemplate> & Record<string, any>) 
   path_len: t.path_len ?? 0,
   enabled: t.enabled !== false,
   valid_days: JSON.stringify(t.validity_options ?? []),
+  default_valid_days: t.default_valid_days ?? 0,
   allowed_key_types: JSON.stringify(t.allowed_key_types ?? []),
+  allowed_sig_algs: JSON.stringify(t.allowed_sig_algs ?? []),
   allowed_ca_uuids: JSON.stringify(t.allowed_ca_uuids ?? []),
+  default_ca_uuid: t.default_ca_uuid ?? '',
   subject_tmpl_uuid: t.subject_template_uuid ?? '',
   extension_tmpl_uuid: t.extension_template_uuid ?? '',
   key_usage_tmpl_uuid: t.key_usage_template_uuid ?? '',
@@ -135,19 +145,32 @@ const fromKeyStorageTemplate = (raw: any): KeyStorageTemplate => {
     allow_physical_card: (m & 4) !== 0,
     allow_virtual_card: (m & 8) !== 0,
     virtual_card_security: raw?.security_level || 'medium',
+    storage_zone_uuid: raw?.storage_zone_uuid || '',
+    key_gen_location: raw?.key_gen_location || 'server',
+    download_formats: parseJSON<string[]>(raw?.download_formats, ['pem', 'pkcs12']),
   };
 };
-const toKeyStorageTemplate = (t: Partial<KeyStorageTemplate> & Record<string, any>) => ({
-  name: t.name,
-  storage_methods:
-    (t.allow_file_download ? 1 : 0) | (t.allow_cloud_card ? 2 : 0) |
-    (t.allow_physical_card ? 4 : 0) | (t.allow_virtual_card ? 8 : 0),
-  security_level: t.virtual_card_security || 'medium',
-  allow_reimport: !!t.allow_reimport,
-  cloud_backup: !!t.cloud_backup,
-  allow_reissue: !!t.allow_reissue,
-  max_reissue_count: t.max_reissue_count ?? -1,
-});
+const toKeyStorageTemplate = (t: Partial<KeyStorageTemplate> & Record<string, any>) => {
+  // 下载格式：前端用数组，后端存 JSON 字符串
+  let formats = t.download_formats;
+  if (Array.isArray(formats)) formats = JSON.stringify(formats);
+  if (formats === undefined || formats === null || formats === '') formats = '["pem","pkcs12"]';
+  return {
+    name: t.name,
+    storage_methods:
+      (t.allow_file_download ? 1 : 0) | (t.allow_cloud_card ? 2 : 0) |
+      (t.allow_physical_card ? 4 : 0) | (t.allow_virtual_card ? 8 : 0),
+    security_level: t.virtual_card_security || 'medium',
+    allow_reimport: !!t.allow_reimport,
+    cloud_backup: !!t.cloud_backup,
+    allow_reissue: !!t.allow_reissue,
+    max_reissue_count: t.max_reissue_count ?? -1,
+    // 新增：私钥在哪个存储区域生成、是否平台生成 / 用户自带 CSR / 卡内生成
+    storage_zone_uuid: t.storage_zone_uuid || '',
+    key_gen_location: t.key_gen_location || 'server',
+    download_formats: formats,
+  };
+};
 
 // 主体信息：服务端 subject_tmpl_uuid + field_values(JSON 字符串)
 const fromSubjectInfo = (raw: any): SubjectInfo => ({
@@ -171,7 +194,12 @@ const fromRevocationService = (raw: any): RevocationService => ({
 
 // ACME：服务端 issuance_tmpl_uuid
 const fromACMEConfig = (raw: any): ACMEConfig => ({
-  ...raw, template_uuid: raw?.issuance_tmpl_uuid ?? raw?.template_uuid ?? '',
+  ...raw,
+  template_uuid: raw?.issuance_tmpl_uuid ?? raw?.template_uuid ?? '',
+  // 后端存的是 JSON 数组字符串，页面按数组使用
+  allowed_challenges: Array.isArray(raw?.allowed_challenges)
+    ? raw.allowed_challenges
+    : parseJSON<string[]>(raw?.allowed_challenges, ['http-01', 'dns-01']),
 });
 
 // ---- 通用请求函数（兼容 fetch 风格调用） ----
@@ -277,14 +305,24 @@ export const createCA = (data: CreateCARequest) =>
 export const getCA = (uuid: string) =>
   http.get<CA>(`/api/cas/${uuid}`).then((r) => r.data);
 
-export const updateCA = (uuid: string, data: Partial<CreateCARequest>) =>
-  http.put<CA>(`/api/cas/${uuid}`, data).then((r) => r.data);
+export const updateCA = (
+  uuid: string,
+  data: { name?: string; status?: string; is_public?: boolean },
+) => http.put<CA>(`/api/cas/${uuid}`, data).then((r) => r.data);
 
 export const deleteCA = (uuid: string) =>
   http.delete(`/api/cas/${uuid}`).then((r) => r.data);
 
 export const importCAChain = (uuid: string, chain_pem: string) =>
   http.post(`/api/cas/${uuid}/import-chain`, { chain_pem }).then((r) => r.data);
+
+/** 导入外部 CA：支持 PEM / DER(base64) / PKCS#7 / PKCS#12，可仅导入证书 */
+export const importCA = (data: ImportCARequest) =>
+  http.post<CA>('/api/cas/import', data).then((r) => r.data);
+
+/** 下载 CA 证书：pem（默认）/ der / chain */
+export const downloadCA = (uuid: string, format: 'pem' | 'der' | 'chain' = 'pem') =>
+  http.get(`/api/cas/${uuid}/download`, { params: { format }, responseType: 'blob' }).then((r) => r.data as Blob);
 
 export const listRevokedCerts = (caUUID: string) =>
   http.get(`/api/cas/${caUUID}/revoked`).then((r) => pickList<RevokedCert>(r.data, 'revoked_certs'));
@@ -333,13 +371,30 @@ export const deleteIssuanceTemplate = (uuid: string) =>
   http.delete(`/api/templates/issuance/${uuid}`).then((r) => r.data);
 
 // ---- 证书开通模板（cert_apply_templates）----
-export const listCertApplyTemplates = () =>
-  http.get('/api/templates/cert-apply').then((r) => pickList<CertApplyTemplateInfo>(r.data, 'templates'));
+export const listCertApplyTemplates = async () => {
+  const list = await http.get('/api/templates/cert-apply')
+    .then((r) => pickList<any>(r.data, 'templates'));
+  return list.map((raw: any) => ({ ...raw, inherited: raw?.inherited ?? undefined })) as CertApplyTemplateInfo[];
+};
 
-export const saveCertApplyTemplate = (data: Partial<CertApplyTemplateInfo>) =>
-  data.uuid
-    ? http.put(`/api/templates/cert-apply/${data.uuid}`, data).then((r) => r.data)
-    : http.post('/api/templates/cert-apply', data).then((r) => r.data);
+/** 开通模板只提交业务字段：CA / 有效期 / 算法 / 资料要求都继承自颁发模板 */
+export const saveCertApplyTemplate = (data: Partial<CertApplyTemplateInfo>) => {
+  const payload = {
+    name: data.name,
+    issuance_tmpl_uuid: data.issuance_tmpl_uuid,
+    enabled: data.enabled !== false,
+    require_approval: !!data.require_approval,
+    allow_renewal: data.allow_renewal !== false,
+    // 可申请方式：后端接受 JSON 数组字符串
+    apply_modes: Array.isArray((data as any).apply_modes)
+      ? JSON.stringify((data as any).apply_modes)
+      : (data as any).apply_modes || '["order","self","subscription"]',
+    description: data.description || '',
+  };
+  return data.uuid
+    ? http.put(`/api/templates/cert-apply/${data.uuid}`, payload).then((r) => r.data)
+    : http.post('/api/templates/cert-apply', payload).then((r) => r.data);
+};
 
 export const deleteCertApplyTemplate = (uuid: string) =>
   http.delete(`/api/templates/cert-apply/${uuid}`).then((r) => r.data);
@@ -375,21 +430,64 @@ export const deleteExtensionTemplate = (uuid: string) =>
   http.delete(`/api/templates/extension/${uuid}`).then((r) => r.data);
 
 // ---- 密钥用途模板 ----
+// 密钥用途模板：服务端 ext_key_usages 为 JSON 数组字符串，key_usage 为位掩码
+const fromKeyUsageTemplate = (raw: any): KeyUsageTemplate => ({
+  ...raw,
+  key_usage: Number(raw?.key_usage ?? 0),
+  ext_key_usage: parseJSON<string[]>(raw?.ext_key_usages, []),
+});
+
+const toKeyUsageTemplate = (t: Partial<KeyUsageTemplate> & Record<string, any>) => ({
+  name: t.name,
+  key_usage: Number(t.key_usage ?? 0),
+  ext_key_usages: JSON.stringify(t.ext_key_usage ?? []),
+});
+
 export const listKeyUsageTemplates = () =>
-  http.get('/api/templates/key-usage').then((r) => pickList<KeyUsageTemplate>(r.data, 'templates'));
+  http.get('/api/templates/key-usage')
+    .then((r) => pickList<any>(r.data, 'templates').map(fromKeyUsageTemplate));
 
 export const createKeyUsageTemplate = (data: Omit<KeyUsageTemplate, 'uuid' | 'created_at'>) =>
-  http.post<KeyUsageTemplate>('/api/templates/key-usage', data).then((r) => r.data);
+  http.post('/api/templates/key-usage', toKeyUsageTemplate(data)).then((r) => fromKeyUsageTemplate(r.data));
+
+export const updateKeyUsageTemplate = (uuid: string, data: Partial<KeyUsageTemplate>) =>
+  http.put(`/api/templates/key-usage/${uuid}`, toKeyUsageTemplate({ ...data, uuid }))
+    .then((r) => fromKeyUsageTemplate(r.data));
 
 export const deleteKeyUsageTemplate = (uuid: string) =>
   http.delete(`/api/templates/key-usage/${uuid}`).then((r) => r.data);
 
 // ---- 证书拓展模板 ----
+// 证书扩展模板：服务端各列表字段为 JSON 数组字符串
+const fromCertExtTemplate = (raw: any): CertExtTemplate => ({
+  ...raw,
+  crl_distribution_points: parseJSON<string[]>(raw?.crl_dist_points, []),
+  ocsp_servers: parseJSON<string[]>(raw?.ocsp_servers, []),
+  aia_issuers: parseJSON<string[]>(raw?.aia_issuers, []),
+  ct_servers: parseJSON<string[]>(raw?.ct_servers, []),
+  asn1_extensions: parseJSON<any[]>(raw?.asn1_extensions, []),
+});
+
+const toCertExtTemplate = (t: Partial<CertExtTemplate> & Record<string, any>) => ({
+  name: t.name,
+  crl_dist_points: JSON.stringify(t.crl_distribution_points ?? []),
+  ocsp_servers: JSON.stringify(t.ocsp_servers ?? []),
+  aia_issuers: JSON.stringify(t.aia_issuers ?? []),
+  ct_servers: JSON.stringify(t.ct_servers ?? []),
+  ev_policy_oid: t.ev_policy_oid || '',
+  asn1_extensions: JSON.stringify(t.asn1_extensions ?? []),
+});
+
 export const listCertExtTemplates = () =>
-  http.get('/api/templates/cert-ext').then((r) => pickList<CertExtTemplate>(r.data, 'templates'));
+  http.get('/api/templates/cert-ext')
+    .then((r) => pickList<any>(r.data, 'templates').map(fromCertExtTemplate));
 
 export const createCertExtTemplate = (data: Omit<CertExtTemplate, 'uuid' | 'created_at'>) =>
-  http.post<CertExtTemplate>('/api/templates/cert-ext', data).then((r) => r.data);
+  http.post('/api/templates/cert-ext', toCertExtTemplate(data)).then((r) => fromCertExtTemplate(r.data));
+
+export const updateCertExtTemplate = (uuid: string, data: Partial<CertExtTemplate>) =>
+  http.put(`/api/templates/cert-ext/${uuid}`, toCertExtTemplate({ ...data, uuid }))
+    .then((r) => fromCertExtTemplate(r.data));
 
 export const deleteCertExtTemplate = (uuid: string) =>
   http.delete(`/api/templates/cert-ext/${uuid}`).then((r) => r.data);
@@ -531,22 +629,62 @@ export const approveRefund = (uuid: string) =>
 export const rejectRefund = (uuid: string, reason?: string) =>
   http.post(`/api/payment/refund/${uuid}/reject`, { reason: reason ?? '' }).then((r) => r.data);
 
-// ---- 存储区域 ----
+// ---- 存储区域（私钥存放位置：本地库 / TPM / HSM） ----
 export const listStorageZones = () =>
   http.get('/api/storage-zones').then((r) => pickList<StorageZone>(r.data, 'zones'));
 
 export const createStorageZone = (data: Omit<StorageZone, 'uuid' | 'created_at'>) =>
   http.post<StorageZone>('/api/storage-zones', data).then((r) => r.data);
 
+export const updateStorageZone = (uuid: string, data: Partial<StorageZone>) =>
+  http.put<StorageZone>(`/api/storage-zones/${uuid}`, data).then((r) => r.data);
+
 export const deleteStorageZone = (uuid: string) =>
   http.delete(`/api/storage-zones/${uuid}`).then((r) => r.data);
+
+/** 可用的私钥存储驱动清单（含配置项定义与厂商预设）。 */
+export const listKeyBackendDrivers = () =>
+  http.get('/api/storage-zones/drivers').then((r) => pickList<KeyBackendDriver>(r.data, 'drivers'));
+
+/** 扫描本机可用的 PKCS#11 模块（eToken / SoftHSM / YubiKey 等）。 */
+export const scanKeyModules = () =>
+  http.get('/api/storage-zones/scan').then((r) => pickList<DiscoveredKeyModule>(r.data, 'modules'));
+
+/** 用指定配置测试存储区域连通性（不落库）。 */
+export const probeKeyBackend = (data: {
+  storage_type?: string; hsm_driver?: string; params?: Record<string, string>;
+}) => http.post<KeyBackendProbeResult>('/api/storage-zones/probe', data).then((r) => r.data);
+
+/** 对已保存的存储区域做健康检查。 */
+export const checkStorageZone = (uuid: string) =>
+  http.post<KeyBackendProbeResult>(`/api/storage-zones/${uuid}/check`, {}).then((r) => r.data);
 
 // ---- OID 管理 ----
 export const listOIDs = () =>
   http.get('/api/oids').then((r) => pickList<CustomOID>(r.data, 'oids'));
 
+// 自定义 OID：服务端字段为 oid_value / asn1_type / is_critical
+const toOIDPayload = (o: Partial<CustomOID> & Record<string, any>) => ({
+  oid_value: o.oid,
+  name: o.name,
+  description: o.description || '',
+  usage_type: o.usage_type || 'asn1_extension',
+  asn1_type: o.asn1_type || 'UTF8String',
+  is_critical: !!o.is_critical,
+});
+
+const fromOID = (raw: any): CustomOID => ({
+  ...raw,
+  oid: raw?.oid_value ?? raw?.oid ?? '',
+  asn1_type: raw?.asn1_type ?? 'UTF8String',
+  is_critical: !!raw?.is_critical,
+});
+
 export const createOID = (data: Omit<CustomOID, 'uuid' | 'created_at'>) =>
-  http.post<CustomOID>('/api/oids', data).then((r) => r.data);
+  http.post('/api/oids', toOIDPayload(data)).then((r) => fromOID(r.data));
+
+export const updateOID = (uuid: string, data: Partial<CustomOID>) =>
+  http.put(`/api/oids/${uuid}`, toOIDPayload(data)).then((r) => fromOID(r.data));
 
 export const deleteOID = (uuid: string) =>
   http.delete(`/api/oids/${uuid}`).then((r) => r.data);
@@ -569,11 +707,23 @@ export const deleteRevocationService = (uuid: string) =>
 export const listACMEConfigs = () =>
   http.get('/api/acme-configs').then((r) => pickList<any>(r.data, 'configs').map(fromACMEConfig));
 
+const acmePayload = (data: Omit<ACMEConfig, 'uuid' | 'ca_name' | 'template_name' | 'created_at'>) => ({
+  path: String(data.path || '').replace(/^\/?acme\//, '').replace(/^\//, ''),
+  ca_uuid: data.ca_uuid,
+  issuance_tmpl_uuid: data.template_uuid || (data as any).issuance_tmpl_uuid,
+  enabled: data.enabled !== false,
+  // 允许的验证方式以 JSON 数组字符串提交（后端按 JSON 解码）
+  allowed_challenges: Array.isArray(data.allowed_challenges)
+    ? JSON.stringify(data.allowed_challenges)
+    : (data.allowed_challenges || ''),
+});
+
 export const createACMEConfig = (data: Omit<ACMEConfig, 'uuid' | 'ca_name' | 'template_name' | 'created_at'>) =>
-  http.post('/api/acme-configs', {
-    path: String(data.path || '').replace(/^\/?acme\//, '').replace(/^\//, ''),
-    ca_uuid: data.ca_uuid, issuance_tmpl_uuid: data.template_uuid, enabled: data.enabled !== false,
-  }).then((r) => fromACMEConfig(r.data));
+  http.post('/api/acme-configs', acmePayload(data)).then((r) => fromACMEConfig(r.data));
+
+/** 更新 ACME 服务配置（路径 / CA / 颁发模板 / 验证方式） */
+export const updateACMEConfig = (uuid: string, data: Omit<ACMEConfig, 'uuid' | 'ca_name' | 'template_name' | 'created_at'>) =>
+  http.put(`/api/acme-configs/${uuid}`, { uuid, ...acmePayload(data) }).then((r) => fromACMEConfig(r.data));
 
 export const deleteACMEConfig = (uuid: string) =>
   http.delete(`/api/acme-configs/${uuid}`).then((r) => r.data);
@@ -842,7 +992,7 @@ export const listPortalPolicies = () =>
 
 // ---- 认证接口（自动审核） ----
 
-export const listVerifyProviders = (kind?: 'email' | 'identity') =>
+export const listVerifyProviders = (kind?: 'email' | 'domain' | 'identity') =>
   http.get<{ items: VerifyProvider[]; drivers: VerifyProviderDriver[] }>('/api/verify-providers', { params: { kind } })
     .then((r) => ({ items: r.data.items ?? [], drivers: r.data.drivers ?? [] }));
 
@@ -854,9 +1004,57 @@ export const saveVerifyProvider = (data: Partial<VerifyProvider>) =>
 export const deleteVerifyProvider = (uuid: string) =>
   http.delete(`/api/verify-providers/${uuid}`).then((r) => r.data);
 
-/** 邮件接口连通性测试 */
-export const testVerifyProvider = (uuid: string, to: string) =>
-  http.post(`/api/verify-providers/${uuid}/test`, { to }).then((r) => r.data);
+/** 设为同类中的默认接口（邮件/域名/实名） */
+export const setDefaultVerifyProvider = (uuid: string) =>
+  http.post(`/api/verify-providers/${uuid}/default`).then((r) => r.data);
+
+/**
+ * 接口连通性测试。
+ * - 邮件：传 to 发测试邮件
+ * - 域名：传 domain 做真实校验，或 dry_run 只回显配置
+ * - 实名：只校验必填配置
+ */
+export const testVerifyProvider = (
+  uuid: string,
+  payload: { to?: string; domain?: string; dry_run?: boolean } | string,
+) => {
+  const body = typeof payload === 'string' ? { to: payload } : payload;
+  return http.post(`/api/verify-providers/${uuid}/test`, body).then((r) => r.data);
+};
+
+// ---- 系统设置 ----
+
+export const getSystemInfo = () => http.get<SystemInfo>('/api/system/info').then((r) => r.data);
+
+export const getSystemMail = () => http.get<SystemMailView>('/api/system/mail').then((r) => r.data);
+
+/** 设置默认邮件接口（传空串表示取消默认，回退环境变量 SMTP） */
+export const updateSystemMail = (data: { default_provider_uuid?: string; provider_uuid?: string; test_to?: string }) =>
+  http.put('/api/system/mail', data).then((r) => r.data);
+
+// ---- 算法元数据 ----
+
+let algorithmCache: Promise<AlgorithmCatalog> | null = null;
+
+/** 算法清单（密钥/哈希/签名算法与联动映射），进程内缓存一次 */
+export const getMetaAlgorithms = (): Promise<AlgorithmCatalog> => {
+  if (!algorithmCache) {
+    algorithmCache = http.get<AlgorithmCatalog>('/api/meta/algorithms').then((r) => ({
+      algorithms: r.data?.algorithms ?? [],
+      signature_algorithms: r.data?.signature_algorithms ?? [],
+      key_type_to_sig_hashes: r.data?.key_type_to_sig_hashes ?? {},
+    }));
+  }
+  return algorithmCache;
+};
+
+// ---- 管理员代办申请 ----
+
+export const getAdminApplyContext = (userUUID: string) =>
+  http.get<AdminApplyContext>('/api/admin/apply-context', { params: { user_uuid: userUUID } }).then((r) => r.data);
+
+export const adminCreateCertApplication = (data: AdminCreateApplicationRequest) =>
+  http.post('/api/admin/cert-applications', data).then((r) => r.data);
 
 // ---- 身份认证审核（管理员） ----
 

@@ -399,6 +399,79 @@ func (db *DB) alterTablesV2() {
 	    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`)
 	db.execIgnoreError(`CREATE UNIQUE INDEX IF NOT EXISTS idx_redeem_usages_user ON promo_redeem_usages(code_uuid, user_uuid)`)
+
+	db.alterTablesV3()
+}
+
+// alterTablesV3 私钥存储后端：存储区域驱动参数 + 证书私钥位置。
+func (db *DB) alterTablesV3() {
+	// ---- 存储区域：驱动参数（加密）、能力与健康状态 ----
+	// params_enc 用服务端主密钥加密，明文不落库（密码类参数如令牌 PIN 依赖该保护）。
+	db.execIgnoreError(`ALTER TABLE storage_zones ADD COLUMN params_enc TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE storage_zones ADD COLUMN capabilities TEXT NOT NULL DEFAULT '{}'`)
+	db.execIgnoreError(`ALTER TABLE storage_zones ADD COLUMN last_check_at DATETIME`)
+	db.execIgnoreError(`ALTER TABLE storage_zones ADD COLUMN last_check_error TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE storage_zones ADD COLUMN last_check_detail TEXT NOT NULL DEFAULT ''`)
+	// 历史数据：storage_type=database 的存储区域等价于本地驱动。
+	db.execIgnoreError(`UPDATE storage_zones SET hsm_driver = 'database' WHERE storage_type = 'database' AND hsm_driver = ''`)
+	db.execIgnoreError(`UPDATE storage_zones SET hsm_driver = 'pkcs11' WHERE storage_type = 'hsm' AND hsm_driver = ''`)
+
+	// ---- 证书：私钥所在后端与引用 ----
+	// key_backend 为空表示历史数据（本地加密存储），保持完全向后兼容。
+	db.execIgnoreError(`ALTER TABLE certificates ADD COLUMN key_backend TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE certificates ADD COLUMN key_ref TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`CREATE INDEX IF NOT EXISTS idx_certs_key_backend ON certificates(key_backend)`)
+
+	db.alterTablesV4()
+}
+
+// alterTablesV4 业务重构：CA 密钥来源与存储区域、模板职责收敛、认证接口扩展、
+// 申请代办与订阅/优惠补充字段。只做结构变更，历史数据的整理在执行阶段直接改库。
+func (db *DB) alterTablesV4() {
+	// ---- CA：密钥算法、签名算法、主体、私钥来源与存储区域 ----
+	db.execIgnoreError(`ALTER TABLE cas ADD COLUMN key_type TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cas ADD COLUMN sig_alg TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cas ADD COLUMN subject_dn TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cas ADD COLUMN key_source TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cas ADD COLUMN key_backend TEXT NOT NULL DEFAULT 'database'`)
+	db.execIgnoreError(`ALTER TABLE cas ADD COLUMN storage_zone_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cas ADD COLUMN key_ref TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cas ADD COLUMN issuance_tmpl_uuid TEXT NOT NULL DEFAULT ''`)
+
+	// ---- 颁发模板：默认 CA、默认有效期、允许的签名算法 ----
+	db.execIgnoreError(`ALTER TABLE issuance_templates ADD COLUMN default_ca_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE issuance_templates ADD COLUMN default_valid_days INTEGER NOT NULL DEFAULT 0`)
+	db.execIgnoreError(`ALTER TABLE issuance_templates ADD COLUMN allowed_sig_algs TEXT NOT NULL DEFAULT '[]'`)
+
+	// ---- 开通模板：可申请方式（订单/自助/订阅） ----
+	db.execIgnoreError(`ALTER TABLE cert_apply_templates ADD COLUMN apply_modes TEXT NOT NULL DEFAULT '["order","self","subscription"]'`)
+
+	// ---- 密钥存储模板：存储区域、密钥生成位置、下发格式 ----
+	db.execIgnoreError(`ALTER TABLE key_storage_templates ADD COLUMN storage_zone_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE key_storage_templates ADD COLUMN key_gen_location TEXT NOT NULL DEFAULT 'server'`)
+	db.execIgnoreError(`ALTER TABLE key_storage_templates ADD COLUMN download_formats TEXT NOT NULL DEFAULT '["pem","pkcs12"]'`)
+
+	// ---- 商品规格：证书有效期（天） ----
+	db.execIgnoreError(`ALTER TABLE portal_product_skus ADD COLUMN valid_days INTEGER NOT NULL DEFAULT 0`)
+
+	// ---- 证书：签发时使用的模板快照（交付校验使用） ----
+	db.execIgnoreError(`ALTER TABLE certificates ADD COLUMN key_storage_tmpl_uuid TEXT NOT NULL DEFAULT ''`)
+
+	// ---- 认证接口：默认接口标记 ----
+	db.execIgnoreError(`ALTER TABLE verify_providers ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0`)
+
+	// ---- 主体模板：主体字段与实名参数的映射 ----
+	db.execIgnoreError(`ALTER TABLE subject_templates ADD COLUMN identity_mapping TEXT NOT NULL DEFAULT '{}'`)
+
+	// ---- ACME：允许的验证方式 ----
+	db.execIgnoreError(`ALTER TABLE acme_configs ADD COLUMN allowed_challenges TEXT NOT NULL DEFAULT '["http-01","dns-01","tls-alpn-01"]'`)
+
+	// ---- 证书申请：代办信息 ----
+	db.execIgnoreError(`ALTER TABLE cert_applications ADD COLUMN created_by TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cert_applications ADD COLUMN on_behalf INTEGER NOT NULL DEFAULT 0`)
+
+	// ---- 实名会话：驱动上下文（加密） ----
+	db.execIgnoreError(`ALTER TABLE identity_sessions ADD COLUMN extra TEXT NOT NULL DEFAULT ''`)
 }
 
 // createTables 创建所有基础表（幂等，IF NOT EXISTS）。

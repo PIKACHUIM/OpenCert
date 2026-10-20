@@ -172,7 +172,7 @@ const Home: React.FC = () => {
           <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 24 }}>
             <div>
               <Title level={3} style={{ margin: '0 0 6px', color: '#0f172a' }}>热门产品</Title>
-              <Text style={{ color: '#6b7280' }}>价格与库存以服务端实时数据为准</Text>
+              <Text style={{ color: '#6b7280' }}>价格与库存以页面显示为准</Text>
             </div>
             <Button type="link" onClick={() => navigate('/products')}>查看全部 →</Button>
           </div>

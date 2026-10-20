@@ -537,7 +537,7 @@ const ApplyWizard: React.FC = () => {
         : '申请已提交，审核通过后将自动签发；可在「我的证书申请」中查看进度。'}
       extra={[
         <Button type="primary" key="apps" onClick={() => navigate('/console/apply-records')}>查看我的申请</Button>,
-        <Button key="certs" onClick={() => navigate('/console/certs')}>我的证书</Button>,
+        <Button key="certs" onClick={() => navigate('/console/certs')}>我的证书管理</Button>,
         <Button key="again" onClick={() => {
           setResult(null); setStep(0); setPicked([]); setCsrPEM(''); loadSources();
         }}>再申请一张</Button>,

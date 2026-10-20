@@ -708,14 +708,14 @@ CK_DEFINE_FUNCTION(CK_RV, C_GetMechanismList)(CK_SLOT_ID slotID, CK_MECHANISM_TY
 		/* IPC 失败，降级到硬编码 */
 	}
 
-	/* 硬编码降级 */
+	/* 硬编码降级（含国密 SM2/SM3/SM4） */
 	if (NULL == pMechanismList)
 	{
-		*pulCount = 9;
+		*pulCount = 14;
 	}
 	else
 	{
-		if (9 > *pulCount)
+		if (14 > *pulCount)
 			return CKR_BUFFER_TOO_SMALL;
 
 		pMechanismList[0] = CKM_RSA_PKCS_KEY_PAIR_GEN;
@@ -727,8 +727,13 @@ CK_DEFINE_FUNCTION(CK_RV, C_GetMechanismList)(CK_SLOT_ID slotID, CK_MECHANISM_TY
 		pMechanismList[6] = CKM_SHA_1;
 		pMechanismList[7] = CKM_XOR_BASE_AND_DATA;
 		pMechanismList[8] = CKM_AES_CBC;
+		pMechanismList[9] = CKM_SM2_KEY_PAIR_GEN;
+		pMechanismList[10] = CKM_SM2;
+		pMechanismList[11] = CKM_SM3;
+		pMechanismList[12] = CKM_SM4_CBC;
+		pMechanismList[13] = CKM_SM4_GCM;
 
-		*pulCount = 9;
+		*pulCount = 14;
 	}
 
 	return CKR_OK;
@@ -828,6 +833,32 @@ CK_DEFINE_FUNCTION(CK_RV, C_GetMechanismInfo)(CK_SLOT_ID slotID, CK_MECHANISM_TY
 		case CKM_AES_CBC:
 			pInfo->ulMinKeySize = 128;
 			pInfo->ulMaxKeySize = 256;
+			pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT;
+			break;
+
+		/* 国密 */
+		case CKM_SM2_KEY_PAIR_GEN:
+			pInfo->ulMinKeySize = 256;
+			pInfo->ulMaxKeySize = 256;
+			pInfo->flags = CKF_GENERATE_KEY_PAIR;
+			break;
+
+		case CKM_SM2:
+			pInfo->ulMinKeySize = 256;
+			pInfo->ulMaxKeySize = 256;
+			pInfo->flags = CKF_SIGN | CKF_VERIFY | CKF_ENCRYPT | CKF_DECRYPT;
+			break;
+
+		case CKM_SM3:
+			pInfo->ulMinKeySize = 0;
+			pInfo->ulMaxKeySize = 0;
+			pInfo->flags = CKF_DIGEST;
+			break;
+
+		case CKM_SM4_CBC:
+		case CKM_SM4_GCM:
+			pInfo->ulMinKeySize = 128;
+			pInfo->ulMaxKeySize = 128;
 			pInfo->flags = CKF_ENCRYPT | CKF_DECRYPT;
 			break;
 
@@ -1894,6 +1925,54 @@ CK_DEFINE_FUNCTION(CK_RV, C_FindObjectsFinal)(CK_SESSION_HANDLE hSession)
 }
 
 
+/* ---- 机制参数打包 ----
+ * CK_GCM_PARAMS 内含指针，直接跨进程传递没有意义（客户端无法解引用）。
+ * 这里把 GCM 参数重排为自描述缓冲区后再交给 IPC：
+ *   [4B ivLen][4B aadLen][4B tagBits][iv][aad]（大端）
+ * 其它机制的参数（如 CBC 的 16 字节 IV）原样返回。
+ * 返回 NULL 表示没有参数；*out_len 为实际长度，调用方负责 free。 */
+static void put_be32(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t)(v >> 24);
+	p[1] = (uint8_t)(v >> 16);
+	p[2] = (uint8_t)(v >> 8);
+	p[3] = (uint8_t)v;
+}
+
+static uint8_t *pack_mech_param(CK_MECHANISM_PTR m, size_t *out_len)
+{
+	*out_len = 0;
+	if ((NULL == m) || (NULL == m->pParameter) || (0 == m->ulParameterLen))
+		return NULL;
+
+	if ((CKM_SM4_GCM == m->mechanism) || (CKM_AES_GCM == m->mechanism)) {
+		CK_GCM_PARAMS *g = (CK_GCM_PARAMS *)m->pParameter;
+		if ((NULL == g->pIv) || (0 == g->ulIvLen))
+			return NULL;
+		size_t iv_len = (size_t)g->ulIvLen;
+		size_t aad_len = (NULL != g->pAAD) ? (size_t)g->ulAADLen : 0;
+		size_t total = 12 + iv_len + aad_len;
+		uint8_t *buf = (uint8_t *)malloc(total);
+		if (NULL == buf)
+			return NULL;
+		put_be32(buf, (uint32_t)iv_len);
+		put_be32(buf + 4, (uint32_t)aad_len);
+		put_be32(buf + 8, (uint32_t)g->ulTagBits);
+		memcpy(buf + 12, g->pIv, iv_len);
+		if (aad_len > 0)
+			memcpy(buf + 12 + iv_len, g->pAAD, aad_len);
+		*out_len = total;
+		return buf;
+	}
+
+	uint8_t *buf = (uint8_t *)malloc((size_t)m->ulParameterLen);
+	if (NULL == buf)
+		return NULL;
+	memcpy(buf, m->pParameter, (size_t)m->ulParameterLen);
+	*out_len = (size_t)m->ulParameterLen;
+	return buf;
+}
+
 CK_DEFINE_FUNCTION(CK_RV, C_EncryptInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey)
 {
 	if (CK_FALSE == pkcs11_mock_initialized)
@@ -1910,16 +1989,24 @@ CK_DEFINE_FUNCTION(CK_RV, C_EncryptInit)(CK_SESSION_HANDLE hSession, CK_MECHANIS
 	if (NULL == pMechanism)
 		return CKR_ARGUMENTS_BAD;
 
-	/* 通过 IPC 转发 EncryptInit */
+	/* 通过 IPC 转发 EncryptInit（把 IV / GCM 参数一并透传） */
 	ipc_fd_t fd = ipc_global_fd();
 	if (ipc_is_connected(fd)) {
 		json_buf_t req;
 		json_buf_init(&req);
 		json_buf_appendf(&req,
-			"{\"session_id\":%lu,\"mechanism\":%lu,\"key_handle\":%lu}",
+			"{\"session_id\":%lu,\"mechanism\":%lu,\"key_handle\":%lu",
 			(unsigned long)hSession,
 			(unsigned long)pMechanism->mechanism,
 			(unsigned long)hKey);
+		size_t param_len = 0;
+		uint8_t *param = pack_mech_param(pMechanism, &param_len);
+		if (NULL != param) {
+			json_buf_append(&req, ",\"mech_param\":");
+			json_buf_append_b64(&req, param, param_len);
+			free(param);
+		}
+		json_buf_append(&req, "}");
 
 		char *resp = NULL;
 		uint32_t rv = 0;
@@ -1967,6 +2054,25 @@ CK_DEFINE_FUNCTION(CK_RV, C_EncryptInit)(CK_SESSION_HANDLE hSession, CK_MECHANIS
 			break;
 		case CKM_AES_CBC:
 			if ((NULL == pMechanism->pParameter) || (16 != pMechanism->ulParameterLen))
+				return CKR_MECHANISM_PARAM_INVALID;
+			if (PKCS11_MOCK_CK_OBJECT_HANDLE_SECRET_KEY != hKey)
+				return CKR_KEY_TYPE_INCONSISTENT;
+			break;
+		/* 国密：SM2 公钥加密（无机制参数），SM4 对称加密（IV 16 字节 / GCM 透传给 IPC） */
+		case CKM_SM2:
+			if ((NULL != pMechanism->pParameter) || (0 != pMechanism->ulParameterLen))
+				return CKR_MECHANISM_PARAM_INVALID;
+			if (PKCS11_MOCK_CK_OBJECT_HANDLE_PUBLIC_KEY != hKey)
+				return CKR_KEY_TYPE_INCONSISTENT;
+			break;
+		case CKM_SM4_CBC:
+			if ((NULL == pMechanism->pParameter) || (16 != pMechanism->ulParameterLen))
+				return CKR_MECHANISM_PARAM_INVALID;
+			if (PKCS11_MOCK_CK_OBJECT_HANDLE_SECRET_KEY != hKey)
+				return CKR_KEY_TYPE_INCONSISTENT;
+			break;
+		case CKM_SM4_GCM:
+			if ((NULL == pMechanism->pParameter) || (0 == pMechanism->ulParameterLen))
 				return CKR_MECHANISM_PARAM_INVALID;
 			if (PKCS11_MOCK_CK_OBJECT_HANDLE_SECRET_KEY != hKey)
 				return CKR_KEY_TYPE_INCONSISTENT;
@@ -2173,16 +2279,24 @@ CK_DEFINE_FUNCTION(CK_RV, C_DecryptInit)(CK_SESSION_HANDLE hSession, CK_MECHANIS
 	if (NULL == pMechanism)
 		return CKR_ARGUMENTS_BAD;
 
-	/* 通过 IPC 转发 DecryptInit */
+	/* 通过 IPC 转发 DecryptInit（把 IV / GCM 参数一并透传） */
 	ipc_fd_t fd = ipc_global_fd();
 	if (ipc_is_connected(fd)) {
 		json_buf_t req;
 		json_buf_init(&req);
 		json_buf_appendf(&req,
-			"{\"session_id\":%lu,\"mechanism\":%lu,\"key_handle\":%lu}",
+			"{\"session_id\":%lu,\"mechanism\":%lu,\"key_handle\":%lu",
 			(unsigned long)hSession,
 			(unsigned long)pMechanism->mechanism,
 			(unsigned long)hKey);
+		size_t param_len = 0;
+		uint8_t *param = pack_mech_param(pMechanism, &param_len);
+		if (NULL != param) {
+			json_buf_append(&req, ",\"mech_param\":");
+			json_buf_append_b64(&req, param, param_len);
+			free(param);
+		}
+		json_buf_append(&req, "}");
 
 		char *resp = NULL;
 		uint32_t rv = 0;
@@ -2230,6 +2344,25 @@ CK_DEFINE_FUNCTION(CK_RV, C_DecryptInit)(CK_SESSION_HANDLE hSession, CK_MECHANIS
 			break;
 		case CKM_AES_CBC:
 			if ((NULL == pMechanism->pParameter) || (16 != pMechanism->ulParameterLen))
+				return CKR_MECHANISM_PARAM_INVALID;
+			if (PKCS11_MOCK_CK_OBJECT_HANDLE_SECRET_KEY != hKey)
+				return CKR_KEY_TYPE_INCONSISTENT;
+			break;
+		/* 国密：SM2 私钥解密（C1C3C2），SM4 对称解密 */
+		case CKM_SM2:
+			if ((NULL != pMechanism->pParameter) || (0 != pMechanism->ulParameterLen))
+				return CKR_MECHANISM_PARAM_INVALID;
+			if (PKCS11_MOCK_CK_OBJECT_HANDLE_PRIVATE_KEY != hKey)
+				return CKR_KEY_TYPE_INCONSISTENT;
+			break;
+		case CKM_SM4_CBC:
+			if ((NULL == pMechanism->pParameter) || (16 != pMechanism->ulParameterLen))
+				return CKR_MECHANISM_PARAM_INVALID;
+			if (PKCS11_MOCK_CK_OBJECT_HANDLE_SECRET_KEY != hKey)
+				return CKR_KEY_TYPE_INCONSISTENT;
+			break;
+		case CKM_SM4_GCM:
+			if ((NULL == pMechanism->pParameter) || (0 == pMechanism->ulParameterLen))
 				return CKR_MECHANISM_PARAM_INVALID;
 			if (PKCS11_MOCK_CK_OBJECT_HANDLE_SECRET_KEY != hKey)
 				return CKR_KEY_TYPE_INCONSISTENT;
@@ -2458,13 +2591,14 @@ CK_DEFINE_FUNCTION(CK_RV, C_DigestInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM
 	if ((CK_FALSE == pkcs11_mock_session_opened) || (PKCS11_MOCK_CK_SESSION_ID != hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 
-	/* 支持多种摘要机制 */
+	/* 支持多种摘要机制（含国密 SM3） */
 	switch (pMechanism->mechanism) {
 		case CKM_MD5:
 		case CKM_SHA_1:
 		case CKM_SHA256:
 		case CKM_SHA384:
 		case CKM_SHA512:
+		case CKM_SM3:
 			break;
 		default:
 			return CKR_MECHANISM_INVALID;
@@ -2743,7 +2877,8 @@ CK_DEFINE_FUNCTION(CK_RV, C_SignInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM_P
 	}
 
 	/* Mock 降级 */
-	if ((CKM_RSA_PKCS == pMechanism->mechanism) || (CKM_SHA1_RSA_PKCS == pMechanism->mechanism)) {
+	if ((CKM_RSA_PKCS == pMechanism->mechanism) || (CKM_SHA1_RSA_PKCS == pMechanism->mechanism) ||
+		(CKM_SM2 == pMechanism->mechanism)) {
 		if ((NULL != pMechanism->pParameter) || (0 != pMechanism->ulParameterLen))
 			return CKR_MECHANISM_PARAM_INVALID;
 		if (PKCS11_MOCK_CK_OBJECT_HANDLE_PRIVATE_KEY != hKey)
@@ -3072,6 +3207,7 @@ CK_DEFINE_FUNCTION(CK_RV, C_VerifyInit)(CK_SESSION_HANDLE hSession, CK_MECHANISM
 		case CKM_ECDSA_SHA384:
 		case CKM_ECDSA_SHA512:
 		case CKM_EDDSA:
+		case CKM_SM2:
 			if ((NULL != pMechanism->pParameter) || (0 != pMechanism->ulParameterLen))
 				return CKR_MECHANISM_PARAM_INVALID;
 			break;
@@ -3580,7 +3716,9 @@ CK_DEFINE_FUNCTION(CK_RV, C_GenerateKeyPair)(CK_SESSION_HANDLE hSession, CK_MECH
 	if (NULL == pMechanism)
 		return CKR_ARGUMENTS_BAD;
 
-	if (CKM_RSA_PKCS_KEY_PAIR_GEN != pMechanism->mechanism)
+	/* 支持 RSA 与国密 SM2 的密钥对生成 */
+	if ((CKM_RSA_PKCS_KEY_PAIR_GEN != pMechanism->mechanism) &&
+		(CKM_SM2_KEY_PAIR_GEN != pMechanism->mechanism))
 		return CKR_MECHANISM_INVALID;
 
 	if ((NULL != pMechanism->pParameter) || (0 != pMechanism->ulParameterLen))

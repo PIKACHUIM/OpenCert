@@ -406,7 +406,7 @@ const ConsoleProducts: React.FC = () => {
             </Form.Item>
             <Form.Item
               name="code" label="商品编码" rules={[{ required: true }]}
-              extra="用于 URL 与下单引用，创建后不建议修改" style={{ flex: 1 }}
+              extra="用于对外访问地址，创建后请勿修改" style={{ flex: 1 }}
             >
               <Input placeholder="ssl-standard" />
             </Form.Item>

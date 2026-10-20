@@ -88,23 +88,20 @@ func GenerateCSR(req *CSRRequest) (*CSRResult, error) {
 		return nil, fmt.Errorf("私钥不支持签名操作")
 	}
 
-	csrDER, err := x509.CreateCertificateRequest(rand.Reader, template, signer)
+	// 国密分派：SM2 密钥用 smx509 生成 SM2WithSM3 签名的 CSR
+	csrDER, err := createCSRAny(rand.Reader, template, signer)
 	if err != nil {
 		return nil, fmt.Errorf("创建 CSR 失败: %w", err)
 	}
 
-	// 验证 CSR 签名
-	csr, err := x509.ParseCertificateRequest(csrDER)
-	if err != nil {
-		return nil, fmt.Errorf("解析 CSR 失败: %w", err)
-	}
-	if err := csr.CheckSignature(); err != nil {
+	// 验证 CSR 签名（SM2 请求由国密库校验）
+	if err := checkCSRSignatureAny(csrDER); err != nil {
 		return nil, fmt.Errorf("CSR 签名验证失败: %w", err)
 	}
 
 	// 编码 PEM
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
-	keyDER, err := x509.MarshalPKCS8PrivateKey(privKey)
+	keyDER, err := marshalPKCS8Any(privKey)
 	if err != nil {
 		return nil, fmt.Errorf("编码私钥失败: %w", err)
 	}
@@ -163,6 +160,9 @@ func resolveSignatureAlgorithm(keyType, digestType string) x509.SignatureAlgorit
 		}
 	case "ed25519":
 		return x509.PureEd25519
+	case "sm2":
+		// SM2 只配 SM3：标准库没有该算法枚举，交由 smx509 依据私钥类型决定（SM2WithSM3）
+		return x509.UnknownSignatureAlgorithm
 	default:
 		return x509.SHA256WithRSA
 	}

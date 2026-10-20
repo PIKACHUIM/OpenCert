@@ -15,11 +15,9 @@ import (
 // 只接受"选择什么"的字段：金额、状态、订单号、商品快照一律由服务端生成或回填，
 // 避免客户端构造已支付订单或篡改价格。
 type createCertOrderRequest struct {
-	CertApplyTmplUUID  string `json:"cert_apply_tmpl_uuid"`
-	TemplateUUID       string `json:"template_uuid"` // 兼容旧前端字段名
-	IssuanceTmplUUID   string `json:"issuance_tmpl_uuid"`
-	KeyStorageTmplUUID string `json:"key_storage_tmpl_uuid"`
-	ApplicantEmail     string `json:"applicant_email"`
+	CertApplyTmplUUID string `json:"cert_apply_tmpl_uuid"`
+	TemplateUUID      string `json:"template_uuid"` // 兼容旧前端字段名
+	ApplicantEmail    string `json:"applicant_email"`
 }
 
 func (s *Server) handleCreateCertOrder(w http.ResponseWriter, r *http.Request) {
@@ -36,12 +34,12 @@ func (s *Server) handleCreateCertOrder(w http.ResponseWriter, r *http.Request) {
 		applyTmpl = req.TemplateUUID
 	}
 
+	// 颁发模板与密钥存储模板都由所选开通模板继承，不接受客户端指定
+	// （否则可以通过构造请求绕过模板允许的算法、有效期与交付方式）。
 	order := &storage.CertOrder{
-		UserUUID:           claims.UserUUID,
-		CertApplyTmplUUID:  applyTmpl,
-		IssuanceTmplUUID:   req.IssuanceTmplUUID,
-		KeyStorageTmplUUID: req.KeyStorageTmplUUID,
-		ApplicantEmail:     req.ApplicantEmail,
+		UserUUID:          claims.UserUUID,
+		CertApplyTmplUUID: applyTmpl,
+		ApplicantEmail:    req.ApplicantEmail,
 	}
 	if order.ApplicantEmail == "" {
 		order.ApplicantEmail = s.applicantEmailFromClaims(r)

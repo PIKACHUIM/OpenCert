@@ -103,10 +103,6 @@ func (s *Slot) CreateObject(ctx context.Context, template []pkcs11types.Attribut
 	if !s.loggedIn {
 		return 0, fmt.Errorf("%w", pkcs11types.CKR_USER_NOT_LOGGED_IN)
 	}
-	if s.certRepo == nil {
-		return 0, fmt.Errorf("%w: 缺少 CertRepo", pkcs11types.CKR_FUNCTION_FAILED)
-	}
-
 	var (
 		class    uint32
 		hasClass bool
@@ -128,6 +124,15 @@ func (s *Slot) CreateObject(ctx context.Context, template []pkcs11types.Attribut
 	}
 	if !hasClass && len(value) == 0 {
 		return 0, fmt.Errorf("%w: 模板缺少 CKA_CLASS / CKA_VALUE", pkcs11types.CKR_TEMPLATE_INCOMPLETE)
+	}
+
+	// 对称密钥（SM4 / AES）：只保存在进程内，不入库，因此不依赖 CertRepo
+	if hasClass && pkcs11types.ObjectClass(class) == pkcs11types.CKO_SECRET_KEY {
+		return s.createSecretKeyLocked(template)
+	}
+
+	if s.certRepo == nil {
+		return 0, fmt.Errorf("%w: 缺少 CertRepo", pkcs11types.CKR_FUNCTION_FAILED)
 	}
 
 	certType := storage.CertTypeNote
@@ -195,6 +200,15 @@ func (s *Slot) DestroyObject(ctx context.Context, handle pkcs11types.ObjectHandl
 	}
 	cert, ok := s.objects[handle]
 	if !ok {
+		if _, keyOK := s.lookupSecretKey(handle); keyOK {
+			// 会话对象：直接从内存移除
+			key := s.secretKeys[handle]
+			for i := range key.value {
+				key.value[i] = 0
+			}
+			delete(s.secretKeys, handle)
+			return nil
+		}
 		return fmt.Errorf("%w", pkcs11types.CKR_OBJECT_HANDLE_INVALID)
 	}
 	if s.certRepo == nil {
@@ -216,7 +230,19 @@ func (s *Slot) SetAttributes(ctx context.Context, handle pkcs11types.ObjectHandl
 	}
 	cert, ok := s.objects[handle]
 	if !ok {
-		return fmt.Errorf("%w", pkcs11types.CKR_OBJECT_HANDLE_INVALID)
+		key, keyOK := s.lookupSecretKey(handle)
+		if !keyOK {
+			return fmt.Errorf("%w", pkcs11types.CKR_OBJECT_HANDLE_INVALID)
+		}
+		for _, a := range attrs {
+			switch a.Type {
+			case pkcs11types.CKA_LABEL:
+				key.label = string(a.Value)
+			default:
+				return fmt.Errorf("%w: 属性 0x%X 只读或不可设置", pkcs11types.CKR_ATTRIBUTE_READ_ONLY, uint32(a.Type))
+			}
+		}
+		return nil
 	}
 
 	changed := false
@@ -251,6 +277,9 @@ func (s *Slot) ObjectSize(_ context.Context, handle pkcs11types.ObjectHandle) (u
 
 	cert, ok := s.objects[handle]
 	if !ok {
+		if key, keyOK := s.lookupSecretKey(handle); keyOK {
+			return secretKeySize(key), nil
+		}
 		return 0, fmt.Errorf("%w", pkcs11types.CKR_OBJECT_HANDLE_INVALID)
 	}
 	size := len(cert.CertContent) + len(cert.PrivateData) + len(cert.Remark)
@@ -318,7 +347,8 @@ func keyTypeFromMechanism(m pkcs11types.MechanismType) (string, error) {
 	case pkcs11types.CKM_EDDSA:
 		return "ed25519", nil
 	case pkcs11types.CKM_SM2_KEY_PAIR_GEN:
-		return "ec256", nil
+		// 国密密钥对：曲线固定为 sm2p256v1，不能退化成 P-256
+		return "sm2", nil
 	default:
 		return "", fmt.Errorf("%w: 不支持密钥对生成机制 0x%X", pkcs11types.CKR_MECHANISM_INVALID, uint32(m))
 	}

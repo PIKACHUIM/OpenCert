@@ -12,7 +12,8 @@ import (
 // ValidateCertDER 验证 DER 数据是否为合法的 X.509 证书。
 // 对于 certificate policies 解析错误的证书仍视为有效。
 func ValidateCertDER(derData []byte) error {
-	_, err := x509.ParseCertificate(derData)
+	// 国密证书标准库解析不了，交给分派层判断
+	_, err := parseCertificateAny(derData)
 	if err == nil {
 		return nil
 	}
@@ -46,7 +47,7 @@ func ParseCertificateFromPEM(pemData []byte) (*x509.Certificate, error) {
 	if block == nil {
 		return nil, fmt.Errorf("无法解码 PEM 数据")
 	}
-	cert, err := x509.ParseCertificate(block.Bytes)
+	cert, err := parseCertificateAny(block.Bytes)
 	if err != nil && strings.Contains(err.Error(), "certificate policies") {
 		// 证书有效但策略扩展不兼容，返回 nil cert 和 nil error 表示无法完整解析
 		return nil, nil
@@ -88,7 +89,7 @@ func ExportPKCS12(certPEM, keyPEM []byte, password string) ([]byte, error) {
 	if certBlock == nil {
 		return nil, fmt.Errorf("无法解码证书 PEM")
 	}
-	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	cert, err := parseCertificateAny(certBlock.Bytes)
 	if err != nil {
 		// 对 certificate policies 错误做宽松处理：
 		// Go 1.22+ 对策略扩展解析过于严格，但证书本身是合法的。
@@ -105,7 +106,7 @@ func ExportPKCS12(certPEM, keyPEM []byte, password string) ([]byte, error) {
 	if keyBlock == nil {
 		return nil, fmt.Errorf("无法解码私钥 PEM")
 	}
-	privKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	privKey, err := parsePKCS8Any(keyBlock.Bytes)
 	if err != nil {
 		// 尝试 PKCS1
 		privKey, err = x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
@@ -116,6 +117,11 @@ func ExportPKCS12(certPEM, keyPEM []byte, password string) ([]byte, error) {
 				return nil, fmt.Errorf("解析私钥失败: %w", err)
 			}
 		}
+	}
+
+	// 国密证书不提供 PKCS#12：主流平台没有 SM2 的 PKCS#12 通用方案
+	if isSM2Key(privKey) {
+		return nil, fmt.Errorf("SM2 证书不支持 PKCS#12 导出，请改用 PEM 或 PKCS#8")
 	}
 
 	// 编码 PKCS#12
@@ -132,12 +138,15 @@ func ImportPKCS12(pfxData []byte, password string) (certPEM, keyPEM []byte, err 
 	if err != nil {
 		return nil, nil, fmt.Errorf("解码 PKCS#12 失败: %w", err)
 	}
+	if isSM2Key(privKey) {
+		return nil, nil, fmt.Errorf("PKCS#12 内的私钥是 SM2，请改用 PEM / PKCS#8 格式导入")
+	}
 
 	// 编码证书 PEM
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
 
 	// 编码私钥 PEM
-	keyDER, err := x509.MarshalPKCS8PrivateKey(privKey)
+	keyDER, err := marshalPKCS8Any(privKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("编码私钥失败: %w", err)
 	}

@@ -1115,8 +1115,10 @@ func generateKeyPair(keyType string) (privDER, pubDER []byte, err error) {
 		return generateEC(elliptic.P521())
 	case "ed25519":
 		return generateEd25519()
+	case "sm2":
+		return generateSM2()
 	default:
-		return nil, nil, fmt.Errorf("不支持的密钥类型: %s（支持 rsa1024/rsa2048/rsa4096/rsa8192/ec256/ec384/ec521/ed25519）", keyType)
+		return nil, nil, fmt.Errorf("不支持的密钥类型: %s（支持 rsa1024/rsa2048/rsa4096/rsa8192/ec256/ec384/ec521/ed25519/sm2）", keyType)
 	}
 }
 

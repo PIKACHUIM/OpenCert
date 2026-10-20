@@ -3,7 +3,10 @@ package acme
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
@@ -15,10 +18,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/globaltrusts/server-card/internal/ca"
+	"github.com/globaltrusts/server-card/internal/issuance"
 	"github.com/globaltrusts/server-card/internal/storage"
 	"github.com/google/uuid"
 )
@@ -29,7 +34,39 @@ type Config struct {
 	Path             string `json:"path"`               // 路径前缀（如 "letsencrypt"）
 	CAUUID           string `json:"ca_uuid"`            // 关联的 CA
 	IssuanceTmplUUID string `json:"issuance_tmpl_uuid"` // 关联的颁发模板
-	Enabled          bool   `json:"enabled"`
+	// AllowedChallenges 是允许的验证方式（JSON 数组），取值 http-01 / dns-01 / tls-alpn-01。
+	// 为空时默认 http-01 与 dns-01，保持历史行为。
+	AllowedChallenges string `json:"allowed_challenges,omitempty"`
+	Enabled           bool   `json:"enabled"`
+}
+
+// DefaultACMEChallenges 是未显式配置时允许的验证方式。
+var DefaultACMEChallenges = []string{"http-01", "dns-01"}
+
+// Challenges 返回允许的验证方式（已去重、过滤非法取值）。
+func (c *Config) Challenges() []string {
+	if strings.TrimSpace(c.AllowedChallenges) == "" {
+		return DefaultACMEChallenges
+	}
+	var raw []string
+	if err := json.Unmarshal([]byte(c.AllowedChallenges), &raw); err != nil {
+		return DefaultACMEChallenges
+	}
+	valid := map[string]bool{"http-01": true, "dns-01": true, "tls-alpn-01": true}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(raw))
+	for _, t := range raw {
+		t = strings.TrimSpace(t)
+		if !valid[t] || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	if len(out) == 0 {
+		return DefaultACMEChallenges
+	}
+	return out
 }
 
 // Account 是 ACME 账户。
@@ -81,13 +118,19 @@ type Challenge struct {
 
 // Service 是 ACME 服务。
 type Service struct {
-	db    *storage.DB
-	caSvc *ca.Service // 用于 Finalize 时签发证书（可选，未注入时 Finalize 失败）
+	db        *storage.DB
+	caSvc     *ca.Service       // 用于 Finalize 时签发证书（可选，未注入时 Finalize 失败）
+	issuanceS *issuance.Service // 用于解析颁发模板策略（可选，未注入时按历史默认值签发）
 }
 
 // NewService 创建 ACME 服务。
 func NewService(db *storage.DB) *Service {
 	return &Service{db: db}
+}
+
+// SetIssuanceSvc 注入颁发模板服务（用于按统一策略确定有效期、算法与 CA）。
+func (s *Service) SetIssuanceSvc(svc *issuance.Service) {
+	s.issuanceS = svc
 }
 
 // SetCASvc 注入 CA 签发服务（在 main.go 装配阶段调用以避免循环依赖）。
@@ -104,17 +147,32 @@ func (s *Service) CreateConfig(ctx context.Context, cfg *Config) error {
 	}
 	cfg.UUID = uuid.New().String()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO acme_configs (uuid, path, ca_uuid, issuance_tmpl_uuid, enabled)
-		 VALUES (?, ?, ?, ?, ?)`,
-		cfg.UUID, cfg.Path, cfg.CAUUID, cfg.IssuanceTmplUUID, boolToInt(cfg.Enabled),
+		`INSERT INTO acme_configs (uuid, path, ca_uuid, issuance_tmpl_uuid, allowed_challenges, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		cfg.UUID, cfg.Path, cfg.CAUUID, cfg.IssuanceTmplUUID, cfg.AllowedChallenges, boolToInt(cfg.Enabled),
 	)
 	return err
+}
+
+// UpdateConfig 全量更新 ACME 配置。
+func (s *Service) UpdateConfig(ctx context.Context, cfg *Config) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE acme_configs SET path = ?, ca_uuid = ?, issuance_tmpl_uuid = ?, allowed_challenges = ?, enabled = ?
+		 WHERE uuid = ?`,
+		cfg.Path, cfg.CAUUID, cfg.IssuanceTmplUUID, cfg.AllowedChallenges, boolToInt(cfg.Enabled), cfg.UUID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("ACME 服务不存在")
+	}
+	return nil
 }
 
 // ListConfigs 查询所有 ACME 配置。
 func (s *Service) ListConfigs(ctx context.Context) ([]*Config, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT uuid, path, ca_uuid, issuance_tmpl_uuid, enabled FROM acme_configs ORDER BY path`,
+		`SELECT uuid, path, ca_uuid, issuance_tmpl_uuid, allowed_challenges, enabled FROM acme_configs ORDER BY path`,
 	)
 	if err != nil {
 		return nil, err
@@ -125,7 +183,7 @@ func (s *Service) ListConfigs(ctx context.Context) ([]*Config, error) {
 	for rows.Next() {
 		c := &Config{}
 		var enabled int
-		if err := rows.Scan(&c.UUID, &c.Path, &c.CAUUID, &c.IssuanceTmplUUID, &enabled); err != nil {
+		if err := rows.Scan(&c.UUID, &c.Path, &c.CAUUID, &c.IssuanceTmplUUID, &c.AllowedChallenges, &enabled); err != nil {
 			return nil, err
 		}
 		c.Enabled = enabled == 1
@@ -139,13 +197,38 @@ func (s *Service) GetConfigByPath(ctx context.Context, path string) (*Config, er
 	c := &Config{}
 	var enabled int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT uuid, path, ca_uuid, issuance_tmpl_uuid, enabled FROM acme_configs WHERE path = ? AND enabled = 1`, path,
-	).Scan(&c.UUID, &c.Path, &c.CAUUID, &c.IssuanceTmplUUID, &enabled)
+		`SELECT uuid, path, ca_uuid, issuance_tmpl_uuid, allowed_challenges, enabled
+		 FROM acme_configs WHERE path = ? AND enabled = 1`, path,
+	).Scan(&c.UUID, &c.Path, &c.CAUUID, &c.IssuanceTmplUUID, &c.AllowedChallenges, &enabled)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("ACME 服务不存在: %s", path)
 	}
 	c.Enabled = enabled == 1
 	return c, err
+}
+
+// GetConfigByUUID 按 UUID 查询 ACME 配置。
+func (s *Service) GetConfigByUUID(ctx context.Context, cfgUUID string) (*Config, error) {
+	c := &Config{}
+	var enabled int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT uuid, path, ca_uuid, issuance_tmpl_uuid, allowed_challenges, enabled
+		 FROM acme_configs WHERE uuid = ?`, cfgUUID,
+	).Scan(&c.UUID, &c.Path, &c.CAUUID, &c.IssuanceTmplUUID, &c.AllowedChallenges, &enabled)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("ACME 服务不存在")
+	}
+	c.Enabled = enabled == 1
+	return c, err
+}
+
+// ChallengesForPath 返回指定 ACME 服务允许的验证方式。
+func (s *Service) ChallengesForPath(ctx context.Context, path string) ([]string, error) {
+	cfg, err := s.GetConfigByPath(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return cfg.Challenges(), nil
 }
 
 // DeleteConfig 删除 ACME 配置。
@@ -594,11 +677,40 @@ func (s *Service) FinalizeOrder(ctx context.Context, orderUUID string, csrDER []
 		subject = pkix.Name{CommonName: idents[0].Value}
 	}
 
+	// 有效期与允许范围由颁发模板决定（ACME 默认 90 天，模板不允许 90 天时退回模板默认值）；
+	// 同时校验 CSR 公钥算法与模板、CA 是否匹配（例如 SM2 CA 只能签 SM2 证书）。
+	validDays := 90
+	csrKeyType := ""
+	if s.issuanceS != nil {
+		if policy, err := s.issuanceS.ResolvePolicy(issuance.WithPolicyCache(ctx), "", issuanceTmplUUID, nil); err == nil {
+			if len(policy.ValidDays) > 0 && !containsIntSlice(policy.ValidDays, validDays) {
+				validDays = policy.DefaultValidDays
+				if validDays <= 0 {
+					validDays = policy.ValidDays[0]
+				}
+			}
+			if caUUID == "" {
+				caUUID = policy.DefaultCA
+			}
+			csrKeyType = keyTypeOfPublicKey(csr.PublicKey)
+			if err := policy.ValidateSelection(caUUID, csrKeyType, "", validDays); err != nil {
+				_, _ = s.db.ExecContext(ctx,
+					`UPDATE acme_orders SET status = 'invalid' WHERE uuid = ?`, orderUUID)
+				return nil, err
+			}
+		}
+	} else {
+		csrKeyType = keyTypeOfPublicKey(csr.PublicKey)
+	}
+	if caUUID == "" {
+		return nil, fmt.Errorf("ACME 配置未指定 CA")
+	}
+
 	issueReq := &ca.IssueRequest{
 		CAUUID:           caUUID,
 		Subject:          subject,
-		KeyType:          "", // 从 CSR 中的公钥推断，ca.IssueCert 不使用 KeyType 时跳过生成
-		ValidDays:        90, // ACME 默认 90 天（Let's Encrypt 对齐）
+		KeyType:          csrKeyType, // 与 CSR 公钥保持一致；带了 CSRPublicKey 时不会重新生成
+		ValidDays:        validDays,
 		IsCA:             false,
 		DNSNames:         csr.DNSNames,
 		IPAddresses:      csr.IPAddresses,
@@ -626,6 +738,42 @@ func (s *Service) FinalizeOrder(ctx context.Context, orderUUID string, csrDER []
 		CertPEM:   resp.CertPEM,
 		CertUUID:  resp.SerialNumber,
 	}, nil
+}
+
+// containsIntSlice 判断整数切片是否包含某值。
+func containsIntSlice(arr []int, v int) bool {
+	for _, x := range arr {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// keyTypeOfPublicKey 由公钥推断密钥算法标识（与 ca 包的命名保持一致）。
+// 识别不了时返回空串，签发引擎仍可凭公钥本身完成签发。
+func keyTypeOfPublicKey(pub interface{}) string {
+	switch k := pub.(type) {
+	case *rsa.PublicKey:
+		return fmt.Sprintf("rsa%d", k.N.BitLen())
+	case *ecdsa.PublicKey:
+		switch k.Curve.Params().BitSize {
+		case 256:
+			return "ec256"
+		case 384:
+			return "ec384"
+		case 521:
+			return "ec521"
+		}
+	case ed25519.PublicKey:
+		return "ed25519"
+	default:
+		// SM2 公钥（gmsm）同样实现 elliptic.Curve 语义，交由签发引擎按公钥类型分派
+		if name := reflect.TypeOf(pub).String(); strings.Contains(name, "sm2") {
+			return "sm2"
+		}
+	}
+	return ""
 }
 
 // GetCertificateForOrder 根据订单 UUID 返回证书 PEM。

@@ -84,10 +84,11 @@ func (s *Service) CreateOrder(ctx context.Context, o *storage.CertOrder) error {
 	return nil
 }
 
-// resolveOrderPricing 解析并校验订单的权威定价与模板关联。
+// resolveOrderPricing 校验订单关联的模板并补齐颁发模板。
 //
-// 定价来源优先级：已有服务端定价 > 证书申请模板定价 > 颁发模板定价。
-// 调用方（HTTP 层）已过滤客户端传入的金额，因此此处不会采纳用户输入的价格。
+// 订单金额只来自商品规格（门户下单已由服务端按规格定价，含免费规格），
+// 调用方（HTTP 层）已过滤客户端传入的金额；这里不再从任何模板回填价格，
+// 只负责校验开通模板可用并补齐订单关联的颁发模板。
 func (s *Service) resolveOrderPricing(ctx context.Context, o *storage.CertOrder) error {
 	if o.CertApplyTmplUUID != "" {
 		tmpl, err := s.loadApplyTemplate(ctx, o.CertApplyTmplUUID)
@@ -100,15 +101,11 @@ func (s *Service) resolveOrderPricing(ctx context.Context, o *storage.CertOrder)
 		if o.IssuanceTmplUUID == "" {
 			o.IssuanceTmplUUID = tmpl.IssuanceTmplUUID
 		}
-		// 门户/自助订单已由服务端按规格定价（含免费规格），不能再回填模板价格
-		if o.AmountCents == 0 && o.SKUCode == "" {
-			o.AmountCents = tmpl.PriceCents
-		}
 		return nil
 	}
 
-	// 未指定申请模板时，退化为按颁发模板定价（兼容控制台直接下单）
-	if o.IssuanceTmplUUID != "" && o.AmountCents == 0 && s.issuanceSvc != nil {
+	// 未指定开通模板时，只校验所选颁发模板仍然启用
+	if o.IssuanceTmplUUID != "" && s.issuanceSvc != nil {
 		tmpl, err := s.issuanceSvc.GetIssuanceTemplate(ctx, o.IssuanceTmplUUID)
 		if err != nil {
 			return err
@@ -116,7 +113,6 @@ func (s *Service) resolveOrderPricing(ctx context.Context, o *storage.CertOrder)
 		if !tmpl.Enabled {
 			return fmt.Errorf("所选颁发模板已停用，请重新选择")
 		}
-		o.AmountCents = tmpl.PriceCents
 	}
 	return nil
 }
@@ -126,26 +122,25 @@ func (s *Service) LoadApplyTemplate(ctx context.Context, tmplUUID string) (*stor
 	return s.loadApplyTemplate(ctx, tmplUUID)
 }
 
-// loadApplyTemplate 读取证书申请模板（面向用户的产品化配置）。
+// loadApplyTemplate 读取证书开通模板（只含业务规则：审批、续期、申请方式；
+// CA、有效期、算法、资料要求由其关联的颁发模板提供）。
 func (s *Service) loadApplyTemplate(ctx context.Context, tmplUUID string) (*storage.CertApplyTemplate, error) {
 	if tmplUUID == "" {
-		return nil, fmt.Errorf("缺少证书申请模板")
+		return nil, fmt.Errorf("缺少证书开通模板")
 	}
 	t := &storage.CertApplyTemplate{}
 	var enabled, requireApproval, allowRenewal int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT uuid, name, issuance_tmpl_uuid, valid_days, ca_uuid, enabled, require_approval,
-		        allow_renewal, allowed_key_types, price_cents, description, subject_tmpl_uuid, extension_tmpl_uuid,
-		        created_at, updated_at
+		`SELECT uuid, name, issuance_tmpl_uuid, enabled, require_approval, allow_renewal, apply_modes,
+		        description, created_at, updated_at
 		 FROM cert_apply_templates WHERE uuid = ?`, tmplUUID,
-	).Scan(&t.UUID, &t.Name, &t.IssuanceTmplUUID, &t.ValidDays, &t.CAUUID, &enabled,
-		&requireApproval, &allowRenewal, &t.AllowedKeyTypes, &t.PriceCents, &t.Description,
-		&t.SubjectTmplUUID, &t.ExtensionTmplUUID, &t.CreatedAt, &t.UpdatedAt)
+	).Scan(&t.UUID, &t.Name, &t.IssuanceTmplUUID, &enabled, &requireApproval, &allowRenewal, &t.ApplyModes,
+		&t.Description, &t.CreatedAt, &t.UpdatedAt)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("证书申请模板不存在: %s", tmplUUID)
+		return nil, fmt.Errorf("证书开通模板不存在: %s", tmplUUID)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("查询证书申请模板失败: %w", err)
+		return nil, fmt.Errorf("查询证书开通模板失败: %w", err)
 	}
 	t.Enabled = enabled == 1
 	t.RequireApproval = requireApproval == 1
@@ -383,7 +378,7 @@ func (s *Service) validateApplication(ctx context.Context, app *storage.CertAppl
 		return fmt.Errorf("该订单可申请 %d 张证书，已全部提交", qty)
 	}
 
-	// 模板约束：启用状态 + 允许的密钥算法
+	// 模板约束：启用状态 + 颁发模板允许的密钥算法（经 ResolvePolicy 统一解析）
 	if applyTmplUUID != "" {
 		tmpl, err := s.loadApplyTemplate(ctx, applyTmplUUID)
 		if err != nil {
@@ -392,18 +387,20 @@ func (s *Service) validateApplication(ctx context.Context, app *storage.CertAppl
 		if !tmpl.Enabled {
 			return fmt.Errorf("所选商品已下架，无法提交申请")
 		}
-		if app.KeyType != "" && tmpl.AllowedKeyTypes != "" {
-			var allowed []string
-			if err := json.Unmarshal([]byte(tmpl.AllowedKeyTypes), &allowed); err == nil && len(allowed) > 0 {
-				ok := false
-				for _, k := range allowed {
-					if k == app.KeyType {
-						ok = true
-						break
+		if app.KeyType != "" && s.issuanceSvc != nil && tmpl.IssuanceTmplUUID != "" {
+			if it, err := s.issuanceSvc.GetIssuanceTemplate(ctx, tmpl.IssuanceTmplUUID); err == nil {
+				var allowed []string
+				if err := json.Unmarshal([]byte(it.AllowedKeyTypes), &allowed); err == nil && len(allowed) > 0 {
+					ok := false
+					for _, k := range allowed {
+						if k == app.KeyType {
+							ok = true
+							break
+						}
 					}
-				}
-				if !ok {
-					return fmt.Errorf("该商品不支持所选密钥算法: %s", app.KeyType)
+					if !ok {
+						return fmt.Errorf("该商品不支持所选密钥算法: %s", app.KeyType)
+					}
 				}
 			}
 		}
@@ -527,17 +524,29 @@ func (s *Service) ListApplications(ctx context.Context, userUUID string, statusF
 		return nil, 0, err
 	}
 
-	selectQuery := `SELECT ` + certApplicationColumns + ` FROM cert_applications WHERE 1=1`
+	// 一次 JOIN 取出申请人、订单号与证书类型，避免逐条查询（N+1），
+	// 前端也不必再拿截断的 UUID 去猜"是谁申请的、买的什么"。
+	selectQuery := `SELECT a.uuid, a.order_uuid, a.user_uuid, a.subject_json, a.san_json, a.key_type,
+		 a.csr_pem, a.applicant_email, a.card_uuid, a.status, a.approved_by, a.approved_at, a.reject_reason,
+		 a.cert_uuid, a.created_at, a.updated_at,
+		 COALESCE(u.username, ''), COALESCE(u.email, ''),
+		 COALESCE(o.order_no, ''), COALESCE(t.name, ''),
+		 COALESCE(a.created_by, ''), COALESCE(a.on_behalf, 0)
+		 FROM cert_applications a
+		 LEFT JOIN users u ON u.uuid = a.user_uuid
+		 LEFT JOIN cert_orders o ON o.uuid = a.order_uuid
+		 LEFT JOIN cert_apply_templates t ON t.uuid = o.cert_apply_tmpl_uuid
+		 WHERE 1=1`
 	selectArgs := []interface{}{}
 	if userUUID != "" {
-		selectQuery += ` AND user_uuid = ?`
+		selectQuery += ` AND a.user_uuid = ?`
 		selectArgs = append(selectArgs, userUUID)
 	}
 	if statusFilter != "" {
-		selectQuery += ` AND status = ?`
+		selectQuery += ` AND a.status = ?`
 		selectArgs = append(selectArgs, statusFilter)
 	}
-	selectQuery += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	selectQuery += ` ORDER BY a.created_at DESC LIMIT ? OFFSET ?`
 	selectArgs = append(selectArgs, pageSize, offset)
 
 	rows, err := s.db.QueryContext(ctx, selectQuery, selectArgs...)
@@ -548,13 +557,69 @@ func (s *Service) ListApplications(ctx context.Context, userUUID string, statusF
 
 	apps := []*storage.CertApplication{}
 	for rows.Next() {
-		a, err := scanCertApplication(rows.Scan)
-		if err != nil {
+		a := &storage.CertApplication{}
+		var approvedBy sql.NullString
+		var approvedAt sql.NullTime
+		var onBehalf int
+		if err := rows.Scan(&a.UUID, &a.OrderUUID, &a.UserUUID, &a.SubjectJSON, &a.SANJSON, &a.KeyType,
+			&a.CSRPEM, &a.ApplicantEmail, &a.CardUUID, &a.Status, &approvedBy, &approvedAt, &a.RejectReason,
+			&a.CertUUID, &a.CreatedAt, &a.UpdatedAt,
+			&a.UserName, &a.UserEmail, &a.OrderNo, &a.TemplateName, &a.CreatedBy, &onBehalf); err != nil {
 			return nil, 0, err
 		}
+		if approvedBy.Valid {
+			a.ApprovedBy = approvedBy.String
+		}
+		if approvedAt.Valid {
+			a.ApprovedAt = &approvedAt.Time
+		}
+		a.OnBehalf = onBehalf == 1
+		a.SubjectSummary, a.SANSummary = summarizeSubject(a.SubjectJSON), summarizeSAN(a.SANJSON)
 		apps = append(apps, a)
 	}
 	return apps, total, rows.Err()
+}
+
+// summarizeSubject 从主体 JSON 中提取一行可读摘要，例如 "CN=example.com, O=示例公司"。
+func summarizeSubject(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return ""
+	}
+	order := []string{"CN", "O", "OU", "C", "email"}
+	var parts []string
+	for _, k := range order {
+		if v := strings.TrimSpace(m[k]); v != "" {
+			parts = append(parts, k+"="+v)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// summarizeSAN 从 SAN JSON 中提取一行可读摘要：域名优先，其次 IP / 邮箱，超过 3 项省略。
+func summarizeSAN(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var m struct {
+		DNS   []string `json:"dns"`
+		IP    []string `json:"ip"`
+		Email []string `json:"email"`
+	}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return ""
+	}
+	items := append(append(append([]string{}, m.DNS...), m.IP...), m.Email...)
+	if len(items) == 0 {
+		return ""
+	}
+	if len(items) > 3 {
+		return strings.Join(items[:3], ", ") + fmt.Sprintf(" 等 %d 项", len(items))
+	}
+	return strings.Join(items, ", ")
 }
 
 // ApproveApplication 审批通过证书申请。
@@ -666,10 +731,9 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		return "", fmt.Errorf("读取订单失败: %w", err)
 	}
 
-	// 读取申请模板（若有）：取 CA、有效期。
-	// 模板缺失或已下架时直接失败，避免在配置不完整的情况下静默按兜底参数签发。
-	var caUUID string
-	var validDays int
+	// 读取开通模板（若有）：确认启用状态并取出关联的颁发模板。
+	// CA、有效期、算法、密钥存储、资料要求等技术参数统一由颁发模板经 ResolvePolicy 解析，
+	// 不再从开通模板读取，避免同一属性两处配置、互相冲突。
 	if certApplyTmplUUID != "" {
 		applyTmpl, tmplErr := s.loadApplyTemplate(ctx, certApplyTmplUUID)
 		if tmplErr != nil {
@@ -678,36 +742,9 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		if !applyTmpl.Enabled {
 			return "", fmt.Errorf("所选商品已下架，无法签发")
 		}
-		caUUID = applyTmpl.CAUUID
-		validDays = applyTmpl.ValidDays
 		if issuanceTmplUUID == "" {
 			issuanceTmplUUID = applyTmpl.IssuanceTmplUUID
 		}
-	}
-
-	// 读取颁发模板（若有）：回填 CA、有效期缺省值
-	if issuanceTmplUUID != "" {
-		tmpl, err := s.issuanceSvc.GetIssuanceTemplate(ctx, issuanceTmplUUID)
-		if err == nil {
-			if caUUID == "" {
-				caUUID = firstAllowedCA(tmpl.AllowedCAUUIDs)
-			}
-			if validDays == 0 {
-				validDays = firstValidDays(tmpl.ValidDays)
-			}
-		}
-	}
-
-	// 订阅套餐可覆盖单张证书的有效期
-	if d := SpecValidDays(orderSpec); d > 0 {
-		validDays = d
-	}
-
-	if caUUID == "" {
-		return "", fmt.Errorf("无法确定签发 CA（订单/申请模板/颁发模板均未指定）")
-	}
-	if validDays <= 0 {
-		validDays = 365
 	}
 
 	// 解析主体 JSON → pkix.Name
@@ -756,13 +793,68 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		}
 	}
 
-	// 密钥类型：优先申请指定；其次由 CSR 公钥推断；最后回退默认值
+	// 密钥类型：优先申请指定；其次由 CSR 公钥推断
 	keyType := app.KeyType
 	if keyType == "" && csrPubKey != nil {
 		keyType = keyTypeFromPublicKey(csrPubKey)
 	}
+
+	// 解析生效策略：颁发模板定范围与默认值；订阅套餐可收窄有效期（订单快照里的有效期）。
+	// 订单是下单时的快照：颁发模板之后被调整也不应让已付款订单失效，
+	// 所以有效期只在订单快照落在模板范围内时才收窄，否则取模板默认值。
+	var policy *issuance.EffectivePolicy
+	var caUUID string
+	var validDays int
+	var sigAlgName string
+	var keyStorage *storage.KeyStorageTemplate
+	if issuanceTmplUUID != "" && s.issuanceSvc != nil {
+		policy, err = s.issuanceSvc.ResolvePolicy(issuance.WithPolicyCache(ctx), "", issuanceTmplUUID, nil)
+		if err != nil {
+			return "", err
+		}
+		caUUID = policy.DefaultCA
+		validDays = policy.DefaultValidDays
+		if d := SpecValidDays(orderSpec); d > 0 {
+			if len(policy.ValidDays) == 0 || containsInt(policy.ValidDays, d) {
+				validDays = d
+			}
+		}
+		if keyType == "" {
+			if len(policy.KeyTypes) > 0 {
+				keyType = policy.KeyTypes[0]
+			}
+		}
+		// 签名算法由签发 CA 的密钥类型决定（EC CA 给 RSA 证书签名时只能用 ECDSA 系列）。
+		caKeyType := ""
+		if caUUID != "" {
+			s.db.QueryRowContext(ctx, `SELECT key_type FROM cas WHERE uuid = ?`, caUUID).Scan(&caKeyType) //nolint:errcheck
+		}
+		if err := policy.ValidateSelectionWithCA(caUUID, caKeyType, keyType, "", validDays); err != nil {
+			return "", err
+		}
+		// SM2 的签名算法在国密库里由签名密钥自动确定，这里不再显式指定，
+		// 避免标准库的 SignatureAlgorithm 枚举与 SM2WithSM3 不匹配。
+		if !isSM2KeyType(caKeyType) {
+			if algs := policy.SigAlgsForCA(caKeyType); len(algs) > 0 {
+				sigAlgName = preferredSigAlg(algs)
+			}
+		}
+		keyStorage = policy.KeyStorage
+		if keyStorage != nil && keyStorage.KeyGenLocation == storage.KeyGenCSR && csrPubKey == nil {
+			return "", fmt.Errorf("该证书类型要求自带 CSR，请上传 CSR 后再提交")
+		}
+	} else {
+		// 没有颁发模板（历史订单）：维持旧行为，由订单快照 / 兜底值决定
+		validDays = SpecValidDays(orderSpec)
+	}
 	if keyType == "" {
 		keyType = "ec256"
+	}
+	if caUUID == "" {
+		return "", fmt.Errorf("无法确定签发 CA（颁发模板未配置候选 CA）")
+	}
+	if validDays <= 0 {
+		validDays = 365
 	}
 
 	// 构造签发请求
@@ -774,19 +866,28 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		defaultEKU = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
 	}
 	issueReq := &ca.IssueRequest{
-		CAUUID:           caUUID,
-		Subject:          subject,
-		KeyType:          keyType,
-		ValidDays:        validDays,
-		IsCA:             false,
-		KeyUsage:         defaultKU,
-		ExtKeyUsage:      defaultEKU,
-		DNSNames:         dnsNames,
-		IPAddresses:      ips,
-		EmailAddrs:       emails,
-		URIs:             uris,
-		IssuanceTmplUUID: issuanceTmplUUID,
-		CSRPublicKey:     csrPubKey, // 非 nil 时不生成服务端私钥
+		CAUUID:             caUUID,
+		Subject:            subject,
+		KeyType:            keyType,
+		ValidDays:          validDays,
+		KeyUsage:           defaultKU,
+		ExtKeyUsage:        defaultEKU,
+		DNSNames:           dnsNames,
+		IPAddresses:        ips,
+		EmailAddrs:         emails,
+		URIs:               uris,
+		IssuanceTmplUUID:   issuanceTmplUUID,
+		CSRPublicKey:       csrPubKey, // 非 nil 时不生成服务端私钥
+		SignatureAlgorithm: sigAlgName,
+	}
+	// 证书类型由颁发模板决定：CA 类模板签出 CA 证书（路径长度同样来自模板）
+	if policy != nil {
+		issueReq.IsCA = policy.IsCA
+		issueReq.PathLen = policy.PathLen
+	}
+	// 私钥按密钥存储模板指定的区域生成（硬件区域私钥不出域）
+	if keyStorage != nil {
+		issueReq.KeyZoneUUID = keyStorage.StorageZoneUUID
 	}
 
 	// 调用签发引擎
@@ -840,6 +941,12 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		SANURI:           marshalJSONArray(uris),
 		IssuanceTmplUUID: issuanceTmplUUID,
 		RevocationStatus: "active",
+		// 私钥位置与密钥存储模板快照：硬件区域生成的私钥只保存引用，下发 / 导出按签发时的约定执行
+		KeyBackend: resp.KeyBackend,
+		KeyRef:     resp.KeyRef,
+	}
+	if keyStorage != nil {
+		cert.KeyStorageTmplUUID = keyStorage.UUID
 	}
 	certRepo := storage.NewCertRepo(s.db)
 	if err := certRepo.Create(ctx, cert); err != nil {
@@ -908,28 +1015,32 @@ func parseSANJSON(s string) (dns []string, ips []net.IP, emails []string, uris [
 	return dns, ips, emails, uris, nil
 }
 
-// firstAllowedCA 从 JSON 数组字符串中提取第一个 CA UUID。
-func firstAllowedCA(j string) string {
-	if j == "" || j == "[]" {
-		return ""
+// containsInt 判断整数切片是否包含某值。
+func containsInt(arr []int, v int) bool {
+	for _, x := range arr {
+		if x == v {
+			return true
+		}
 	}
-	var arr []string
-	if err := json.Unmarshal([]byte(j), &arr); err != nil || len(arr) == 0 {
-		return ""
-	}
-	return arr[0]
+	return false
 }
 
-// firstValidDays 从 JSON 数组字符串中提取第一个有效期。
-func firstValidDays(j string) int {
-	if j == "" || j == "[]" {
-		return 0
+// preferredSigAlg 从某个密钥算法下允许的签名算法里选首选项：
+// 优先 SHA-256 系（兼容性最好），其次国密 SM2WithSM3，否则取字典序第一个。
+func preferredSigAlg(algs []string) string {
+	for _, want := range []string{"SM2WithSM3", "SHA256_RSA", "ECDSA_SHA256", "ED25519"} {
+		for _, a := range algs {
+			if a == want {
+				return a
+			}
+		}
 	}
-	var arr []int
-	if err := json.Unmarshal([]byte(j), &arr); err != nil || len(arr) == 0 {
-		return 0
-	}
-	return arr[0]
+	return algs[0]
+}
+
+// isSM2KeyType 判断密钥算法标识是否为国密 SM2。
+func isSM2KeyType(keyType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(keyType)), "sm2")
 }
 
 // RejectApplication 拒绝证书申请（解冻冻结金额）。
@@ -1030,6 +1141,19 @@ const SystemApprover = "system"
 // 自助模式下用户无需购买即可申请，但签发链路仍依托订单记录，
 // 以保留审计、数量约束与模板关联的一致性。
 func (s *Service) CreateSelfServiceOrder(ctx context.Context, userUUID, applyTmplUUID, email string) (*storage.CertOrder, error) {
+	return s.createZeroAmountOrder(ctx, userUUID, applyTmplUUID, email, "self-service", "self_service")
+}
+
+// CreateProxyOrder 为管理员代办创建零金额订单（直接置为已支付）。
+//
+// 与自助申请的区别只在订单标记：SKU 记为 admin-proxy，便于运营区分
+// "用户自己申请"与"管理员代用户提交"。
+func (s *Service) CreateProxyOrder(ctx context.Context, userUUID, applyTmplUUID, email string) (*storage.CertOrder, error) {
+	return s.createZeroAmountOrder(ctx, userUUID, applyTmplUUID, email, "admin-proxy", "admin_proxy")
+}
+
+// createZeroAmountOrder 创建零金额、已支付订单（自助 / 代办共用）。
+func (s *Service) createZeroAmountOrder(ctx context.Context, userUUID, applyTmplUUID, email, skuCode, mode string) (*storage.CertOrder, error) {
 	if applyTmplUUID == "" {
 		return nil, fmt.Errorf("请选择要申请的证书类型")
 	}
@@ -1042,7 +1166,7 @@ func (s *Service) CreateSelfServiceOrder(ctx context.Context, userUUID, applyTmp
 	}
 
 	spec, _ := json.Marshal(map[string]interface{}{
-		"mode":          "self_service",
+		"mode":          mode,
 		"kind":          storage.OrderKindCert,
 		"product_name":  tmpl.Name,
 		"sku_name":      tmpl.Name,
@@ -1054,7 +1178,7 @@ func (s *Service) CreateSelfServiceOrder(ctx context.Context, userUUID, applyTmp
 		CertApplyTmplUUID: applyTmplUUID,
 		SpecJSON:          string(spec),
 		ApplicantEmail:    email,
-		SKUCode:           "self-service", // 标记为已定价，避免回填模板价格
+		SKUCode:           skuCode, // 标记为已定价，避免回填模板价格
 	}
 	if err := s.CreateOrder(ctx, order); err != nil {
 		return nil, err
@@ -1068,6 +1192,14 @@ func (s *Service) CreateSelfServiceOrder(ctx context.Context, userUUID, applyTmp
 	order.Status = storage.CertOrderPaid
 	order.PaidAt = &now
 	return order, nil
+}
+
+// MarkApplicationProxy 记录该申请由管理员代办（写入代办人并置 on_behalf 标记）。
+func (s *Service) MarkApplicationProxy(ctx context.Context, appUUID, operatorUUID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE cert_applications SET created_by = ?, on_behalf = 1, updated_at = ? WHERE uuid = ?`,
+		operatorUUID, time.Now(), appUUID)
+	return err
 }
 
 // ListStalePendingOrders 列出早于 before 创建且仍待支付的门户订单号。

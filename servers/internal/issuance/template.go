@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/x509"
 	"database/sql"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/globaltrusts/server-card/internal/storage"
@@ -24,54 +26,87 @@ func NewService(db *storage.DB) *Service {
 }
 
 // ---- 颁发模板 CRUD ----
+//
+// 颁发模板是唯一的技术配置来源：CA 候选与默认值、有效期、算法、密钥用途/
+// 证书扩展/密钥存储/主体/扩展信息模板全部在这里配置，开通模板与商品规格
+// 只能在这些范围内收窄，不能独立配置（见 ValidateIssuanceTemplate）。
+
+const issuanceTemplateColumns = `uuid, name, is_ca, path_len, valid_days, default_valid_days,
+	allowed_key_types, allowed_sig_algs, allowed_ca_uuids, default_ca_uuid,
+	subject_tmpl_uuid, extension_tmpl_uuid, key_usage_tmpl_uuid, key_storage_tmpl_uuid, cert_ext_tmpl_uuid,
+	category, enabled, created_at, updated_at`
+
+func scanIssuanceTemplate(scan func(dest ...interface{}) error) (*storage.IssuanceTemplate, error) {
+	t := &storage.IssuanceTemplate{}
+	var isCA, enabled int
+	if err := scan(&t.UUID, &t.Name, &isCA, &t.PathLen, &t.ValidDays, &t.DefaultValidDays,
+		&t.AllowedKeyTypes, &t.AllowedSigAlgs, &t.AllowedCAUUIDs, &t.DefaultCAUUID,
+		&t.SubjectTmplUUID, &t.ExtensionTmplUUID, &t.KeyUsageTmplUUID, &t.KeyStorageTmplUUID, &t.CertExtTmplUUID,
+		&t.Category, &enabled, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		return nil, err
+	}
+	t.IsCA = isCA == 1
+	t.Enabled = enabled == 1
+	return t, nil
+}
+
+// ValidateIssuanceTemplate 校验颁发模板的内部一致性：
+//   - 默认有效期必须在可选有效期列表中（列表非空时）；
+//   - 默认 CA 必须在候选 CA 列表中（列表非空时）；
+//   - IsCA=true 时必须关联 CA 类密钥用途模板（校验留给调用方传入 keyUsageIsCA）。
+func ValidateIssuanceTemplate(t *storage.IssuanceTemplate) error {
+	if strings.TrimSpace(t.Name) == "" {
+		return fmt.Errorf("模板名称不能为空")
+	}
+	if allowed := parseJSONIntArr(t.ValidDays); len(allowed) > 0 && t.DefaultValidDays != 0 {
+		if !containsInt(allowed, t.DefaultValidDays) {
+			return fmt.Errorf("默认有效期 %d 天不在可选列表 %v 中", t.DefaultValidDays, allowed)
+		}
+	}
+	if allowed := parseJSONStrArr(t.AllowedCAUUIDs); len(allowed) > 0 && t.DefaultCAUUID != "" {
+		if !containsStr(allowed, t.DefaultCAUUID) {
+			return fmt.Errorf("默认 CA 不在候选 CA 列表中")
+		}
+	}
+	return nil
+}
 
 // CreateIssuanceTemplate 创建颁发模板。
 func (s *Service) CreateIssuanceTemplate(ctx context.Context, t *storage.IssuanceTemplate) error {
-	if t.Name == "" {
-		return fmt.Errorf("模板名称不能为空")
+	if err := s.ValidateIssuanceTemplateDeep(ctx, t); err != nil {
+		return err
 	}
 	t.UUID = uuid.New().String()
 	t.CreatedAt = time.Now()
 	t.UpdatedAt = time.Now()
+	if t.AllowedSigAlgs == "" {
+		t.AllowedSigAlgs = "[]"
+	}
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO issuance_templates (uuid, name, is_ca, path_len, valid_days, allowed_key_types, allowed_ca_uuids,
-		 subject_tmpl_uuid, extension_tmpl_uuid, key_usage_tmpl_uuid, key_storage_tmpl_uuid, cert_ext_tmpl_uuid,
-		 price_cents, stock, category, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.UUID, t.Name, boolToInt(t.IsCA), t.PathLen, t.ValidDays, t.AllowedKeyTypes, t.AllowedCAUUIDs,
+		`INSERT INTO issuance_templates (`+issuanceTemplateColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.UUID, t.Name, boolToInt(t.IsCA), t.PathLen, t.ValidDays, t.DefaultValidDays,
+		t.AllowedKeyTypes, t.AllowedSigAlgs, t.AllowedCAUUIDs, t.DefaultCAUUID,
 		t.SubjectTmplUUID, t.ExtensionTmplUUID, t.KeyUsageTmplUUID, t.KeyStorageTmplUUID, t.CertExtTmplUUID,
-		t.PriceCents, t.Stock, t.Category, boolToInt(t.Enabled), t.CreatedAt, t.UpdatedAt,
+		t.Category, boolToInt(t.Enabled), t.CreatedAt, t.UpdatedAt,
 	)
 	return err
 }
 
 // GetIssuanceTemplate 按 UUID 查询颁发模板。
 func (s *Service) GetIssuanceTemplate(ctx context.Context, tmplUUID string) (*storage.IssuanceTemplate, error) {
-	t := &storage.IssuanceTemplate{}
-	var isCA, enabled int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT uuid, name, is_ca, path_len, valid_days, allowed_key_types, allowed_ca_uuids,
-		 subject_tmpl_uuid, extension_tmpl_uuid, key_usage_tmpl_uuid, key_storage_tmpl_uuid, cert_ext_tmpl_uuid,
-		 price_cents, stock, category, enabled, created_at, updated_at
-		 FROM issuance_templates WHERE uuid = ?`, tmplUUID,
-	).Scan(&t.UUID, &t.Name, &isCA, &t.PathLen, &t.ValidDays, &t.AllowedKeyTypes, &t.AllowedCAUUIDs,
-		&t.SubjectTmplUUID, &t.ExtensionTmplUUID, &t.KeyUsageTmplUUID, &t.KeyStorageTmplUUID, &t.CertExtTmplUUID,
-		&t.PriceCents, &t.Stock, &t.Category, &enabled, &t.CreatedAt, &t.UpdatedAt)
+	row := s.db.QueryRowContext(ctx, `SELECT `+issuanceTemplateColumns+` FROM issuance_templates WHERE uuid = ?`, tmplUUID)
+	t, err := scanIssuanceTemplate(row.Scan)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("颁发模板不存在: %s", tmplUUID)
 	}
-	t.IsCA = isCA == 1
-	t.Enabled = enabled == 1
 	return t, err
 }
 
 // ListIssuanceTemplates 查询所有颁发模板。
 func (s *Service) ListIssuanceTemplates(ctx context.Context, category string, enabledOnly bool) ([]*storage.IssuanceTemplate, error) {
-	query := `SELECT uuid, name, is_ca, path_len, valid_days, allowed_key_types, allowed_ca_uuids,
-		 subject_tmpl_uuid, extension_tmpl_uuid, key_usage_tmpl_uuid, key_storage_tmpl_uuid, cert_ext_tmpl_uuid,
-		 price_cents, stock, category, enabled, created_at, updated_at
-		 FROM issuance_templates WHERE 1=1`
+	query := `SELECT ` + issuanceTemplateColumns + ` FROM issuance_templates WHERE 1=1`
 	var args []interface{}
 
 	if category != "" {
@@ -89,17 +124,12 @@ func (s *Service) ListIssuanceTemplates(ctx context.Context, category string, en
 	}
 	defer rows.Close()
 
-	var templates []*storage.IssuanceTemplate
+	templates := []*storage.IssuanceTemplate{}
 	for rows.Next() {
-		t := &storage.IssuanceTemplate{}
-		var isCA, enabled int
-		if err := rows.Scan(&t.UUID, &t.Name, &isCA, &t.PathLen, &t.ValidDays, &t.AllowedKeyTypes, &t.AllowedCAUUIDs,
-			&t.SubjectTmplUUID, &t.ExtensionTmplUUID, &t.KeyUsageTmplUUID, &t.KeyStorageTmplUUID, &t.CertExtTmplUUID,
-			&t.PriceCents, &t.Stock, &t.Category, &enabled, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		t, err := scanIssuanceTemplate(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
-		t.IsCA = isCA == 1
-		t.Enabled = enabled == 1
 		templates = append(templates, t)
 	}
 	return templates, rows.Err()
@@ -107,23 +137,79 @@ func (s *Service) ListIssuanceTemplates(ctx context.Context, category string, en
 
 // UpdateIssuanceTemplate 更新颁发模板。
 func (s *Service) UpdateIssuanceTemplate(ctx context.Context, t *storage.IssuanceTemplate) error {
+	if err := s.ValidateIssuanceTemplateDeep(ctx, t); err != nil {
+		return err
+	}
 	t.UpdatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE issuance_templates SET name = ?, is_ca = ?, path_len = ?, valid_days = ?, allowed_key_types = ?,
-		 allowed_ca_uuids = ?, subject_tmpl_uuid = ?, extension_tmpl_uuid = ?, key_usage_tmpl_uuid = ?,
-		 key_storage_tmpl_uuid = ?, cert_ext_tmpl_uuid = ?, price_cents = ?, stock = ?, category = ?, enabled = ?, updated_at = ?
+		`UPDATE issuance_templates SET name = ?, is_ca = ?, path_len = ?, valid_days = ?, default_valid_days = ?,
+		 allowed_key_types = ?, allowed_sig_algs = ?, allowed_ca_uuids = ?, default_ca_uuid = ?,
+		 subject_tmpl_uuid = ?, extension_tmpl_uuid = ?, key_usage_tmpl_uuid = ?,
+		 key_storage_tmpl_uuid = ?, cert_ext_tmpl_uuid = ?, category = ?, enabled = ?, updated_at = ?
 		 WHERE uuid = ?`,
-		t.Name, boolToInt(t.IsCA), t.PathLen, t.ValidDays, t.AllowedKeyTypes, t.AllowedCAUUIDs,
+		t.Name, boolToInt(t.IsCA), t.PathLen, t.ValidDays, t.DefaultValidDays,
+		t.AllowedKeyTypes, t.AllowedSigAlgs, t.AllowedCAUUIDs, t.DefaultCAUUID,
 		t.SubjectTmplUUID, t.ExtensionTmplUUID, t.KeyUsageTmplUUID, t.KeyStorageTmplUUID, t.CertExtTmplUUID,
-		t.PriceCents, t.Stock, t.Category, boolToInt(t.Enabled), t.UpdatedAt, t.UUID,
+		t.Category, boolToInt(t.Enabled), t.UpdatedAt, t.UUID,
 	)
 	return err
 }
 
-// DeleteIssuanceTemplate 删除颁发模板。
+// DeleteIssuanceTemplate 删除颁发模板。删除前检查是否被开通模板引用。
 func (s *Service) DeleteIssuanceTemplate(ctx context.Context, tmplUUID string) error {
+	var refCount int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM cert_apply_templates WHERE issuance_tmpl_uuid = ?`, tmplUUID,
+	).Scan(&refCount); err != nil {
+		return err
+	}
+	if refCount > 0 {
+		return fmt.Errorf("该颁发模板被 %d 个开通模板引用，无法删除", refCount)
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM issuance_templates WHERE uuid = ?`, tmplUUID)
 	return err
+}
+
+// ---- 小工具：JSON 数组解析（颁发模板校验与 ResolvePolicy 共用）----
+
+func parseJSONIntArr(s string) []int {
+	if s == "" || s == "[]" {
+		return nil
+	}
+	var arr []int
+	if err := json.Unmarshal([]byte(s), &arr); err != nil {
+		return nil
+	}
+	return arr
+}
+
+func parseJSONStrArr(s string) []string {
+	if s == "" || s == "[]" {
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal([]byte(s), &arr); err != nil {
+		return nil
+	}
+	return arr
+}
+
+func containsInt(arr []int, v int) bool {
+	for _, x := range arr {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func containsStr(arr []string, v string) bool {
+	for _, x := range arr {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- 主体模板 CRUD ----
@@ -200,8 +286,11 @@ func (s *Service) ListSubjectTemplates(ctx context.Context) ([]*storage.SubjectT
 	return templates, rows.Err()
 }
 
-// DeleteSubjectTemplate 删除主体模板。
+// DeleteSubjectTemplate 删除主体模板：被颁发模板引用时拒绝。
 func (s *Service) DeleteSubjectTemplate(ctx context.Context, tmplUUID string) error {
+	if err := s.ensureUnreferenced(ctx, "subject_tmpl_uuid", tmplUUID, "主体模板"); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM subject_templates WHERE uuid = ?`, tmplUUID)
 	return err
 }
@@ -299,8 +388,11 @@ func (s *Service) GetExtensionTemplate(ctx context.Context, tmplUUID string) (*s
 	return scanExtensionTemplate(row.Scan)
 }
 
-// DeleteExtensionTemplate 删除扩展信息模板。
+// DeleteExtensionTemplate 删除扩展信息模板：被颁发模板引用时拒绝。
 func (s *Service) DeleteExtensionTemplate(ctx context.Context, tmplUUID string) error {
+	if err := s.ensureUnreferenced(ctx, "extension_tmpl_uuid", tmplUUID, "扩展信息模板"); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM extension_templates WHERE uuid = ?`, tmplUUID)
 	return err
 }
@@ -341,8 +433,11 @@ func (s *Service) ListKeyUsageTemplates(ctx context.Context) ([]*storage.KeyUsag
 	return templates, rows.Err()
 }
 
-// DeleteKeyUsageTemplate 删除密钥用途模板。
+// DeleteKeyUsageTemplate 删除密钥用途模板：被颁发模板引用时拒绝。
 func (s *Service) DeleteKeyUsageTemplate(ctx context.Context, tmplUUID string) error {
+	if err := s.ensureUnreferenced(ctx, "key_usage_tmpl_uuid", tmplUUID, "密钥用途模板"); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM key_usage_templates WHERE uuid = ?`, tmplUUID)
 	return err
 }
@@ -401,22 +496,87 @@ func (s *Service) ListCertExtTemplates(ctx context.Context) ([]*storage.CertExtT
 	return templates, rows.Err()
 }
 
-// DeleteCertExtTemplate 删除证书扩展模板。
+// DeleteCertExtTemplate 删除证书扩展模板：被颁发模板引用时拒绝。
 func (s *Service) DeleteCertExtTemplate(ctx context.Context, tmplUUID string) error {
-	// 检查是否被颁发模板引用
-	var count int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM issuance_templates WHERE extension_tmpl_uuid = ?`, tmplUUID,
-	).Scan(&count)
+	if err := s.ensureUnreferenced(ctx, "cert_ext_tmpl_uuid", tmplUUID, "证书扩展模板"); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM cert_ext_templates WHERE uuid = ?`, tmplUUID)
+	return err
+}
+
+// UpdateCertExtTemplate 全量更新证书扩展模板。
+func (s *Service) UpdateCertExtTemplate(ctx context.Context, t *storage.CertExtTemplate) error {
+	if strings.TrimSpace(t.Name) == "" {
+		return fmt.Errorf("模板名称不能为空")
+	}
+	for _, f := range []*string{&t.CRLDistPoints, &t.OCSPServers, &t.AIAIssuers, &t.CTServers, &t.ASN1Extensions} {
+		if *f == "" {
+			*f = "[]"
+		}
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE cert_ext_templates SET name = ?, crl_dist_points = ?, ocsp_servers = ?, aia_issuers = ?, ct_servers = ?,
+		 ev_policy_oid = ?, netscape_config = ?, csp_config = ?, asn1_extensions = ?, updated_at = ? WHERE uuid = ?`,
+		t.Name, t.CRLDistPoints, t.OCSPServers, t.AIAIssuers, t.CTServers, t.EVPolicyOID,
+		t.NetscapeConfig, t.CSPConfig, t.ASN1Extensions, time.Now(), t.UUID)
 	if err != nil {
 		return err
 	}
-	if count > 0 {
-		return fmt.Errorf("证书扩展模板已被 %d 个颁发模板引用，无法删除", count)
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("证书扩展模板不存在")
 	}
+	return nil
+}
 
-	_, err = s.db.ExecContext(ctx, `DELETE FROM cert_ext_templates WHERE uuid = ?`, tmplUUID)
-	return err
+// UpdateKeyUsageTemplate 全量更新密钥用途模板。
+// 被颁发模板引用的 CA 用途模板不允许去掉「证书签名」，避免已配置的 CA 模板失效。
+func (s *Service) UpdateKeyUsageTemplate(ctx context.Context, t *storage.KeyUsageTemplate) error {
+	if strings.TrimSpace(t.Name) == "" {
+		return fmt.Errorf("模板名称不能为空")
+	}
+	if t.ExtKeyUsages == "" {
+		t.ExtKeyUsages = "[]"
+	}
+	const keyUsageCertSign = 1 << 5
+	if t.KeyUsage&keyUsageCertSign == 0 {
+		var n int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM issuance_templates WHERE key_usage_tmpl_uuid = ? AND is_ca = 1`, t.UUID).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return fmt.Errorf("该用途模板被 %d 个 CA 颁发模板使用，必须保留「证书签名」", n)
+		}
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE key_usage_templates SET name = ?, key_usage = ?, ext_key_usages = ?, updated_at = ? WHERE uuid = ?`,
+		t.Name, t.KeyUsage, t.ExtKeyUsages, time.Now(), t.UUID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("密钥用途模板不存在")
+	}
+	return nil
+}
+
+// ensureUnreferenced 检查某类模板是否仍被颁发模板引用；column 为 issuance_templates 中的关联列名。
+func (s *Service) ensureUnreferenced(ctx context.Context, column, tmplUUID, label string) error {
+	switch column {
+	case "subject_tmpl_uuid", "extension_tmpl_uuid", "key_usage_tmpl_uuid", "cert_ext_tmpl_uuid", "key_storage_tmpl_uuid":
+	default:
+		return fmt.Errorf("内部错误：未知的关联列 %s", column)
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM issuance_templates WHERE `+column+` = ?`, tmplUUID).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("%s已被 %d 个颁发模板引用，请先解除关联后再删除", label, count)
+	}
+	return nil
 }
 
 // RenewCert 续期证书（使用原证书的 CA 和密钥重新签发）。

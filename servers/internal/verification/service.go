@@ -334,10 +334,19 @@ func (s *Service) SubjectIdentityProvider(ctx context.Context, info *storage.Sub
 		return "", fmt.Errorf("该主体信息无需实名认证")
 	}
 	tmpl, err := s.loadSubjectTemplate(ctx, info.SubjectTmplUUID)
-	if err != nil || tmpl.ProviderUUID == "" {
-		return "", fmt.Errorf("未配置实名认证接口，请等待人工审核")
+	if err != nil {
+		return "", err
 	}
-	return tmpl.ProviderUUID, nil
+	if tmpl.ProviderUUID != "" {
+		return tmpl.ProviderUUID, nil
+	}
+	// 模板未指定时使用系统默认实名接口，避免"必须先绑定才能用"
+	if s.providers != nil {
+		if p, err := s.providers.DefaultProvider(ctx, identity.KindIdentity); err == nil {
+			return p.UUID, nil
+		}
+	}
+	return "", fmt.Errorf("尚未配置实名认证接口，请联系管理员或等待人工审核")
 }
 
 // DeleteSubjectInfo 删除主体信息。
@@ -397,7 +406,7 @@ func (s *Service) CreateExtensionInfo(ctx context.Context, info *storage.Extensi
 		return err
 	}
 	if code != "" {
-		s.sendEmailCode(policy.ProviderUUID, info.Value, code)
+		s.sendEmailCode(policy.PrimaryProvider(), info.Value, code)
 	}
 	return nil
 }
@@ -481,7 +490,7 @@ func (s *Service) RenewExtensionInfo(ctx context.Context, infoUUID, method strin
 		return nil, err
 	}
 	if code != "" {
-		s.sendEmailCode(policy.ProviderUUID, info.Value, code)
+		s.sendEmailCode(policy.PrimaryProvider(), info.Value, code)
 	}
 	return info, nil
 }
@@ -493,7 +502,8 @@ func (s *Service) sendEmailCode(providerUUID, to, code string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if s.providers != nil && providerUUID != "" {
+		// 指定了邮件接口用指定的；未指定时用系统默认接口（SendMail 内部会处理回退）
+		if s.providers != nil {
 			if err := s.providers.SendMail(ctx, providerUUID, to, subject, body); err == nil {
 				return
 			}
@@ -625,8 +635,13 @@ func (s *Service) VerifyDNSTXT(ctx context.Context, infoUUID string) error {
 		return err
 	}
 	expected := fmt.Sprintf("opencert-verify=%s", info.VerifyToken)
-	host := "_opencert." + strings.TrimPrefix(info.Value, "*.")
-	txts, err := net.DefaultResolver.LookupTXT(ctx, host)
+	// 未配置域名接口时沿用历史的 _opencert 前缀；配置后使用接口指定的前缀与解析服务器
+	prefix, resolver := "_opencert", net.DefaultResolver
+	if cfg, err := s.domainConfig(ctx, ""); err == nil && cfg != nil && cfg.Method == identity.DomainMethodDNS {
+		prefix, resolver = strings.TrimSuffix(cfg.RecordPrefix, "."), resolverFor(cfg)
+	}
+	host := prefix + "." + strings.TrimPrefix(info.Value, "*.")
+	txts, err := resolver.LookupTXT(ctx, host)
 	if err != nil {
 		return fmt.Errorf("DNS 查询 %s 失败: %w", host, err)
 	}
@@ -657,7 +672,15 @@ func (s *Service) VerifyHTTP(ctx context.Context, infoUUID string) error {
 	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
 		host = "[" + host + "]"
 	}
-	u := fmt.Sprintf("http://%s/.well-known/pki-validation/%s", host, info.VerifyToken)
+	// 未配置域名接口时沿用历史文件路径；配置后使用接口指定的路径前缀与端口
+	pathPrefix := "/.well-known/pki-validation/"
+	if cfg, err := s.domainConfig(ctx, ""); err == nil && cfg != nil && cfg.Method == identity.DomainMethodHTTP {
+		pathPrefix = cfg.PathPrefix
+		if cfg.Port != 0 && cfg.Port != 80 {
+			host = net.JoinHostPort(info.Value, fmt.Sprintf("%d", cfg.Port))
+		}
+	}
+	u := fmt.Sprintf("http://%s%s%s", host, pathPrefix, info.VerifyToken)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	resp, err := s.httpClient.Do(req)
 	if err != nil {

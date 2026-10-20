@@ -111,8 +111,8 @@ func TestWorkflowCreateOrder_NoBalanceRecord(t *testing.T) {
 	}
 }
 
-// insertApplyTemplate 插入一条证书申请模板，用于验证服务端权威定价。
-func insertApplyTemplate(t *testing.T, db *storage.DB, uuid, name string, priceCents int64, enabled bool) {
+// insertApplyTemplate 插入一条证书开通模板（只含业务规则，关联不存在的颁发模板 ID 即可）。
+func insertApplyTemplate(t *testing.T, db *storage.DB, uuid, name string, enabled bool) {
 	t.Helper()
 	enabledInt := 0
 	if enabled {
@@ -120,39 +120,38 @@ func insertApplyTemplate(t *testing.T, db *storage.DB, uuid, name string, priceC
 	}
 	_, err := db.ExecContext(context.Background(),
 		`INSERT INTO cert_apply_templates
-		 (uuid, name, issuance_tmpl_uuid, valid_days, ca_uuid, enabled, require_approval,
-		  allow_renewal, allowed_key_types, price_cents, description, created_at, updated_at)
-		 VALUES (?, ?, 'issuance-tmpl-1', 365, 'ca-1', ?, 0, 1, '["ec256"]', ?, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-		uuid, name, enabledInt, priceCents)
+		 (uuid, name, issuance_tmpl_uuid, enabled, require_approval, allow_renewal, description, created_at, updated_at)
+		 VALUES (?, ?, 'issuance-tmpl-1', ?, 0, 1, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		uuid, name, enabledInt)
 	if err != nil {
-		t.Fatalf("插入证书申请模板失败: %v", err)
+		t.Fatalf("插入证书开通模板失败: %v", err)
 	}
 }
 
-// TestWorkflowCreateOrder_TemplatePricing 验证订单定价以服务端模板为准：
-// 未传金额时按模板定价回填，模板下架时拒绝下单。
-func TestWorkflowCreateOrder_TemplatePricing(t *testing.T) {
+// TestWorkflowCreateOrder_TemplateLinkage 验证订单只从开通模板补齐颁发模板关联，
+// 不再从模板回填价格（价格只由商品规格决定）；模板下架时拒绝下单。
+func TestWorkflowCreateOrder_TemplateLinkage(t *testing.T) {
 	t.Parallel()
 	db := setupServerDB(t)
 	svc := workflow.NewService(db, nil, nil)
 	ctx := context.Background()
 	userUUID := createTestUser(t, db, "pricing@test.com")
 
-	insertApplyTemplate(t, db, "tmpl-priced", "标准证书", 12345, true)
+	insertApplyTemplate(t, db, "tmpl-priced", "标准证书", true)
 
 	order := &storage.CertOrder{UserUUID: userUUID, CertApplyTmplUUID: "tmpl-priced"}
 	if err := svc.CreateOrder(ctx, order); err != nil {
 		t.Fatalf("CreateOrder() 失败: %v", err)
 	}
-	if order.AmountCents != 12345 {
-		t.Errorf("金额应由模板定价回填，期望 12345，实际 %d", order.AmountCents)
+	if order.AmountCents != 0 {
+		t.Errorf("订单金额不应从模板回填，实际 %d", order.AmountCents)
 	}
 	if order.IssuanceTmplUUID != "issuance-tmpl-1" {
 		t.Errorf("应自动关联颁发模板，实际 %q", order.IssuanceTmplUUID)
 	}
 
 	// 已下架模板必须拒绝下单
-	insertApplyTemplate(t, db, "tmpl-disabled", "已下架证书", 100, false)
+	insertApplyTemplate(t, db, "tmpl-disabled", "已下架证书", false)
 	err := svc.CreateOrder(ctx, &storage.CertOrder{UserUUID: userUUID, CertApplyTmplUUID: "tmpl-disabled"})
 	if err == nil {
 		t.Fatal("已下架模板应拒绝下单")

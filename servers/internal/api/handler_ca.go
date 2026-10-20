@@ -6,11 +6,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/globaltrusts/server-card/internal/auth"
 	"github.com/globaltrusts/server-card/internal/ca"
@@ -29,13 +31,23 @@ func (s *Server) handleListCAs(w http.ResponseWriter, r *http.Request) {
 }
 
 // CreateCARequest 是创建 CA 请求体。
+//
+// 与「签发证书」共用同一套表单：选择 CA 类颁发模板约束算法/有效期范围，
+// 可选上级 CA（为空则自签根 CA），可显式指定生效/失效时间与存储区域。
 type CreateCARequest struct {
-	Name       string `json:"name"`
-	KeyType    string `json:"key_type"`    // rsa2048/rsa4096/ec256/ec384/ec521
-	ValidYears int    `json:"valid_years"` // 有效期（年）
-	CommonName string `json:"common_name"`
-	Org        string `json:"organization"`
-	Country    string `json:"country"`
+	Name             string `json:"name"`
+	IssuanceTmplUUID string `json:"issuance_tmpl_uuid"` // CA 类颁发模板（可选，用于约束算法/路径长度）
+	ParentUUID       string `json:"parent_uuid"`        // 上级 CA（为空表示自签根 CA）
+	KeyType          string `json:"key_type"`           // rsa2048/rsa4096/ec256/ec384/ec521/sm2
+	CommonName       string `json:"common_name"`
+	Org              string `json:"organization"`
+	Country          string `json:"country"`
+	NotBefore        string `json:"not_before"` // RFC3339，为空取当前时间
+	NotAfter         string `json:"not_after"`  // RFC3339，为空按 valid_days 计算
+	ValidDays        int    `json:"valid_days"` // NotAfter 为空时使用，默认 3650
+	PathLen          int    `json:"path_len"`
+	PathLenZero      bool   `json:"path_len_zero"`
+	StorageZoneUUID  string `json:"storage_zone_uuid"` // 私钥存储区域（为空使用本地加密存储）
 }
 
 func (s *Server) handleCreateCA(w http.ResponseWriter, r *http.Request) {
@@ -51,12 +63,79 @@ func (s *Server) handleCreateCA(w http.ResponseWriter, r *http.Request) {
 	if req.KeyType == "" {
 		req.KeyType = "ec256"
 	}
-	if req.ValidYears <= 0 || req.ValidYears > 10 {
-		req.ValidYears = 10
+
+	notBefore, err := parseTimePtr(req.NotBefore)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "生效时间格式错误: "+err.Error())
+		return
+	}
+	notAfter, err := parseTimePtr(req.NotAfter)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "失效时间格式错误: "+err.Error())
+		return
 	}
 
-	subject := pkixName(req.CommonName, req.Org, req.Country)
-	newCA, err := s.caSvc.CreateSelfSignedCA(r.Context(), req.Name, subject, req.KeyType, req.ValidYears)
+	params := &ca.CACreateParams{
+		Name:             req.Name,
+		Subject:          pkixName(req.CommonName, req.Org, req.Country),
+		KeyType:          req.KeyType,
+		NotBefore:        notBefore,
+		NotAfter:         notAfter,
+		ValidDays:        req.ValidDays,
+		PathLen:          req.PathLen,
+		PathLenZero:      req.PathLenZero,
+		ParentUUID:       req.ParentUUID,
+		IssuanceTmplUUID: req.IssuanceTmplUUID,
+		StorageZoneUUID:  req.StorageZoneUUID,
+	}
+
+	// 指定了 CA 类颁发模板时，用统一策略校验算法、有效期、上级 CA 是否在模板允许范围内。
+	if req.IssuanceTmplUUID != "" && s.issuanceSvc != nil {
+		policy, err := s.issuanceSvc.ResolvePolicy(r.Context(), "", req.IssuanceTmplUUID, nil)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !policy.IsCA {
+			writeError(w, http.StatusBadRequest, "所选模板不是 CA 类颁发模板")
+			return
+		}
+		days := req.ValidDays
+		if notAfter != nil {
+			from := time.Now()
+			if notBefore != nil {
+				from = *notBefore
+			}
+			days = int(notAfter.Sub(from).Hours() / 24)
+		}
+		if days == 0 {
+			days = policy.DefaultValidDays
+		}
+		// 显式指定失效时间时有效期天数不是整数选项，只校验上限；按天数选择时需落在模板选项内。
+		selDays := days
+		if notAfter != nil {
+			selDays = 0
+		}
+		// 创建 CA 时模板的"候选 CA"约束的是之后用该模板签发的 CA，与上级 CA 无关，
+		// 所以这里只校验密钥算法与有效期。
+		if err := policy.ValidateSelection("", req.KeyType, "", selDays); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if days > 3650 {
+			writeError(w, http.StatusBadRequest, "CA 有效期不能超过 3650 天")
+			return
+		}
+		if params.ValidDays == 0 && notAfter == nil {
+			params.ValidDays = policy.DefaultValidDays
+		}
+		if params.PathLen == 0 && !params.PathLenZero {
+			params.PathLen = policy.PathLen
+			params.PathLenZero = policy.PathLen == 0
+		}
+	}
+
+	newCA, err := s.caSvc.CreateCA(r.Context(), params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -69,7 +148,43 @@ func (s *Server) handleCreateCA(w http.ResponseWriter, r *http.Request) {
 		IPAddr:   r.RemoteAddr,
 	})
 
+	newCA.PrivateEnc = nil
 	writeJSON(w, http.StatusCreated, newCA)
+}
+
+// parseTimePtr 解析 RFC3339 时间字符串；空字符串返回 nil。
+func parseTimePtr(s string) (*time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// parseJSONStringArrayLocal / containsStringLocal：避免跨包导出内部小工具，
+// 在 api 包内重复一份轻量实现（仅用于创建 CA 前的模板约束预检）。
+func parseJSONStringArrayLocal(s string) []string {
+	if s == "" || s == "[]" {
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal([]byte(s), &arr); err != nil {
+		return nil
+	}
+	return arr
+}
+
+func containsStringLocal(arr []string, v string) bool {
+	for _, x := range arr {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleGetCA(w http.ResponseWriter, r *http.Request) {
@@ -86,8 +201,9 @@ func (s *Server) handleGetCA(w http.ResponseWriter, r *http.Request) {
 
 // UpdateCARequest 是更新 CA 请求体。
 type UpdateCARequest struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	IsPublic *bool  `json:"is_public"` // 为空表示不修改
 }
 
 func (s *Server) handleUpdateCA(w http.ResponseWriter, r *http.Request) {
@@ -97,11 +213,64 @@ func (s *Server) handleUpdateCA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	if err := s.caSvc.Update(r.Context(), caUUID, req.Name, req.Status); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := s.caSvc.Update(r.Context(), caUUID, req.Name, req.Status, req.IsPublic); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "CA 已更新"})
+}
+
+// handleDownloadCA 下载 CA 证书（GET /api/cas/{uuid}/download?format=pem|der|chain）。
+// 只导出证书，不涉及私钥，已登录用户均可下载（CA 证书本身是公开信息）。
+func (s *Server) handleDownloadCA(w http.ResponseWriter, r *http.Request) {
+	caUUID := r.PathValue("uuid")
+	obj, err := s.caSvc.GetByUUID(r.Context(), caUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	filename := sanitizeFilename(obj.Name)
+	switch r.URL.Query().Get("format") {
+	case "der":
+		block, _ := pem.Decode([]byte(obj.CertPEM))
+		if block == nil {
+			writeError(w, http.StatusInternalServerError, "CA 证书内容损坏")
+			return
+		}
+		w.Header().Set("Content-Type", "application/pkix-cert")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.cer"`, filename))
+		w.Write(block.Bytes) //nolint:errcheck
+	case "chain":
+		chain, err := s.caSvc.GetChain(r.Context(), caUUID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-chain.pem"`, filename))
+		fmt.Fprint(w, chain)
+	default:
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.pem"`, filename))
+		fmt.Fprint(w, obj.CertPEM)
+	}
+}
+
+// sanitizeFilename 把 CA 名称转换为安全的下载文件名（去掉路径分隔符、引号与控制字符）。
+func sanitizeFilename(name string) string {
+	var sb strings.Builder
+	for _, r := range strings.TrimSpace(name) {
+		switch {
+		case r < 0x20, r == '/', r == '\\', r == '"', r == ':', r == '*', r == '?', r == '<', r == '>', r == '|':
+			sb.WriteRune('_')
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	if sb.Len() == 0 {
+		return "ca"
+	}
+	return sb.String()
 }
 
 func (s *Server) handleDeleteCA(w http.ResponseWriter, r *http.Request) {
@@ -114,27 +283,74 @@ func (s *Server) handleDeleteCA(w http.ResponseWriter, r *http.Request) {
 }
 
 // ImportCARequest 是导入外部 CA 请求体。
+//
+// 证书与私钥有两种提交方式：
+//   - cert_pem + private_key_pem：PEM 文本（也可粘贴 DER/PKCS#7 的 base64，见 cert_base64）；
+//   - pkcs12_base64 + pkcs12_password：PKCS#12 文件（含证书、链与私钥）。
 type ImportCARequest struct {
-	Name          string `json:"name"`            // CA 显示名称
-	CertPEM       string `json:"cert_pem"`        // CA 证书 PEM（可含证书链）
-	PrivateKeyPEM string `json:"private_key_pem"` // CA 私钥 PEM
-	ParentUUID    string `json:"parent_uuid"`     // 可选：父 CA UUID
+	Name            string `json:"name"`              // CA 显示名称
+	CertPEM         string `json:"cert_pem"`          // CA 证书 PEM（可含证书链）
+	CertBase64      string `json:"cert_base64"`       // DER / PKCS#7 证书的 base64（二选一于 cert_pem）
+	PrivateKeyPEM   string `json:"private_key_pem"`   // CA 私钥 PEM（可选）
+	PKCS12Base64    string `json:"pkcs12_base64"`     // PKCS#12 文件的 base64
+	PKCS12Password  string `json:"pkcs12_password"`   // PKCS#12 密码
+	ParentUUID      string `json:"parent_uuid"`       // 可选：父 CA UUID
+	CertOnly        bool   `json:"cert_only"`         // true 表示仅导入证书（外部 CA，不可签发，仅用于证书链）
+	StorageZoneUUID string `json:"storage_zone_uuid"` // 私钥存储区域（为空使用本地加密存储）
 }
 
 // handleImportCA 导入外部 CA（POST /api/cas/import）。
 // 需要管理员权限，已通过路由层控制。
 func (s *Server) handleImportCA(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
 	var req ImportCARequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, "请求格式错误或文件过大")
 		return
 	}
 
+	var certData, p12Data []byte
+	switch {
+	case strings.TrimSpace(req.PKCS12Base64) != "":
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(req.PKCS12Base64))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "PKCS#12 文件内容不是有效的 base64")
+			return
+		}
+		p12Data = raw
+	case strings.TrimSpace(req.CertBase64) != "":
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(req.CertBase64))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "证书文件内容不是有效的 base64")
+			return
+		}
+		certData = raw
+	default:
+		certData = []byte(req.CertPEM)
+	}
+	if len(certData) == 0 && len(p12Data) == 0 {
+		writeError(w, http.StatusBadRequest, "请提供 CA 证书")
+		return
+	}
+
+	bundle, err := ca.ParseImportBundle(certData, []byte(req.PrivateKeyPEM), p12Data, req.PKCS12Password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 选择了存储区域但没有私钥可导入（仅证书）时，忽略区域以免误导
+	storageZone := req.StorageZoneUUID
+	if req.CertOnly || bundle.Key == nil {
+		storageZone = ""
+	}
+
 	newCA, err := s.caSvc.ImportCA(r.Context(), &ca.ImportCAParams{
-		Name:          req.Name,
-		CertPEM:       req.CertPEM,
-		PrivateKeyPEM: req.PrivateKeyPEM,
-		ParentUUID:    req.ParentUUID,
+		Name:            req.Name,
+		Bundle:          bundle,
+		ParentUUID:      req.ParentUUID,
+		CertOnly:        req.CertOnly,
+		StorageZoneUUID: storageZone,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -147,7 +363,7 @@ func (s *Server) handleImportCA(w http.ResponseWriter, r *http.Request) {
 		Action:       "import_ca",
 		ResourceType: "ca",
 		ResourceUUID: newCA.UUID,
-		Detail:       fmt.Sprintf(`{"name":"%s"}`, req.Name),
+		Detail:       fmt.Sprintf(`{"name":%q,"with_key":%t,"storage_zone":%q}`, req.Name, bundle.Key != nil && !req.CertOnly, storageZone),
 		IPAddress:    r.RemoteAddr,
 	})
 
@@ -290,6 +506,8 @@ func (s *Server) handleGetCRL(w http.ResponseWriter, r *http.Request) {
 type IssueCertRequest struct {
 	KeyType          string   `json:"key_type"`
 	ValidDays        int      `json:"valid_days"`
+	NotBefore        string   `json:"not_before"` // RFC3339，可选：显式生效时间
+	NotAfter         string   `json:"not_after"`  // RFC3339，可选：显式失效时间（优先于 valid_days）
 	CommonName       string   `json:"common_name"`
 	Org              string   `json:"organization"`
 	Country          string   `json:"country"`
@@ -361,6 +579,18 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 		URIs:             req.URIs,
 		PolicyOIDs:       req.PolicyOIDs,
 		IssuanceTmplUUID: req.IssuanceTmplUUID,
+	}
+	if t, err := parseTimePtr(req.NotBefore); err != nil {
+		writeError(w, http.StatusBadRequest, "生效时间格式错误: "+err.Error())
+		return
+	} else {
+		issueReq.NotBefore = t
+	}
+	if t, err := parseTimePtr(req.NotAfter); err != nil {
+		writeError(w, http.StatusBadRequest, "失效时间格式错误: "+err.Error())
+		return
+	} else {
+		issueReq.NotAfter = t
 	}
 
 	resp, err := s.caSvc.IssueCert(r.Context(), issueReq)

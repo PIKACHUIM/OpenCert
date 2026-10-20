@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Card, Table, Button, Space, Tag, Typography, Modal, Form, Input, Select, Switch,
-  message, Popconfirm, Alert, InputNumber, Tooltip,
+  message, Popconfirm, InputNumber, Tooltip,
 } from 'antd';
 import {
   SafetyOutlined, PlusOutlined, ReloadOutlined, DeleteOutlined, InfoCircleOutlined,
@@ -154,11 +154,8 @@ const OCSPRespondersPage: React.FC = () => {
           </Space>
         }
       >
-        <Alert
-          type="info" showIcon style={{ marginBottom: 16 }}
-          message="一个响应服务使用单个签名证书，可同时响应多个 CA 签发证书的状态查询；配置说明见帮助文档"
-        />
-        <Table rowKey="uuid" loading={loading} dataSource={data} columns={columns as any} />
+        <Table rowKey="uuid" loading={loading} dataSource={data} columns={columns as any}
+          locale={{ emptyText: '还没有响应服务。一个响应服务可同时服务多个 CA。' }} />
       </Card>
 
       <Modal

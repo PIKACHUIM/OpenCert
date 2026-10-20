@@ -55,12 +55,12 @@ const MainLayout: React.FC = () => {
 
   // 构建分组菜单（路径统一加 /console 前缀）
   const menuItems: any[] = useMemo(() => [
-    { key: '/console/dashboard', icon: <DashboardOutlined />, label: '平台概览' },
+    { key: '/console/dashboard', icon: <DashboardOutlined />, label: '平台运营概览' },
     {
-      key: 'group-card', icon: <CreditCardOutlined />, label: '个人业务',
+      key: 'group-card', icon: <CreditCardOutlined />, label: '个人业务中心',
       children: [
         { key: '/console/cards', icon: <CreditCardOutlined />, label: '智能卡片管理' },
-        { key: '/console/certs', icon: <SafetyCertificateOutlined />, label: '我的证书' },
+        { key: '/console/certs', icon: <SafetyCertificateOutlined />, label: '我的证书管理' },
         { key: '/console/cloud-totp', icon: <ClockCircleOutlined />, label: '认证信息管理' },
         { key: '/console/cert-orders', icon: <ShoppingOutlined />, label: '支付订单管理' },
         // 财务（余额、充值、订阅与兑换）已合并到账号信息管理
@@ -68,9 +68,9 @@ const MainLayout: React.FC = () => {
       ],
     },
     {
-      key: 'group-apply', icon: <ShoppingOutlined />, label: '证书申请',
+      key: 'group-apply', icon: <ShoppingOutlined />, label: '证书申请管理',
       children: [
-        { key: '/console/apply', icon: <ShoppingOutlined />, label: '申请证书' },
+        { key: '/console/apply', icon: <ShoppingOutlined />, label: '申请证书向导' },
         { key: '/console/apply-records', icon: <AuditOutlined />, label: '我的证书申请' },
         { key: '/console/subject-infos', icon: <IdcardOutlined />, label: '证书主体信息' },
         { key: '/console/extension-infos', icon: <LinkOutlined />, label: '证书扩展信息' },
@@ -78,19 +78,19 @@ const MainLayout: React.FC = () => {
     },
     // 证书颁发分组：admin / super_admin / operator 可见
     ...(isOperatorOrAbove ? [{
-      key: 'group-admin', icon: <ApartmentOutlined />, label: '证书颁发',
+      key: 'group-admin', icon: <ApartmentOutlined />, label: '证书颁发管理',
       children: [
         { key: '/console/ca', icon: <ApartmentOutlined />, label: '证书颁发机构' },
         { key: '/console/identity-reviews', icon: <IdcardOutlined />, label: '身份认证审核' },
         { key: '/console/cert-applications', icon: <AuditOutlined />, label: '证书申请审核' },
-        { key: '/console/all-certs', icon: <SafetyCertificateOutlined />, label: '全部证书' },
+        { key: '/console/all-certs', icon: <SafetyCertificateOutlined />, label: '全部证书管理' },
         // CT 记录已合并到审计日志（透明度选项卡）
         { key: '/console/audit-logs', icon: <FileTextOutlined />, label: '证书审计日志' },
       ],
     }] : []),
     // 证书模板分组：admin / super_admin 可见
     ...(isAdmin ? [{
-      key: 'group-template', icon: <AppstoreOutlined />, label: '证书模板',
+      key: 'group-template', icon: <AppstoreOutlined />, label: '证书模板管理',
       children: [
         { key: '/console/cert-apply-templates', icon: <AppstoreOutlined />, label: '证书开通模板' },
         { key: '/console/templates', icon: <AppstoreOutlined />, label: '证书颁发模板' },
@@ -99,32 +99,32 @@ const MainLayout: React.FC = () => {
     }] : []),
     // 证书服务分组：admin / super_admin 可见
     ...(isAdmin ? [{
-      key: 'group-service', icon: <CloudServerOutlined />, label: '证书服务',
+      key: 'group-service', icon: <CloudServerOutlined />, label: '证书服务管理',
       children: [
         { key: '/console/storage-zones', icon: <DatabaseOutlined />, label: '证书存储区域' },
         { key: '/console/revocation-services', icon: <StopOutlined />, label: '证书吊销服务' },
-        { key: '/console/ocsp-responders', icon: <SafetyOutlined />, label: '证书OCSP服务' },
-        { key: '/console/acme-configs', icon: <CloudServerOutlined />, label: '证书ACME服务' },
+        { key: '/console/ocsp-responders', icon: <SafetyOutlined />, label: 'OCSP服务管理' },
+        { key: '/console/acme-configs', icon: <CloudServerOutlined />, label: 'ACME服务管理' },
         { key: '/console/cert-policies', icon: <FileTextOutlined />, label: '证书策略管理' },
       ],
     }] : []),
     // 销售管理分组：admin / super_admin 可见
     ...(isAdmin ? [{
-      key: 'group-commerce', icon: <ShopOutlined />, label: '销售管理',
+      key: 'group-commerce', icon: <ShopOutlined />, label: '销售管理中心',
       children: [
         { key: '/console/products', icon: <ShopOutlined />, label: '销售商品管理' },
-        { key: '/console/admin-orders', icon: <ProfileOutlined />, label: '订单管理' },
+        { key: '/console/admin-orders', icon: <ProfileOutlined />, label: '销售订单管理' },
         { key: '/console/promo', icon: <GiftOutlined />, label: '订阅优惠管理' },
         { key: '/console/payment-plugins', icon: <WalletOutlined />, label: '支付渠道配置' },
       ],
     }] : []),
     {
-      key: 'group-system', icon: <SettingOutlined />, label: '系统管理',
+      key: 'group-system', icon: <SettingOutlined />, label: '系统管理中心',
       children: [
         // 用户管理：仅管理员可见，普通用户不可见
         ...(isAdmin ? [{ key: '/console/users', icon: <UserOutlined />, label: '平台用户管理' }] : []),
         { key: '/console/logs', icon: <FileTextOutlined />, label: '平台操作日志' },
-        { key: '/console/help', icon: <BookOutlined />, label: '帮助中心' },
+        { key: '/console/help', icon: <BookOutlined />, label: '平台帮助中心' },
         ...(isAdmin ? [
           { key: '/console/site-settings', icon: <GlobalOutlined />, label: '全局站点设置' },
           { key: '/console/settings', icon: <SettingOutlined />, label: '全局系统设置' },

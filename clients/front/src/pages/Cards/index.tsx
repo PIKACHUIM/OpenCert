@@ -19,8 +19,9 @@ import dayjs from 'dayjs';
 
 const { Title, Text } = Typography;
 
-// 密钥类型选项
+// 密钥类型选项（国密 SM2 仅本地卡 / 云卡支持，TPM 卡不支持）
 const KEY_TYPE_OPTIONS = [
+  { value: 'sm2', label: 'SM2（国密）' },
   { value: 'ec256', label: 'EC P-256' },
   { value: 'ec384', label: 'EC P-384' },
   { value: 'ec521', label: 'EC P-521' },

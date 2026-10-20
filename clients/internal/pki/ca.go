@@ -127,13 +127,14 @@ func IssueCertificate(caCert *x509.Certificate, caKey crypto.PrivateKey, req *Is
 	}
 
 	// 使用 CA 签发
-	certDER, err := x509.CreateCertificate(rand.Reader, template, caCert, pubKey, caKey)
+	// 国密分派：SM2 CA / SM2 用户密钥走 smx509
+	certDER, err := createCertificateAny(rand.Reader, template, caCert, pubKey, caKey)
 	if err != nil {
 		return nil, fmt.Errorf("签发证书失败: %w", err)
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyDER, err := x509.MarshalPKCS8PrivateKey(privKey)
+	keyDER, err := marshalPKCS8Any(privKey)
 	if err != nil {
 		return nil, fmt.Errorf("编码私钥失败: %w", err)
 	}

@@ -42,8 +42,8 @@ func newFlowEnvWithDB(t *testing.T, db *storage.DB) (*flowEnv, string, string) {
 		t.Fatalf("创建 CA 失败: %v", err)
 	}
 	tmpl := &storage.IssuanceTemplate{
-		Name: "SSL 颁发模板", ValidDays: "[365]", AllowedKeyTypes: `["ec256","rsa2048"]`,
-		AllowedCAUUIDs: `["` + root.UUID + `"]`, Category: "ssl", Enabled: true, Stock: -1,
+		Name: "SSL 颁发模板", ValidDays: "[365]", DefaultValidDays: 365, AllowedKeyTypes: `["ec256","rsa2048"]`,
+		AllowedCAUUIDs: `["` + root.UUID + `"]`, DefaultCAUUID: root.UUID, Category: "ssl", Enabled: true,
 	}
 	if err := issSvc.CreateIssuanceTemplate(ctx, tmpl); err != nil {
 		t.Fatalf("创建颁发模板失败: %v", err)
@@ -52,10 +52,9 @@ func newFlowEnvWithDB(t *testing.T, db *storage.DB) (*flowEnv, string, string) {
 	insert := func(uuid string, requireApproval int) {
 		if _, err := db.ExecContext(ctx,
 			`INSERT INTO cert_apply_templates
-			 (uuid, name, issuance_tmpl_uuid, valid_days, ca_uuid, enabled, require_approval,
-			  allow_renewal, allowed_key_types, price_cents, description, created_at, updated_at)
-			 VALUES (?, ?, ?, 365, ?, 1, ?, 1, '["ec256","rsa2048"]', 0, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-			uuid, "申请模板-"+uuid, tmpl.UUID, root.UUID, requireApproval); err != nil {
+			 (uuid, name, issuance_tmpl_uuid, enabled, require_approval, allow_renewal, description, created_at, updated_at)
+			 VALUES (?, ?, ?, 1, ?, 1, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+			uuid, "申请模板-"+uuid, tmpl.UUID, requireApproval); err != nil {
 			t.Fatalf("插入申请模板失败: %v", err)
 		}
 	}

@@ -355,12 +355,14 @@ func (s *Service) CreateOCSPResponseDER(ctx context.Context, caUUID string, reqD
 		NextUpdate:   now.Add(1 * time.Hour),
 	}
 
+	// revoked_certs 只有 serial_number 列（无 serial_hex），按十六进制与
+	// 十进制两种历史写入格式分别匹配。
 	var revokedAt sql.NullTime
 	var reason int
 	err = s.db.QueryRowContext(ctx,
 		`SELECT revoked_at, reason FROM revoked_certs
-		 WHERE ca_uuid = ? AND (serial_number = ? OR serial_number = ? OR serial_hex = ?)`,
-		caUUID, serialHex, serialDec, serialHex,
+		 WHERE ca_uuid = ? AND (serial_number = ? OR serial_number = ?)`,
+		caUUID, serialHex, serialDec,
 	).Scan(&revokedAt, &reason)
 
 	switch {
@@ -379,8 +381,14 @@ func (s *Service) CreateOCSPResponseDER(ctx context.Context, caUUID string, reqD
 	}
 
 	// CreateResponse(issuer, responder, template, signer)
-	// responder 使用 CA 证书本身（Responder ID = CA），符合 RFC 6960 B 模式
-	der, err := ocsp.CreateResponse(caCert, caCert, resp, caSigner.(crypto.Signer))
+	// responder 使用 CA 证书本身（Responder ID = CA），符合 RFC 6960 B 模式。
+	// SM2 CA 的公钥标准库不认识，需要走国密专用编码（见 ocsp_gm.go）。
+	var der []byte
+	if isSM2PubKey(caCert) {
+		der, err = CreateOCSPResponseSM2(caCert, caCert, resp, caSigner.(crypto.Signer))
+	} else {
+		der, err = ocsp.CreateResponse(caCert, caCert, resp, caSigner.(crypto.Signer))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("签名 OCSP 响应失败: %w", err)
 	}

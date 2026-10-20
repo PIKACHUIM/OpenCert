@@ -14,6 +14,8 @@ import (
 	"math/big"
 	"net"
 	"time"
+
+	"github.com/emmansun/gmsm/sm2"
 )
 
 // SelfSignRequest 是自签名证书请求参数。
@@ -128,14 +130,15 @@ func GenerateSelfSigned(req *SelfSignRequest) (*SelfSignResult, error) {
 	}
 
 	// 自签名
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, pubKey, privKey)
+	// 国密分派：SM2 自签走 smx509
+	certDER, err := createCertificateAny(rand.Reader, template, template, pubKey, privKey)
 	if err != nil {
 		return nil, fmt.Errorf("创建证书失败: %w", err)
 	}
 
 	// 编码 PEM
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyDER, err := x509.MarshalPKCS8PrivateKey(privKey)
+	keyDER, err := marshalPKCS8Any(privKey)
 	if err != nil {
 		return nil, fmt.Errorf("编码私钥失败: %w", err)
 	}
@@ -188,6 +191,12 @@ func generateKeyPair(keyType string) (crypto.PrivateKey, crypto.PublicKey, error
 			return nil, nil, err
 		}
 		return key, &key.PublicKey, nil
+	case "sm2":
+		key, err := sm2.GenerateKey(rand.Reader) //nolint:staticcheck // 需要 SM2 私钥类型
+		if err != nil {
+			return nil, nil, err
+		}
+		return key, &key.PublicKey, nil
 	default:
 		return nil, nil, fmt.Errorf("不支持的密钥类型: %s", keyType)
 	}
@@ -201,7 +210,7 @@ func ParsePrivateKeyFromPEM(pemData []byte) (crypto.PrivateKey, error) {
 	}
 
 	// 尝试 PKCS8
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	key, err := parsePKCS8Any(block.Bytes)
 	if err == nil {
 		return key, nil
 	}

@@ -2,14 +2,18 @@
 package template
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/globaltrusts/server-card/internal/storage"
 )
 
+// validDownloadFormats 是文件下载允许的格式。
+var validDownloadFormats = map[string]bool{"pem": true, "pkcs12": true}
+
 // Validate 校验密钥存储类型模板配置的合法性。
-// 实现需求 25 中的所有业务规则。
-func Validate(t *storage.KeyStorageTemplate) error {
+// zoneNonExportable 为 true 表示模板绑定的存储区域是硬件区域（私钥不可导出）。
+func Validate(t *storage.KeyStorageTemplate, zoneNonExportable bool) error {
 	// 至少勾选一种存储方式
 	if t.StorageMethods == 0 {
 		return fmt.Errorf("至少需要选择一种存储方式")
@@ -23,6 +27,48 @@ func Validate(t *storage.KeyStorageTemplate) error {
 	hasVirtualCard := t.HasMethod(storage.StorageVirtualCard)
 	hasCloudCard := t.HasMethod(storage.StorageCloudCard)
 	hasPhysicalCard := t.HasMethod(storage.StoragePhysicalCard)
+
+	// 密钥生成位置
+	switch t.KeyGenLocation {
+	case "":
+		t.KeyGenLocation = storage.KeyGenServer
+	case storage.KeyGenServer, storage.KeyGenCSR, storage.KeyGenCard:
+	default:
+		return fmt.Errorf("密钥生成位置不合法: %s", t.KeyGenLocation)
+	}
+	if t.KeyGenLocation == storage.KeyGenCard && !(hasCloudCard || hasPhysicalCard || hasVirtualCard) {
+		return fmt.Errorf("在智能卡上生成密钥时，至少需要选择一种智能卡下发方式")
+	}
+	if t.KeyGenLocation == storage.KeyGenCSR && hasFileDownload {
+		return fmt.Errorf("使用自带 CSR 时私钥不经过服务端，不能提供私钥文件下载")
+	}
+
+	// 下载格式
+	if t.DownloadFormats == "" {
+		t.DownloadFormats = `["pem","pkcs12"]`
+	}
+	var formats []string
+	if err := json.Unmarshal([]byte(t.DownloadFormats), &formats); err != nil {
+		return fmt.Errorf("下载格式配置错误")
+	}
+	if hasFileDownload && len(formats) == 0 {
+		return fmt.Errorf("提供文件下载时至少选择一种下载格式")
+	}
+	for _, f := range formats {
+		if !validDownloadFormats[f] {
+			return fmt.Errorf("不支持的下载格式: %s", f)
+		}
+	}
+
+	// 不可导出的存储区域：私钥无法下载，也无法备份
+	if zoneNonExportable {
+		if hasFileDownload {
+			return fmt.Errorf("所选存储区域中的私钥不可导出，不能提供文件下载")
+		}
+		if t.CloudBackup {
+			return fmt.Errorf("所选存储区域中的私钥不可导出，不能启用云端备份")
+		}
+	}
 
 	// 虚拟智能卡必须选择安全等级
 	if hasVirtualCard {
@@ -44,17 +90,12 @@ func Validate(t *storage.KeyStorageTemplate) error {
 		}
 	}
 
-	// 文件下载自动启用云端备份
+	// 文件下载自动启用云端备份，且不限次数、无需"重新导入"
 	if hasFileDownload {
 		t.CloudBackup = true
 		t.AllowReissue = true
-		t.MaxReissueCount = -1 // 无限次
-	}
-
-	// 未勾选文件下载时，才有"是否允许重新导入"选项
-	// （文件下载本身就意味着密钥可以自由使用）
-	if hasFileDownload {
-		t.AllowReimport = false // 文件下载模式下此选项无意义
+		t.MaxReissueCount = -1
+		t.AllowReimport = false
 	}
 
 	// 云端备份是重新下发的前提
@@ -62,19 +103,14 @@ func Validate(t *storage.KeyStorageTemplate) error {
 		return fmt.Errorf("启用重新下发需要先启用云端私钥备份")
 	}
 
-	// 下发次数校验
+	// 下发次数校验（-1 表示不限）
 	if t.AllowReissue && !hasFileDownload {
 		if t.MaxReissueCount == 0 {
-			return fmt.Errorf("启用重新下发时，最大下发次数不能为0（使用-1表示无限）")
+			return fmt.Errorf("启用重新下发时，最大下发次数不能为 0（填 -1 表示不限）")
 		}
 		if t.MaxReissueCount < -1 {
 			return fmt.Errorf("最大下发次数不合法: %d", t.MaxReissueCount)
 		}
-	}
-
-	// 实体/云端智能卡的云端备份选项校验
-	if (hasCloudCard || hasPhysicalCard) && !hasVirtualCard && !hasFileDownload {
-		// 仅有实体/云端卡时，云端备份是可选的，无需额外校验
 	}
 
 	return nil

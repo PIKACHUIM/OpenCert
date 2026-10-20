@@ -5,8 +5,8 @@
 //   - 自助申请（自助模式，按开通模板直接申请，系统生成零金额订单）；
 //   - 订阅额度（按套餐内的开通模板与剩余额度申请）。
 //
-// 资料要求由「开通模板」决定：主体模板（字段、验证方式、派生规则）、扩展信息模板（各类型验证策略）；
-// 数量与格式限制由「商品规格」决定（SAN 限制，自助/订阅使用站点配置 self_san_policy）。
+// 资料要求由「颁发模板」决定：主体模板（字段、验证方式、派生规则）、扩展信息模板（各类型验证策略）；
+// 开通模板只决定审批与续期；数量与格式限制由「商品规格」决定（SAN 限制，自助/订阅使用站点配置 self_san_policy）。
 package api
 
 import (
@@ -18,6 +18,7 @@ import (
 
 	"github.com/globaltrusts/server-card/internal/auth"
 	"github.com/globaltrusts/server-card/internal/identity"
+	"github.com/globaltrusts/server-card/internal/issuance"
 	"github.com/globaltrusts/server-card/internal/storage"
 	"github.com/globaltrusts/server-card/internal/workflow"
 )
@@ -30,6 +31,7 @@ type applySource struct {
 	ProductName  string                     `json:"product_name"`
 	Remaining    int                        `json:"remaining"`
 	Template     *storage.CertApplyTemplate `json:"template"`
+	Policy       *issuance.EffectivePolicy  `json:"-"`
 	SubjectTmpl  *storage.SubjectTemplate   `json:"-"`
 	SubjectUUID  string                     `json:"subject_tmpl_uuid"`
 	ExtTmplUUID  string                     `json:"extension_tmpl_uuid"`
@@ -80,7 +82,9 @@ func (s *Server) resolveApplySource(r *http.Request, claims *auth.Claims, orderN
 		}
 		tmplUUID = order.CertApplyTmplUUID
 		raw, fallback := workflow.SpecSANPolicy(order.SpecJSON)
-		if order.SKUCode == "" || order.SKUCode == "self-service" || order.SKUCode == "subscription" {
+		// 自助 / 订阅 / 管理员代办订单没有商品规格快照，SAN 限制取站点配置
+		if order.SKUCode == "" || order.SKUCode == "self-service" || order.SKUCode == "subscription" ||
+			order.SKUCode == "admin-proxy" {
 			src.SANPolicy = s.selfSANPolicy(r)
 		} else {
 			src.SANPolicy = identity.ParseSANPolicy(raw, fallback)
@@ -150,22 +154,34 @@ func (s *Server) resolveApplySource(r *http.Request, claims *auth.Claims, orderN
 	if src.ProductName == "" {
 		src.ProductName = tmpl.Name
 	}
-	if len(src.KeyTypes) == 0 {
-		json.Unmarshal([]byte(tmpl.AllowedKeyTypes), &src.KeyTypes) //nolint:errcheck
-	}
 
-	// 资料模板：开通模板优先，未配置时沿用颁发模板上的关联
-	src.SubjectUUID, src.ExtTmplUUID = tmpl.SubjectTmplUUID, tmpl.ExtensionTmplUUID
-	if (src.SubjectUUID == "" || src.ExtTmplUUID == "") && tmpl.IssuanceTmplUUID != "" && s.issuanceSvc != nil {
-		if it, err := s.issuanceSvc.GetIssuanceTemplate(ctx, tmpl.IssuanceTmplUUID); err == nil {
-			if src.SubjectUUID == "" {
-				src.SubjectUUID = it.SubjectTmplUUID
-			}
-			if src.ExtTmplUUID == "" {
-				src.ExtTmplUUID = it.ExtensionTmplUUID
+	// 技术参数与资料要求统一由颁发模板提供（经 ResolvePolicy 解析）。
+	// 订单里的有效期 / 算法是下单时的快照：颁发模板之后被调整时不应让已付款订单无法申请，
+	// 因此这里先取完整策略，再与快照取交集，交集为空时回退到模板当前范围。
+	policy, err := s.issuanceSvc.ResolvePolicy(issuance.WithPolicyCache(ctx), tmpl.UUID, "", nil)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	src.Policy = policy
+	if len(src.KeyTypes) > 0 {
+		var kept []string
+		for _, k := range src.KeyTypes {
+			for _, allowed := range policy.KeyTypes {
+				if k == allowed {
+					kept = append(kept, k)
+					break
+				}
 			}
 		}
+		src.KeyTypes = kept
 	}
+	if len(src.KeyTypes) == 0 {
+		src.KeyTypes = policy.KeyTypes
+	}
+	if src.ValidDays == 0 {
+		src.ValidDays = policy.DefaultValidDays
+	}
+	src.SubjectUUID, src.ExtTmplUUID = policy.SubjectTmpl, policy.ExtensionTmpl
 	if src.SubjectUUID != "" {
 		st, err := s.issuanceSvc.GetSubjectTemplate(ctx, src.SubjectUUID)
 		if err != nil {
@@ -272,6 +288,29 @@ func (s *Server) checkExtensionForApply(r *http.Request, info *storage.Extension
 	return nil
 }
 
+// containsStrLocal 判断字符串切片是否包含某个值。
+func containsStrLocal(arr []string, v string) bool {
+	for _, x := range arr {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// applyModeLabel 把申请来源转换为面向用户的说法。
+func applyModeLabel(kind string) string {
+	switch kind {
+	case "order":
+		return "购买订单"
+	case "self":
+		return "自助申请"
+	case "subscription":
+		return "订阅额度"
+	}
+	return kind
+}
+
 // submitApplicationRequest 是证书申请向导的提交体。
 //
 // 主体与 SAN 只能引用本人已审核/已验证且未过期的信息，不接受任意填写，
@@ -283,8 +322,12 @@ type submitApplicationRequest struct {
 	SubjectInfoUUID    string   `json:"subject_info_uuid"`
 	ExtensionInfoUUIDs []string `json:"extension_info_uuids"`
 	KeyType            string   `json:"key_type"`
-	CSRPEM             string   `json:"csr_pem"`   // 自带 CSR（可选，私钥不进入服务端）
-	CardUUID           string   `json:"card_uuid"` // 签发到的智能卡（可选）
+	CSRPEM             string   `json:"csr_pem"`         // 自带 CSR（可选，私钥不进入服务端）
+	CardUUID           string   `json:"card_uuid"`       // 签发到的智能卡（可选）
+	ApplicantEmail     string   `json:"applicant_email"` // 仅代办时使用：目标用户邮箱
+	// ViaAdmin 表示由管理员代办：可申请方式（订单/自助/订阅）是面向用户的入口限制，
+	// 管理员可以显式选择任意一种方式。
+	ViaAdmin bool `json:"-"`
 }
 
 // handlePortalSubmitApplication POST /api/portal/applications
@@ -320,7 +363,11 @@ func (s *Server) submitApplication(r *http.Request, claims *auth.Claims, req *su
 ) {
 	ctx := r.Context()
 	now := time.Now()
-	email := s.applicantEmailFromClaims(r)
+	// 代办时使用目标用户邮箱；用户自助申请时取当前登录用户邮箱
+	email := strings.TrimSpace(req.ApplicantEmail)
+	if email == "" {
+		email = s.applicantEmailFromClaims(r)
+	}
 	bad := func(format string, a ...interface{}) (*storage.CertApplication, bool, error, int, error) {
 		return nil, false, nil, http.StatusBadRequest, fmt.Errorf(format, a...)
 	}
@@ -329,6 +376,44 @@ func (s *Server) submitApplication(r *http.Request, claims *auth.Claims, req *su
 	if err != nil {
 		return nil, false, nil, st, err
 	}
+
+	// 可申请方式：开通模板声明必须支持的来源类型，其余来源一律拒绝。
+	// 管理员代办不受该限制（可以按订单、订阅或直接按模板提交）。
+	if !req.ViaAdmin && src.Policy != nil && len(src.Policy.ApplyModes) > 0 &&
+		!containsStrLocal(src.Policy.ApplyModes, src.Kind) {
+		return bad("该证书类型不支持通过「%s」方式申请", applyModeLabel(src.Kind))
+	}
+
+	// 交付方式与密钥生成位置必须与密钥存储模板一致：
+	//   - 只允许模板声明的方式（云端智能卡 / 文件下载 / 自带 CSR）；
+	//   - 平台生成密钥时不能使用自带 CSR（否则私钥无处交付）；
+	//   - 智能卡生成密钥时必须有卡作为载体；
+	//   - 要求自带 CSR 时必须提交 CSR。
+	deliveryMode := src.DeliveryMode
+	if src.Policy != nil {
+		if deliveryMode == "" && len(src.Policy.DeliveryModes) > 0 {
+			deliveryMode = src.Policy.DeliveryModes[0]
+		}
+		if deliveryMode != "" && !containsStrLocal(src.Policy.DeliveryModes, deliveryMode) {
+			return bad("该证书类型不支持所选交付方式")
+		}
+		if ks := src.Policy.KeyStorage; ks != nil {
+			switch ks.KeyGenLocation {
+			case storage.KeyGenCSR:
+				if strings.TrimSpace(req.CSRPEM) == "" {
+					return bad("该证书类型需自带 CSR（私钥由您自己保管），请上传 CSR 后再提交")
+				}
+			case storage.KeyGenServer, "":
+				if strings.TrimSpace(req.CSRPEM) != "" {
+					return bad("该证书类型的密钥由平台生成，不能使用自带 CSR")
+				}
+			}
+		}
+	}
+	if deliveryMode == string(storage.DeliveryCloudCard) && strings.TrimSpace(req.CSRPEM) != "" {
+		return bad("云端使用型证书由云端生成密钥，不能使用自带 CSR")
+	}
+	src.DeliveryMode = deliveryMode
 
 	// 1) 主体信息
 	fields := []identity.SubjectField{}
@@ -414,16 +499,15 @@ func (s *Server) submitApplication(r *http.Request, claims *auth.Claims, req *su
 		}
 	}
 
-	// 5) 密钥算法
-	if req.KeyType != "" && len(src.KeyTypes) > 0 {
-		ok := false
-		for _, k := range src.KeyTypes {
-			if k == req.KeyType {
-				ok = true
-			}
-		}
-		if !ok {
+	// 5) 密钥算法：必须在颁发模板允许的范围内；SM2 只能与 SM3 搭配
+	if req.KeyType != "" {
+		if len(src.KeyTypes) > 0 && !containsStrLocal(src.KeyTypes, req.KeyType) {
 			return bad("该证书不支持密钥算法 %s", req.KeyType)
+		}
+		if src.Policy != nil {
+			if err := src.Policy.ValidateSelection("", req.KeyType, "", 0); err != nil {
+				return bad("%v", err)
+			}
 		}
 	}
 

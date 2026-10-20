@@ -201,6 +201,32 @@ const (
 	CKM_SM4_GCM          MechanismType = 0x80000222
 )
 
+// KeyType 是 PKCS#11 密钥类型（CKA_KEY_TYPE 的取值）。
+type KeyType uint32
+
+// 标准密钥类型 + 国密厂商区段扩展。
+const (
+	CKK_RSA        KeyType = 0x00000000
+	CKK_EC         KeyType = 0x00000003
+	CKK_EC_EDWARDS KeyType = 0x00000040
+	CKK_AES        KeyType = 0x0000001F
+	// 国密厂商区段：SM2 复用 EC 语义但算法与曲线不同，SM4 为对称密钥
+	CKK_SM2 KeyType = 0x80000002
+	CKK_SM4 KeyType = 0x80000004
+)
+
+// 曲线参数（CKA_EC_PARAMS 的 DER 编码，RFC 5480 规定的 namedCurve OID）。
+var (
+	// CurveP256DER 是 prime256v1（1.2.840.10045.3.1.7）
+	CurveP256DER = []byte{0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07}
+	// CurveP384DER 是 secp384r1（1.3.132.0.34）
+	CurveP384DER = []byte{0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22}
+	// CurveP521DER 是 secp521r1（1.3.132.0.35）
+	CurveP521DER = []byte{0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23}
+	// CurveSM2DER 是 sm2p256v1（1.2.156.10197.1.301）
+	CurveSM2DER = []byte{0x06, 0x08, 0x2a, 0x81, 0x1c, 0xcf, 0x55, 0x01, 0x82, 0x2d}
+)
+
 // AttributeType 是 PKCS#11 属性类型。
 type AttributeType uint32
 
@@ -220,6 +246,7 @@ const (
 	CKA_OWNER             AttributeType = 0x00000084
 	CKA_ATTR_TYPES        AttributeType = 0x00000085
 	CKA_TRUSTED           AttributeType = 0x00000086
+	CKA_VALUE_LEN         AttributeType = 0x00000161
 	CKA_KEY_TYPE          AttributeType = 0x00000100
 	CKA_SUBJECT           AttributeType = 0x00000101
 	CKA_ID                AttributeType = 0x00000102

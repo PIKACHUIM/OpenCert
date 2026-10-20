@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/globaltrusts/server-card/internal/auth"
+	"github.com/globaltrusts/server-card/internal/issuance"
 	"github.com/globaltrusts/server-card/internal/payment"
 	"github.com/globaltrusts/server-card/internal/portal"
 	"github.com/globaltrusts/server-card/internal/storage"
@@ -449,6 +450,29 @@ func (s *Server) handleAdminListSKUs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"items": skus, "total": len(skus)})
 }
 
+// validateSKUNarrowing 校验规格的有效期、算法、交付方式没有超出所关联证书类型
+// （开通模板 → 颁发模板）允许的范围。规格只能收窄，不能放宽。
+func (s *Server) validateSKUNarrowing(r *http.Request, sku *storage.PortalProductSKU) error {
+	if sku.CertApplyTmplUUID == "" || s.issuanceSvc == nil {
+		return nil
+	}
+	var keyTypes []string
+	if sku.KeyTypes != "" {
+		if err := json.Unmarshal([]byte(sku.KeyTypes), &keyTypes); err != nil {
+			return fmt.Errorf("可选密钥算法格式错误")
+		}
+	}
+	policy, err := s.issuanceSvc.ResolvePolicy(r.Context(), sku.CertApplyTmplUUID, "", nil)
+	if err != nil {
+		return err
+	}
+	return policy.ValidateNarrowing(&issuance.Narrowing{
+		ValidDays:    sku.ValidDays,
+		KeyTypes:     keyTypes,
+		DeliveryMode: string(sku.DeliveryMode),
+	})
+}
+
 // handleAdminCreateSKU POST /api/portal/admin/skus
 func (s *Server) handleAdminCreateSKU(w http.ResponseWriter, r *http.Request) {
 	if s.portalSvc == nil {
@@ -458,6 +482,10 @@ func (s *Server) handleAdminCreateSKU(w http.ResponseWriter, r *http.Request) {
 	var sku storage.PortalProductSKU
 	if err := json.NewDecoder(r.Body).Decode(&sku); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := s.validateSKUNarrowing(r, &sku); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.portalSvc.CreateSKU(r.Context(), &sku); err != nil {
@@ -479,6 +507,10 @@ func (s *Server) handleAdminUpdateSKU(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sku.UUID = r.PathValue("uuid")
+	if err := s.validateSKUNarrowing(r, &sku); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := s.portalSvc.UpdateSKU(r.Context(), &sku); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

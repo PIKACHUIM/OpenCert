@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log/slog"
@@ -28,6 +29,10 @@ import (
 	"github.com/globaltrusts/server-card/internal/ct"
 	"github.com/globaltrusts/server-card/internal/identity"
 	"github.com/globaltrusts/server-card/internal/issuance"
+	"github.com/globaltrusts/server-card/internal/keybackend"
+	// 内置私钥存储后端驱动：TPM（Windows CNG）与 PKCS#11（HSM/USB 令牌）
+	_ "github.com/globaltrusts/server-card/internal/keybackend/pkcs11"
+	_ "github.com/globaltrusts/server-card/internal/keybackend/tpm"
 	"github.com/globaltrusts/server-card/internal/mailer"
 	"github.com/globaltrusts/server-card/internal/payment"
 	"github.com/globaltrusts/server-card/internal/portal"
@@ -102,16 +107,98 @@ func main() {
 	}
 	cardSvc := card.NewService(cardRepo, certRepo, masterKey)
 
+	// 私钥存储后端（存储区域）：本地加密 / TPM / HSM（PKCS#11）
+	// 外部插件清单用于扩展可扫描到的厂商 PKCS#11 模块（文件不存在时忽略）
+	if err := keybackend.LoadPresetFile(cfg.KeyBackendsFile); err != nil {
+		slog.Warn("加载私钥后端插件清单失败，将仅使用内置驱动", "error", err, "path", cfg.KeyBackendsFile)
+	}
+	zoneRepo := storage.NewStorageZoneRepo(db)
+	cardSvc.AttachStorageZones(zoneRepo)
+	defer cardSvc.Close() //nolint:errcheck // 退出时释放设备会话
+	if err := ensureDefaultStorageZone(context.Background(), zoneRepo, cardSvc); err != nil {
+		slog.Warn("初始化默认存储区域失败", "error", err)
+	}
+	// 内置默认数据（幂等）：CA 类颁发模板 + 密钥用途模板、域名验证接口。
+	// 已存在同类数据时自动跳过，保证全新安装开箱即用。
+	if err := db.EnsureBuiltins(context.Background()); err != nil {
+		slog.Warn("初始化内置默认数据失败", "error", err)
+	}
+
 	// 初始化 CA 管理服务
 	caSvc := ca.NewService(db, masterKey)
+	// CA 私钥托管在 HSM/TPM 存储区域时，通过 keybackend 加载签名器
+	// （仅支持 RSA/ECDSA：这两类算法是 pkcs11/tpm 驱动当前声明的能力范围，
+	// SM2 CA 私钥始终使用本地加密存储，因此用标准库解析证书公钥即可）。
+	caSvc.SetSignerLoader(func(ctx context.Context, record *storage.CA) (crypto.Signer, error) {
+		if record.StorageZone == "" {
+			return nil, fmt.Errorf("CA 私钥未关联存储区域")
+		}
+		provider, zone, err := cardSvc.OpenZone(ctx, record.StorageZone)
+		if err != nil {
+			return nil, err
+		}
+		block, _ := pem.Decode([]byte(record.CertPEM))
+		if block == nil {
+			return nil, fmt.Errorf("CA 证书 PEM 解码失败")
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("解析 CA 证书失败: %w", err)
+		}
+		handle := keybackend.KeyHandle{Driver: zone.DriverID(), Ref: record.KeyRef}
+		return keybackend.NewSigner(ctx, provider, handle, cert.PublicKey), nil
+	})
+	// 创建 CA 时若选择了存储区域，在该区域内生成密钥（本地数据库区域与之前
+	// 行为一致：返回 nil signer，调用方按旧路径在内存生成并加密入库）。
+	caSvc.SetZoneKeyGenerator(func(ctx context.Context, zoneUUID, keyType string) (
+		crypto.PublicKey, string, string, crypto.Signer, error,
+	) {
+		provider, zone, err := cardSvc.OpenZone(ctx, zoneUUID)
+		if err != nil {
+			return nil, "", "", nil, err
+		}
+		driver := zone.DriverID()
+		if driver == storage.DriverDatabase {
+			// 本地加密存储：退回标准生成路径（CreateCA 内部会走 generateKey/加密入库）。
+			return nil, "", "database", nil, ca.ErrUseLocalKeyGen
+		}
+		kp, err := provider.Generate(ctx, keybackend.KeySpec{KeyType: keyType, Label: "CA:" + zone.Name})
+		if err != nil {
+			return nil, "", "", nil, fmt.Errorf("存储区域「%s」生成密钥失败: %w", zone.Name, err)
+		}
+		pub, err := x509.ParsePKIXPublicKey(kp.PublicDER)
+		if err != nil {
+			return nil, "", "", nil, fmt.Errorf("解析存储区域返回的公钥失败: %w", err)
+		}
+		handle := keybackend.KeyHandle{Driver: driver, Ref: kp.Ref}
+		return pub, kp.Ref, driver, keybackend.NewSigner(ctx, provider, handle, pub), nil
+	})
+	// 导入外部 CA 私钥：本地加密存储交回 ca 包用主密钥加密入库；
+	// 硬件区域导入设备（区域未开启导入或不支持时，provider 会返回明确原因）。
+	caSvc.SetZoneKeyImporter(func(ctx context.Context, zoneUUID, keyType string, privDER []byte) (string, string, error) {
+		provider, zone, err := cardSvc.OpenZone(ctx, zoneUUID)
+		if err != nil {
+			return "", "", err
+		}
+		driver := zone.DriverID()
+		if driver == storage.DriverDatabase {
+			return "", "database", ca.ErrUseLocalKeyGen
+		}
+		kp, err := provider.Import(ctx, privDER, keybackend.KeySpec{KeyType: keyType, Label: "CA:" + zone.Name})
+		if err != nil {
+			return "", "", fmt.Errorf("存储区域「%s」导入私钥失败: %w", zone.Name, err)
+		}
+		return kp.Ref, driver, nil
+	})
+
+	// 系统信息页展示的版本号
+	api.ServiceVersion = Version
 
 	// 初始化证书颁发模板服务
 	issuanceSvc := issuance.NewService(db)
 
-	// 初始化验证服务
+	// 初始化验证服务（邮件发送器在下面按"后台配置的默认邮件接口"注入）
 	verifySvc := verification.NewService(db)
-	// 注入邮件发送器（SMTP 未启用时自动退化为日志输出）
-	verifySvc.SetMailer(mailer.New(cfg.SMTP))
 
 	// 初始化工作流服务（注入 caSvc/issuanceSvc 以支持审批自动签发）
 	workflowSvc := workflow.NewService(db, caSvc, issuanceSvc)
@@ -145,10 +232,19 @@ func main() {
 	acmeSvc := acme.NewService(db)
 	// 注入 CA 签发依赖（避免循环依赖）
 	acmeSvc.SetCASvc(caSvc)
+	// 注入颁发模板服务：签发有效期、允许算法与 CA 统一按模板策略解析
+	acmeSvc.SetIssuanceSvc(issuanceSvc)
 
 	// 身份认证接口（SMTP/Resend 邮件、实名回调）：配置用主密钥加密存储
 	identityStore := identity.NewStore(db, cardSvc, mailer.New(cfg.SMTP))
 	verifySvc.SetProviders(identityStore)
+	// 系统邮件：优先使用后台配置并设为默认的邮件接口，未配置时回退到环境变量 SMTP
+	if m, err := identityStore.SystemMailer(context.Background()); err == nil {
+		verifySvc.SetMailer(m)
+	} else {
+		slog.Info("未配置邮件接口，验证码邮件将只记录日志", "reason", err)
+		verifySvc.SetMailer(mailer.New(configs.SMTPConfig{}))
+	}
 	// 域名 TLS 验证复用 ACME TLS-ALPN-01 校验
 	verifySvc.SetTLSValidator(acmeSvc.ValidateTLSALPN01)
 
@@ -245,6 +341,37 @@ func main() {
 	if err := apiServer.Stop(shutdownCtx); err != nil {
 		slog.Warn("API 服务关闭超时", "error", err)
 	}
+}
+
+// ensureDefaultStorageZone 首次启动时创建默认的「本地加密存储」区域，
+// 便于在控制台开卡时直接选择私钥存放位置（历史部署不受影响）。
+func ensureDefaultStorageZone(ctx context.Context, repo *storage.StorageZoneRepo, cardSvc *card.Service) error {
+	zones, err := repo.List(ctx)
+	if err != nil {
+		return err
+	}
+	if len(zones) > 0 {
+		return nil
+	}
+	zone := &storage.StorageZone{
+		Name:        "本地加密存储",
+		StorageType: string(keybackend.KindDatabase),
+		HSMDriver:   storage.DriverDatabase,
+		Status:      "active",
+	}
+	enc, err := cardSvc.EncryptZoneParams(keybackend.Params{})
+	if err != nil {
+		return err
+	}
+	zone.ParamsEnc = enc
+	if caps, cerr := json.Marshal(cardSvc.ZoneCapabilities(zone)); cerr == nil {
+		zone.Capabilities = string(caps)
+	}
+	if err := repo.Create(ctx, zone); err != nil {
+		return err
+	}
+	slog.Info("已创建默认存储区域", "name", zone.Name, "driver", storage.DriverDatabase, "uuid", zone.UUID)
+	return nil
 }
 
 // loadOrGenerateMasterKey 加载或生成服务端主密钥。

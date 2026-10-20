@@ -87,9 +87,9 @@ export interface PageResult<T> {
   page_size: number;
 }
 
-// 密钥生成请求
+// 密钥生成请求（sm2 仅在本地卡 / 云卡可用，TPM 卡不支持）
 export interface KeyGenRequest {
-  key_type: 'rsa2048' | 'rsa4096' | 'ec256' | 'ec384' | 'ec521';
+  key_type: 'rsa2048' | 'rsa4096' | 'ec256' | 'ec384' | 'ec521' | 'ed25519' | 'sm2';
   remark?: string;
   password: string;
 }

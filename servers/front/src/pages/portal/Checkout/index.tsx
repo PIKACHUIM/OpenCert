@@ -323,7 +323,7 @@ const PortalCheckout: React.FC = () => {
 
             <Paragraph style={{ fontSize: 12, color: '#9ca3af', marginTop: 16, marginBottom: 0 }}>
               <CheckCircleFilled style={{ marginRight: 6, color: '#16a34a' }} />
-              支付金额以服务端订单金额为准；换渠道会作废上一次待支付记录。
+              更换支付方式后请重新发起支付。
             </Paragraph>
           </Card>
         </Col>

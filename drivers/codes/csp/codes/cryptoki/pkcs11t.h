@@ -353,6 +353,9 @@ typedef CK_ULONG          CK_KEY_TYPE;
 #define CKK_DH                  0x00000002UL
 #define CKK_ECDSA               0x00000003UL /* Deprecated */
 #define CKK_EC                  0x00000003UL
+/* 国密密钥类型（厂商区段，与 client-card 的 CKK_SM2/CKK_SM4 一致） */
+#define CKK_SM2                 0x80000002UL
+#define CKK_SM4                 0x80000004UL
 #define CKK_X9_42_DH            0x00000004UL
 #define CKK_KEA                 0x00000005UL
 #define CKK_GENERIC_SECRET      0x00000010UL
@@ -1149,6 +1152,16 @@ typedef CK_ULONG          CK_MECHANISM_TYPE;
 
 
 #define CKM_VENDOR_DEFINED             0x80000000UL
+
+/* ---- 国密扩展（厂商区段，与 client-card / pkcs11types 保持一致） ----
+ * CKM_SM2 的输入是原文，由实现计算 Z 值（默认用户 ID 1234567812345678）
+ * 与 SM3 摘要后签名，签名为 r‖s；CKM_SM4_CBC 的机制参数为 16 字节 IV。
+ */
+#define CKM_SM2_KEY_PAIR_GEN           0x80000201UL
+#define CKM_SM2                        0x80000202UL
+#define CKM_SM3                        0x80000210UL
+#define CKM_SM4_CBC                    0x80000221UL
+#define CKM_SM4_GCM                    0x80000222UL
 
 typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 

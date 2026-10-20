@@ -51,37 +51,42 @@ func (c *Card) IsHosting() bool { return c.Kind == CardKindHosting }
 // Certificate 是云端证书模型。
 // 私鑰加密存储在服务端，不对外暴露。
 type Certificate struct {
-	UUID                string      `json:"uuid"`
-	CardUUID            string      `json:"card_uuid"`
-	UserUUID            string      `json:"user_uuid"` // 所属用户 UUID
-	CertType            string      `json:"cert_type"` // x509/gpg/ssh
-	KeyType             string      `json:"key_type"`
-	CertContent         Base64Bytes `json:"cert_content"` // 公开部分
-	PrivateData         Base64Bytes `json:"-"`            // 加密的私鑰，不序列化
-	Remark              string      `json:"remark"`
-	OrderNo             string      `json:"order_no,omitempty"`
-	CAUUID              string      `json:"ca_uuid,omitempty"`
-	SerialNumber        string      `json:"serial_number,omitempty"`        // X.509 序列号（十六进制）
-	SerialHex           string      `json:"serial_hex,omitempty"`           // 序列号十六进制字符串
-	SubjectDN           string      `json:"subject_dn,omitempty"`           // 主体 DN（如 CN=example.com,O=Org）
-	IssuerDN            string      `json:"issuer_dn,omitempty"`            // 颁发者 DN
-	NotBefore           *time.Time  `json:"not_before,omitempty"`           // 生效时间
-	NotAfter            *time.Time  `json:"not_after,omitempty"`            // 失效时间
-	KeyUsage            int         `json:"key_usage,omitempty"`            // X.509 密鑰用法位掉码
-	ExtKeyUsage         string      `json:"ext_key_usage,omitempty"`        // 扩展密鑰用法 OID 列表（JSON 数组）
-	SANDNS              string      `json:"san_dns,omitempty"`              // SAN DNS 名称（JSON 数组）
-	SANIP               string      `json:"san_ip,omitempty"`               // SAN IP 地址（JSON 数组）
-	SANEmail            string      `json:"san_email,omitempty"`            // SAN 邮箋（JSON 数组）
-	SANURI              string      `json:"san_uris,omitempty"`             // SAN URI 列表（JSON 数组）
-	CertificatePolicies string      `json:"certificate_policies,omitempty"` // 证书策略 OID 列表（JSON 数组）
-	IssuanceTmplUUID    string      `json:"issuance_tmpl_uuid,omitempty"`
-	TemplateUUID        string      `json:"template_uuid,omitempty"`
-	StoragePolicy       string      `json:"storage_policy,omitempty"`
-	RevocationStatus    string      `json:"revocation_status"`       // active/revoked
-	RevokeReason        int         `json:"revoke_reason,omitempty"` // RFC 5280 吹销原因码
-	RevokedAt           *time.Time  `json:"revoked_at,omitempty"`
-	CreatedAt           time.Time   `json:"created_at"`
-	UpdatedAt           time.Time   `json:"updated_at"`
+	UUID        string      `json:"uuid"`
+	CardUUID    string      `json:"card_uuid"`
+	UserUUID    string      `json:"user_uuid"` // 所属用户 UUID
+	CertType    string      `json:"cert_type"` // x509/gpg/ssh
+	KeyType     string      `json:"key_type"`
+	CertContent Base64Bytes `json:"cert_content"`          // 公开部分
+	PrivateData Base64Bytes `json:"-"`                     // 本地后端的加密私钥（硬件后端为空）
+	KeyBackend  string      `json:"key_backend,omitempty"` // 私钥后端驱动：database/tpm2/pkcs11（空=本地）
+	KeyRef      string      `json:"-"`                     // 硬件后端的私钥引用，不序列化
+	// KeyStorageTmplUUID 是签发时所用密钥存储模板的快照。之后修改模板只影响新签发的证书，
+	// 这张证书的导出格式、下发次数等始终按签发当时的约定执行。
+	KeyStorageTmplUUID  string     `json:"key_storage_tmpl_uuid,omitempty"`
+	Remark              string     `json:"remark"`
+	OrderNo             string     `json:"order_no,omitempty"`
+	CAUUID              string     `json:"ca_uuid,omitempty"`
+	SerialNumber        string     `json:"serial_number,omitempty"`        // X.509 序列号（十六进制）
+	SerialHex           string     `json:"serial_hex,omitempty"`           // 序列号十六进制字符串
+	SubjectDN           string     `json:"subject_dn,omitempty"`           // 主体 DN（如 CN=example.com,O=Org）
+	IssuerDN            string     `json:"issuer_dn,omitempty"`            // 颁发者 DN
+	NotBefore           *time.Time `json:"not_before,omitempty"`           // 生效时间
+	NotAfter            *time.Time `json:"not_after,omitempty"`            // 失效时间
+	KeyUsage            int        `json:"key_usage,omitempty"`            // X.509 密鑰用法位掉码
+	ExtKeyUsage         string     `json:"ext_key_usage,omitempty"`        // 扩展密鑰用法 OID 列表（JSON 数组）
+	SANDNS              string     `json:"san_dns,omitempty"`              // SAN DNS 名称（JSON 数组）
+	SANIP               string     `json:"san_ip,omitempty"`               // SAN IP 地址（JSON 数组）
+	SANEmail            string     `json:"san_email,omitempty"`            // SAN 邮箋（JSON 数组）
+	SANURI              string     `json:"san_uris,omitempty"`             // SAN URI 列表（JSON 数组）
+	CertificatePolicies string     `json:"certificate_policies,omitempty"` // 证书策略 OID 列表（JSON 数组）
+	IssuanceTmplUUID    string     `json:"issuance_tmpl_uuid,omitempty"`
+	TemplateUUID        string     `json:"template_uuid,omitempty"`
+	StoragePolicy       string     `json:"storage_policy,omitempty"`
+	RevocationStatus    string     `json:"revocation_status"`       // active/revoked
+	RevokeReason        int        `json:"revoke_reason,omitempty"` // RFC 5280 吹销原因码
+	RevokedAt           *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 // Log 是操作日志模型（兼容旧版）。
@@ -263,9 +268,19 @@ type KeyStorageTemplate struct {
 	CloudBackup     bool          `json:"cloud_backup"`      // 是否云端备份私钥
 	AllowReissue    bool          `json:"allow_reissue"`     // 是否支持重新下发
 	MaxReissueCount int           `json:"max_reissue_count"` // 最大下发次数（-1=无限）
+	StorageZoneUUID string        `json:"storage_zone_uuid"` // 密钥生成并保存所在的存储区域（空=默认区域）
+	KeyGenLocation  string        `json:"key_gen_location"`  // 密钥生成位置：server / csr / card
+	DownloadFormats string        `json:"download_formats"`  // 文件下载可选格式（JSON 数组：pem / pkcs12）
 	CreatedAt       time.Time     `json:"created_at"`
 	UpdatedAt       time.Time     `json:"updated_at"`
 }
+
+// 密钥生成位置取值。
+const (
+	KeyGenServer = "server" // 服务端存储区域内生成
+	KeyGenCSR    = "csr"    // 用户自带 CSR，私钥不经过服务端
+	KeyGenCard   = "card"   // 在用户的智能卡上生成
+)
 
 // HasMethod 检查模板是否包含指定存储方式。
 func (t *KeyStorageTemplate) HasMethod(m StorageMethod) bool {
@@ -304,8 +319,22 @@ type CA struct {
 	NotBefore   time.Time   `json:"not_before"`
 	NotAfter    time.Time   `json:"not_after"`
 	IssuedCount int         `json:"issued_count"` // 已签发证书数量
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
+
+	// 密钥与来源信息（列表展示与约束校验使用）
+	KeyType          string `json:"key_type"`           // 密钥算法（rsa2048/ec256/.../sm2）
+	SigAlg           string `json:"sig_alg"`            // 签名算法（如 SM2WithSM3）
+	SubjectDN        string `json:"subject_dn"`         // 主体 DN
+	KeySource        string `json:"key_source"`         // generated（平台生成）/imported（导入）/external（仅证书）
+	KeyBackend       string `json:"key_backend"`        // 私钥所在后端（database/hsm/tpm）
+	StorageZone      string `json:"storage_zone_uuid"`  // 私钥所在存储区域
+	KeyRef           string `json:"key_ref"`            // 后端内的密钥引用
+	IssuanceTmplUUID string `json:"issuance_tmpl_uuid"` // 创建该 CA 时使用的颁发模板
+
+	// StorageZoneName 仅在列表查询时联表填充，便于前端直接展示。
+	StorageZoneName string `json:"storage_zone_name,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // RevokedCert 是已吊销证书记录。
@@ -319,46 +348,59 @@ type RevokedCert struct {
 
 // ---- 证书颁发模板模型 ----
 
-// IssuanceTemplate 是证书颁发模板。
+// IssuanceTemplate 是证书颁发模板——唯一的技术配置来源（CA、有效期、
+// 算法、密钥用途/证书扩展/密钥存储/主体/扩展信息模板全部在这里配置）。
 type IssuanceTemplate struct {
 	UUID               string    `json:"uuid"`
 	Name               string    `json:"name"`
 	IsCA               bool      `json:"is_ca"`
 	PathLen            int       `json:"path_len"`
 	ValidDays          string    `json:"valid_days"`            // 可选有效期列表（JSON 数组，如 "[30,90,365]"）
-	AllowedKeyTypes    string    `json:"allowed_key_types"`     // 允许的密鑰类型（JSON 数组）
+	DefaultValidDays   int       `json:"default_valid_days"`    // 默认有效期（天），需在 ValidDays 列表中
+	AllowedKeyTypes    string    `json:"allowed_key_types"`     // 允许的密钥类型（JSON 数组）
+	AllowedSigAlgs     string    `json:"allowed_sig_algs"`      // 允许的签名算法（JSON 数组，如 ["SHA256_RSA","SM2WithSM3"]）
 	AllowedCAUUIDs     string    `json:"allowed_ca_uuids"`      // 可颁发 CA 列表（JSON 数组）
+	DefaultCAUUID      string    `json:"default_ca_uuid"`       // 默认 CA（需在 AllowedCAUUIDs 中）
 	SubjectTmplUUID    string    `json:"subject_tmpl_uuid"`     // 关联主体模板 ID
-	ExtensionTmplUUID  string    `json:"extension_tmpl_uuid"`   // 关联扩展模板 ID
-	KeyUsageTmplUUID   string    `json:"key_usage_tmpl_uuid"`   // 关联密鑰用途模板 ID
-	KeyStorageTmplUUID string    `json:"key_storage_tmpl_uuid"` // 关联密鑰存储模板 ID
+	ExtensionTmplUUID  string    `json:"extension_tmpl_uuid"`   // 关联扩展信息模板 ID
+	KeyUsageTmplUUID   string    `json:"key_usage_tmpl_uuid"`   // 关联密钥用途模板 ID
+	KeyStorageTmplUUID string    `json:"key_storage_tmpl_uuid"` // 关联密钥存储模板 ID
 	CertExtTmplUUID    string    `json:"cert_ext_tmpl_uuid"`    // 关联证书拓展模板 ID
-	PriceCents         int64     `json:"price_cents"`           // 定价（分）
-	Stock              int       `json:"stock"`                 // 库存（-1=无限）
-	Category           string    `json:"category"`              // 分类（ssl/code_sign/email/custom）
+	Category           string    `json:"category"`              // 分类（ssl/code_sign/email/ca/custom）
 	Enabled            bool      `json:"enabled"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+
+	// 历史字段：定价与库存已迁移到商品规格（portal_product_skus），
+	// 这里只读保留用于兼容旧数据展示，新代码不应再写入。
+	PriceCents int64 `json:"price_cents,omitempty"`
+	Stock      int   `json:"stock,omitempty"`
 }
 
-// CertApplyTemplate 是证书申请模板（面向用户的产品化配置）。
+// CertApplyTemplate 是证书开通模板——只管"谁、在什么条件下可以申请"
+// 这一业务规则；CA、有效期、算法、资料要求全部继承自关联的颁发模板，
+// 不在这里重复配置。
 type CertApplyTemplate struct {
 	UUID             string `json:"uuid"`
 	Name             string `json:"name"`
-	IssuanceTmplUUID string `json:"issuance_tmpl_uuid"` // 关联颁发模板
-	ValidDays        int    `json:"valid_days"`         // 指定有效期（天）
-	CAUUID           string `json:"ca_uuid"`            // 指定签发 CA
+	IssuanceTmplUUID string `json:"issuance_tmpl_uuid"` // 关联颁发模板（必选）
 	Enabled          bool   `json:"enabled"`            // 是否对用户可见
-	RequireApproval  bool   `json:"require_approval"`   // 是否需要审批
+	RequireApproval  bool   `json:"require_approval"`   // 是否需要人工审批
 	AllowRenewal     bool   `json:"allow_renewal"`      // 是否允许续期
-	AllowedKeyTypes  string `json:"allowed_key_types"`  // 密鑰算法选择列表（JSON 数组）
-	PriceCents       int64  `json:"price_cents"`        // 历史字段：定价已迁移到商品规格
-	Description      string `json:"description"`        // 产品描述
-	// 申请资料要求：优先于颁发模板中的同名关联
-	SubjectTmplUUID   string    `json:"subject_tmpl_uuid"`   // 主体模板（决定用户需填写/验证的主体字段）
-	ExtensionTmplUUID string    `json:"extension_tmpl_uuid"` // 扩展信息模板（决定域名/邮箱/IP 的验证方式）
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ApplyModes       string `json:"apply_modes"`        // 可申请方式（JSON 数组：order/self/subscription）
+	Description      string `json:"description"`        // 产品说明
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// 历史字段：以下取值已改为从关联颁发模板继承，这里只读保留用于兼容
+	// 旧数据展示（API 响应中会同时返回 inherited 摘要），新代码不应再写入。
+	ValidDays         int    `json:"valid_days,omitempty"`
+	CAUUID            string `json:"ca_uuid,omitempty"`
+	AllowedKeyTypes   string `json:"allowed_key_types,omitempty"`
+	PriceCents        int64  `json:"price_cents,omitempty"`
+	SubjectTmplUUID   string `json:"subject_tmpl_uuid,omitempty"`
+	ExtensionTmplUUID string `json:"extension_tmpl_uuid,omitempty"`
 }
 
 // SubjectTemplate 是主体模板。
@@ -476,8 +518,17 @@ type CertApplication struct {
 	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
 	RejectReason   string     `json:"reject_reason,omitempty"`
 	CertUUID       string     `json:"cert_uuid,omitempty"` // 签发后的证书 UUID
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	// 以下为列表展示用的只读信息（联表查询填充，不落库）
+	UserName       string    `json:"user_name,omitempty"`     // 申请人用户名
+	UserEmail      string    `json:"user_email,omitempty"`    // 申请人邮箱
+	OrderNo        string    `json:"order_no,omitempty"`      // 关联订单号
+	TemplateName   string    `json:"template_name,omitempty"` // 证书类型（开通模板名）
+	SubjectSummary string    `json:"subject_summary,omitempty"`
+	SANSummary     string    `json:"san_summary,omitempty"`
+	CreatedBy      string    `json:"created_by,omitempty"` // 代办人（管理员代提交时）
+	OnBehalf       bool      `json:"on_behalf,omitempty"`  // 是否为代办申请
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // ---- 主体信息与扩展信息验证模型 ----
@@ -528,16 +579,49 @@ func (e *ExtensionInfo) Usable(now time.Time) bool {
 
 // ---- 存储区域与 OID 管理模型 ----
 
-// StorageZone 是云端智能卡存储区域。
+// 私钥存储驱动 ID（与 internal/keybackend 的内置驱动保持一致）。
+const (
+	DriverDatabase = "database" // 本地加密存储（服务端数据库）
+	DriverTPM      = "tpm2"     // 可信平台模块
+	DriverPKCS11   = "pkcs11"   // PKCS#11 硬件安全模块 / USB 令牌
+)
+
+// StorageZone 是私钥存储区域（对应一种私钥存放后端）。
+//
+// StorageType 是大类：database（本地加密）/ tpm（可信平台模块）/ hsm（PKCS#11 硬件安全模块）。
+// HSMDriver 是驱动 ID（database/tpm2/pkcs11，兼容历史取值）。
+// ParamsEnc 是用服务端主密钥加密后的驱动参数（库路径、令牌、PIN 等），明文不落库。
 type StorageZone struct {
-	UUID        string      `json:"uuid"`
-	Name        string      `json:"name"`
-	StorageType string      `json:"storage_type"` // database/hsm
-	HSMDriver   string      `json:"hsm_driver,omitempty"`
-	HSMAuthEnc  Base64Bytes `json:"-"`      // 加密存储的 HSM 授权信息
-	Status      string      `json:"status"` // active/disabled
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
+	UUID        string `json:"uuid"`
+	Name        string `json:"name"`
+	StorageType string `json:"storage_type"` // database/tpm/hsm
+	HSMDriver   string `json:"hsm_driver,omitempty"`
+	// ParamsEnc 是用服务端主密钥加密后的驱动参数（JSON，含令牌 PIN 等敏感项）。
+	ParamsEnc Base64Bytes `json:"-"`
+	// ParamsView 是回显给管理端的参数（敏感项已抹除）。
+	ParamsView      map[string]string `json:"params,omitempty"`
+	Capabilities    string            `json:"capabilities,omitempty"` // 能力描述（JSON）
+	Status          string            `json:"status"`                 // active/disabled
+	LastCheckAt     *time.Time        `json:"last_check_at,omitempty"`
+	LastCheckError  string            `json:"last_check_error,omitempty"`
+	LastCheckDetail string            `json:"last_check_detail,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+}
+
+// DriverID 返回存储区域使用的驱动 ID（兼容历史数据）。
+func (z *StorageZone) DriverID() string {
+	if z.HSMDriver != "" {
+		return z.HSMDriver
+	}
+	switch z.StorageType {
+	case "hsm":
+		return "pkcs11"
+	case "tpm":
+		return "tpm2"
+	default:
+		return "database"
+	}
 }
 
 // CustomOID 是自定义 OID。
@@ -634,7 +718,8 @@ type PortalProductSKU struct {
 	MaxQty            int          `json:"max_qty"`
 	DurationMonths    int          `json:"duration_months"` // 服务期（月）
 	DeliveryMode      DeliveryMode `json:"delivery_mode"`
-	KeyTypes          string       `json:"key_types"`            // 允许的密钥算法（JSON 数组）
+	ValidDays         int          `json:"valid_days"`           // 证书有效期（天，0=使用颁发模板默认值，须在颁发模板允许范围内）
+	KeyTypes          string       `json:"key_types"`            // 允许的密钥算法（JSON 数组，须为颁发模板允许算法的子集）
 	SANIncluded       int          `json:"san_included"`         // 含多少 SAN 域名（0 表示不适用）
 	CertApplyTmplUUID string       `json:"cert_apply_tmpl_uuid"` // 关联证书申请模板
 	CloudCardTmplUUID string       `json:"cloud_card_tmpl_uuid"` // 预留：云卡开通模板

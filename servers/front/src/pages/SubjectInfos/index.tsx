@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Card, Table, Button, Space, Tag, Typography, Modal, Form, Input, Select, message,
-  Popconfirm, Alert, Descriptions,
+  Popconfirm, Descriptions,
 } from 'antd';
 import {
   IdcardOutlined, PlusOutlined, ReloadOutlined, DeleteOutlined, SafetyOutlined, EditOutlined,
@@ -162,10 +162,8 @@ const SubjectInfosPage: React.FC = () => {
           </Space>
         }
       >
-        <Alert type="info" showIcon style={{ marginBottom: 16 }}
-          message="主体信息按主体模板验证：人工审核 / 实名认证接口 / 免验证"
-          description="审核或认证通过后在有效期内可直接用于证书申请；过期或被驳回可修改后重新提交。域名/邮箱证书的主体字段可配置为「派生」，无需在此填写。" />
-        <Table rowKey="uuid" loading={loading} dataSource={data} columns={columns as any} />
+        <Table rowKey="uuid" loading={loading} dataSource={data} columns={columns as any}
+          locale={{ emptyText: '还没有主体信息。新建并审核通过后即可用于证书申请。' }} />
       </Card>
 
       <Modal open={open} title={editing ? '修改并重新提交主体信息' : '新建主体信息'}

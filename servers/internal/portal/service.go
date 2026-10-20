@@ -53,6 +53,7 @@ type Quote struct {
 	TotalCents        int64     `json:"total_cents"`
 	Currency          string    `json:"currency"`
 	DurationMonths    int       `json:"duration_months"`
+	ValidDays         int       `json:"valid_days"` // 证书有效期（天，0=按颁发模板默认值）
 	DeliveryMode      string    `json:"delivery_mode"`
 	KeyTypes          []string  `json:"key_types"`
 	SANIncluded       int       `json:"san_included"`
@@ -163,6 +164,7 @@ func (s *Service) Quote(ctx context.Context, skuCode string, quantity int) (*Quo
 		TotalCents:        sku.PriceCents * int64(quantity),
 		Currency:          sku.Currency,
 		DurationMonths:    sku.DurationMonths,
+		ValidDays:         sku.ValidDays,
 		DeliveryMode:      string(sku.DeliveryMode),
 		KeyTypes:          keyTypes,
 		SANIncluded:       sku.SANIncluded,
@@ -247,6 +249,7 @@ func (s *Service) CreateOrder(ctx context.Context, userUUID string, in CreateOrd
 		"unit_price_cents": quote.UnitPriceCents,
 		"currency":         quote.Currency,
 		"duration_months":  quote.DurationMonths,
+		"valid_days":       quote.ValidDays, // 签发时按此有效期收窄（颁发模板范围内的快照）
 		"delivery_mode":    quote.DeliveryMode,
 		"key_types":        quote.KeyTypes,
 		"san_included":     quote.SANIncluded,

@@ -110,10 +110,8 @@ const MyApplicationsPage: React.FC = () => {
           </Space>
         }
       >
-        <Alert type="info" showIcon style={{ marginBottom: 16 }}
-          message="申请提交后由平台审核（开通模板设置为自动开通时立即签发）"
-          description="已签发的证书可在「我的证书」中下载或使用；订阅套餐内的证书吊销是否释放额度由套餐设置决定。" />
-        <Table rowKey="uuid" loading={loading} dataSource={apps} columns={columns as any} />
+        <Table rowKey="uuid" loading={loading} dataSource={apps} columns={columns as any}
+          locale={{ emptyText: '暂无申请。提交后进入审核，审核通过会自动签发。' }} />
       </Card>
 
       <Drawer open={!!detail} onClose={() => setDetail(null)} title="申请详情" width={560}>

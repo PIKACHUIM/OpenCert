@@ -36,12 +36,10 @@ func (s *Server) handleListOIDCategories(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// handleGetAlgorithms 返回所有密码学算法清单（含 SM2/SM3/SM4/RSA 全范围/Ed25519 等）。
+// handleGetAlgorithms 返回所有密码学算法清单（含 SM2/SM3/SM4/RSA 全范围/Ed25519 等），
+// 以及签名算法清单和"密钥算法 → 允许的签名哈希"映射，供前端联动渲染
+// 算法选择表单（选择 SM2 时只能选 SM3，不再各页面写死）。
 // GET /api/meta/algorithms
-//
-// 响应中的 available 字段根据当前构建实时判定：
-//   - SM2/SM3/SM4 仅在 `-tags gmsm` 构建时为 true；
-//   - Brainpool 曲线仅在 `-tags brainpool` 构建时为 true（预留）。
 func (s *Server) handleGetAlgorithms(w http.ResponseWriter, r *http.Request) {
 	overrides := map[string]bool{
 		"sm2": ca.IsSM2Available(),
@@ -49,6 +47,8 @@ func (s *Server) handleGetAlgorithms(w http.ResponseWriter, r *http.Request) {
 		"sm4": ca.IsSM2Available(),
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"algorithms": meta.GetSupportedAlgorithms(overrides),
+		"algorithms":      meta.GetSupportedAlgorithms(overrides),
+		"signature_algos": meta.SignatureAlgorithms,
+		"key_sig_map":     meta.KeyTypeToSigHashes,
 	})
 }

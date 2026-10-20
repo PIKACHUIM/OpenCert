@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+
 	"crypto/ed25519"
 	"crypto/md5" //nolint:gosec // PKCS#11 兼容
 	"crypto/rand"
@@ -22,6 +23,8 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"fmt"
+	"github.com/emmansun/gmsm/sm2"
+	"github.com/emmansun/gmsm/sm3"
 	"hash"
 	"log/slog"
 	"math/big"
@@ -48,6 +51,8 @@ const (
 	ckmECDSASHA384   uint32 = 0x00001045
 	ckmECDSASHA512   uint32 = 0x00001046
 	ckmEdDSA         uint32 = 0x00001057
+	ckmSM2           uint32 = 0x80000202 // 厂商区段：CKM_SM2（输入原文，内部计算 Z‖M 的 SM3）
+	ckmSM3           uint32 = 0x80000210 // 厂商区段：CKM_SM3
 )
 
 // digestVerifySession 是不能直接放进 card.Session（避免修改公共结构）的辅助状态，
@@ -217,6 +222,8 @@ func newHash(mech uint32) (hash.Hash, error) {
 		return sha512.New384(), nil
 	case ckmSHA512:
 		return sha512.New(), nil
+	case ckmSM3:
+		return sm3.New(), nil
 	default:
 		return nil, fmt.Errorf("不支持的摘要机制: 0x%X", mech)
 	}
@@ -429,6 +436,18 @@ func (h *PKCSHandler) doVerify(ctx context.Context, sid uint32, keyHandle pkcs11
 		return nil, uint32(pkcs11types.CKR_KEY_HANDLE_INVALID)
 	}
 
+	// 国密 SM2：签名原文 → SM3(Z‖M) → 验签，签名格式可为 r‖s 或 ASN.1
+	if mech == ckmSM2 {
+		ecKey, ok := pub.(*ecdsa.PublicKey)
+		if !ok {
+			return nil, uint32(pkcs11types.CKR_KEY_TYPE_INCONSISTENT)
+		}
+		if !verifySM2Raw(ecKey, data, signature) {
+			return nil, uint32(pkcs11types.CKR_SIGNATURE_INVALID)
+		}
+		return nil, uint32(pkcs11types.CKR_OK)
+	}
+
 	hashAlg, prehashed, mechErr := mechToHash(mech)
 	if mechErr != nil {
 		return nil, uint32(pkcs11types.CKR_MECHANISM_INVALID)
@@ -491,6 +510,20 @@ func mechToHash(mech uint32) (crypto.Hash, bool, error) {
 	default:
 		return 0, false, fmt.Errorf("unsupported verify mechanism: 0x%X", mech)
 	}
+}
+
+// verifySM2Raw 校验 SM2 签名：原文 → SM3(Z‖M) → 验签，兼容 r‖s 与 ASN.1 两种格式。
+func verifySM2Raw(pub *ecdsa.PublicKey, data, sig []byte) bool {
+	digest, err := sm2.CalculateSM2Hash(pub, data, nil)
+	if err != nil {
+		return false
+	}
+	if len(sig) == 64 {
+		r := new(big.Int).SetBytes(sig[:32])
+		s := new(big.Int).SetBytes(sig[32:])
+		return sm2.Verify(pub, digest, r, s)
+	}
+	return sm2.VerifyASN1(pub, digest, sig)
 }
 
 // verifyECDSARaw 对 r||s 格式的 ECDSA 签名做验证。

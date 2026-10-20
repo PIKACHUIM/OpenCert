@@ -40,8 +40,7 @@ const StoreTab: React.FC = () => {
     <Card style={{ maxWidth: 720 }}>
       <Title level={5} style={{ marginTop: 0 }}>选购证书与云卡</Title>
       <Text type="secondary">
-        产品目录、价格与规格由管理员在「商品与定价 → 商品管理」中配置，
-        购买流程在门户官网完成（选购 → 支付 → 提交申请 → 签发/交付）。
+        选购、支付与证书签发在同一流程内完成，签发后可随时在本页查看进度。
       </Text>
       <div style={{ marginTop: 20 }}>
         <Space>

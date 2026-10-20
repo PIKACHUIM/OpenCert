@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -38,23 +39,22 @@ func (s *Server) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ---- 证书开通模板（证书申请模板）处理器 ----
+// ---- 证书开通模板处理器 ----
 //
-// 职责划分：
-//   - 颁发模板：怎么签（CA 候选、有效期、算法、KU/EKU、扩展、密钥存储）
-//   - 开通模板：怎么申请（绑定颁发模板 + 主体模板 + 扩展信息模板 + 审批/续期策略）
-//   - 商品规格：怎么卖（价格、库存、SAN 数量与格式限制）
+// 职责划分（不允许同一属性两处配置）：
+//   - 颁发模板：怎么签（CA 候选与默认值、有效期、算法、KU/EKU、扩展、密钥存储、主体、扩展信息）
+//   - 开通模板：谁、在什么条件下可以申请（绑定颁发模板 + 审批/续期策略 + 可申请方式）
+//   - 商品规格：怎么卖（价格、库存、在颁发模板允许范围内收窄的有效期/算法/交付方式、SAN 限制）
 
-const certApplyTemplateColumns = `uuid, name, issuance_tmpl_uuid, valid_days, ca_uuid, enabled, require_approval,
-	allow_renewal, allowed_key_types, price_cents, description, subject_tmpl_uuid, extension_tmpl_uuid,
-	created_at, updated_at`
+const certApplyTemplateColumns = `uuid, name, issuance_tmpl_uuid, enabled, require_approval,
+	allow_renewal, apply_modes, description, created_at, updated_at`
 
 func scanCertApplyTemplate(scan func(dest ...interface{}) error) (*storage.CertApplyTemplate, error) {
 	t := &storage.CertApplyTemplate{}
 	var enabled, requireApproval, allowRenewal int
-	if err := scan(&t.UUID, &t.Name, &t.IssuanceTmplUUID, &t.ValidDays, &t.CAUUID,
-		&enabled, &requireApproval, &allowRenewal, &t.AllowedKeyTypes, &t.PriceCents, &t.Description,
-		&t.SubjectTmplUUID, &t.ExtensionTmplUUID, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	if err := scan(&t.UUID, &t.Name, &t.IssuanceTmplUUID,
+		&enabled, &requireApproval, &allowRenewal, &t.ApplyModes, &t.Description,
+		&t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.Enabled = enabled == 1
@@ -63,7 +63,46 @@ func scanCertApplyTemplate(scan func(dest ...interface{}) error) (*storage.CertA
 	return t, nil
 }
 
-// handleListCertApplyTemplates 查询证书申请模板列表。
+// certApplyTemplateWithInherited 是开通模板 + 继承自颁发模板的只读摘要
+// （前端用于在开通模板页面展示"继承自颁发模板"的 CA/有效期/算法/资料要求）。
+type certApplyTemplateWithInherited struct {
+	*storage.CertApplyTemplate
+	Inherited *inheritedSummary `json:"inherited,omitempty"`
+}
+
+type inheritedSummary struct {
+	CAUUIDs           []string `json:"ca_uuids"`
+	DefaultCAUUID     string   `json:"default_ca_uuid"`
+	ValidDays         []int    `json:"valid_days"`
+	DefaultValidDays  int      `json:"default_valid_days"`
+	AllowedKeyTypes   []string `json:"allowed_key_types"`
+	SubjectTmplUUID   string   `json:"subject_tmpl_uuid"`
+	ExtensionTmplUUID string   `json:"extension_tmpl_uuid"`
+}
+
+// buildInheritedSummary 读取开通模板关联的颁发模板，组装继承摘要；
+// 颁发模板不存在时返回 nil（由调用方决定如何提示）。
+func (s *Server) buildInheritedSummary(ctx context.Context, issuanceTmplUUID string) *inheritedSummary {
+	if issuanceTmplUUID == "" || s.issuanceSvc == nil {
+		return nil
+	}
+	tmpl, err := s.issuanceSvc.GetIssuanceTemplate(ctx, issuanceTmplUUID)
+	if err != nil {
+		return nil
+	}
+	sum := &inheritedSummary{
+		DefaultCAUUID:     tmpl.DefaultCAUUID,
+		DefaultValidDays:  tmpl.DefaultValidDays,
+		SubjectTmplUUID:   tmpl.SubjectTmplUUID,
+		ExtensionTmplUUID: tmpl.ExtensionTmplUUID,
+	}
+	json.Unmarshal([]byte(tmpl.AllowedCAUUIDs), &sum.CAUUIDs)          //nolint:errcheck
+	json.Unmarshal([]byte(tmpl.ValidDays), &sum.ValidDays)             //nolint:errcheck
+	json.Unmarshal([]byte(tmpl.AllowedKeyTypes), &sum.AllowedKeyTypes) //nolint:errcheck
+	return sum
+}
+
+// handleListCertApplyTemplates 查询证书开通模板列表。
 func (s *Server) handleListCertApplyTemplates(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
 	onlyEnabled := !auth.IsAdmin(claims.Role) // 管理员可以查看所有模板（包括禁用的）
@@ -78,31 +117,41 @@ func (s *Server) handleListCertApplyTemplates(w http.ResponseWriter, r *http.Req
 	}
 	defer rows.Close()
 
-	templates := []*storage.CertApplyTemplate{}
+	templates := []*certApplyTemplateWithInherited{}
 	for rows.Next() {
 		t, err := scanCertApplyTemplate(rows.Scan)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		templates = append(templates, t)
+		templates = append(templates, &certApplyTemplateWithInherited{
+			CertApplyTemplate: t,
+			Inherited:         s.buildInheritedSummary(r.Context(), t.IssuanceTmplUUID),
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"items": templates, "total": len(templates)})
 }
 
-// handleGetCertApplyTemplate 查询单个证书申请模板。
+// handleGetCertApplyTemplate 查询单个证书开通模板（含继承摘要）。
 func (s *Server) handleGetCertApplyTemplate(w http.ResponseWriter, r *http.Request) {
 	row := s.db.QueryRowContext(r.Context(),
 		`SELECT `+certApplyTemplateColumns+` FROM cert_apply_templates WHERE uuid = ?`, r.PathValue("uuid"))
 	t, err := scanCertApplyTemplate(row.Scan)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "证书申请模板不存在")
+		writeError(w, http.StatusNotFound, "证书开通模板不存在")
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	writeJSON(w, http.StatusOK, &certApplyTemplateWithInherited{
+		CertApplyTemplate: t,
+		Inherited:         s.buildInheritedSummary(r.Context(), t.IssuanceTmplUUID),
+	})
 }
 
-// validateCertApplyTemplate 校验开通模板的引用关系，避免保存后签发时才发现配置断链。
+// validApplyModes 是可申请方式的合法取值集合。
+var validApplyModes = map[string]bool{"order": true, "self": true, "subscription": true}
+
+// validateCertApplyTemplate 只校验业务字段：名称、关联颁发模板是否存在、可申请方式是否合法。
+// CA、有效期、算法、资料要求均继承自颁发模板，不在这里重复校验。
 func (s *Server) validateCertApplyTemplate(r *http.Request, t *storage.CertApplyTemplate) error {
 	if t.Name == "" {
 		return fmt.Errorf("模板名称不能为空")
@@ -110,40 +159,27 @@ func (s *Server) validateCertApplyTemplate(r *http.Request, t *storage.CertApply
 	if t.IssuanceTmplUUID == "" {
 		return fmt.Errorf("请选择颁发模板")
 	}
-	exists := func(table, id string) bool {
-		if id == "" {
-			return true
-		}
-		var n int
-		err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM `+table+` WHERE uuid = ?`, id).Scan(&n)
-		return err == nil && n > 0
-	}
-	if !exists("issuance_templates", t.IssuanceTmplUUID) {
+	var n int
+	if err := s.db.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM issuance_templates WHERE uuid = ?`, t.IssuanceTmplUUID).Scan(&n); err != nil || n == 0 {
 		return fmt.Errorf("颁发模板不存在")
 	}
-	if !exists("subject_templates", t.SubjectTmplUUID) {
-		return fmt.Errorf("主体模板不存在")
+	if t.ApplyModes == "" {
+		t.ApplyModes = `["order","self","subscription"]`
 	}
-	if !exists("extension_templates", t.ExtensionTmplUUID) {
-		return fmt.Errorf("扩展信息模板不存在")
+	var modes []string
+	if err := json.Unmarshal([]byte(t.ApplyModes), &modes); err != nil || len(modes) == 0 {
+		return fmt.Errorf("可申请方式格式错误")
 	}
-	if !exists("cas", t.CAUUID) {
-		return fmt.Errorf("指定的签发 CA 不存在")
-	}
-	if t.ValidDays < 0 || t.ValidDays > 3650 {
-		return fmt.Errorf("有效期需在 0-3650 天之间（0 表示使用颁发模板缺省值）")
-	}
-	var keyTypes []string
-	if t.AllowedKeyTypes == "" {
-		t.AllowedKeyTypes = `["ec256","rsa2048"]`
-	}
-	if err := json.Unmarshal([]byte(t.AllowedKeyTypes), &keyTypes); err != nil || len(keyTypes) == 0 {
-		return fmt.Errorf("允许的密钥算法格式错误")
+	for _, m := range modes {
+		if !validApplyModes[m] {
+			return fmt.Errorf("不支持的申请方式: %s", m)
+		}
 	}
 	return nil
 }
 
-// handleCreateCertApplyTemplate 创建证书申请模板（管理员）。
+// handleCreateCertApplyTemplate 创建证书开通模板（管理员）。
 func (s *Server) handleCreateCertApplyTemplate(w http.ResponseWriter, r *http.Request) {
 	var t storage.CertApplyTemplate
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
@@ -160,12 +196,12 @@ func (s *Server) handleCreateCertApplyTemplate(w http.ResponseWriter, r *http.Re
 	t.UpdatedAt = t.CreatedAt
 
 	_, err := s.db.ExecContext(r.Context(),
-		`INSERT INTO cert_apply_templates (uuid, name, issuance_tmpl_uuid, valid_days, ca_uuid, enabled, require_approval,
-		 allow_renewal, allowed_key_types, price_cents, description, subject_tmpl_uuid, extension_tmpl_uuid, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.UUID, t.Name, t.IssuanceTmplUUID, t.ValidDays, t.CAUUID,
+		`INSERT INTO cert_apply_templates (uuid, name, issuance_tmpl_uuid, enabled, require_approval,
+		 allow_renewal, apply_modes, description, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.UUID, t.Name, t.IssuanceTmplUUID,
 		storage.BoolToInt(t.Enabled), storage.BoolToInt(t.RequireApproval), storage.BoolToInt(t.AllowRenewal),
-		t.AllowedKeyTypes, t.PriceCents, t.Description, t.SubjectTmplUUID, t.ExtensionTmplUUID, t.CreatedAt, t.UpdatedAt,
+		t.ApplyModes, t.Description, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -184,7 +220,7 @@ func (s *Server) handleCreateCertApplyTemplate(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusCreated, t)
 }
 
-// handleUpdateCertApplyTemplate 更新证书申请模板（管理员）。
+// handleUpdateCertApplyTemplate 更新证书开通模板（管理员）。
 func (s *Server) handleUpdateCertApplyTemplate(w http.ResponseWriter, r *http.Request) {
 	tmplUUID := r.PathValue("uuid")
 	var t storage.CertApplyTemplate
@@ -198,22 +234,22 @@ func (s *Server) handleUpdateCertApplyTemplate(w http.ResponseWriter, r *http.Re
 	}
 
 	res, err := s.db.ExecContext(r.Context(),
-		`UPDATE cert_apply_templates SET name=?, issuance_tmpl_uuid=?, valid_days=?, ca_uuid=?, enabled=?, require_approval=?,
-		 allow_renewal=?, allowed_key_types=?, price_cents=?, description=?, subject_tmpl_uuid=?, extension_tmpl_uuid=?, updated_at=?
+		`UPDATE cert_apply_templates SET name=?, issuance_tmpl_uuid=?, enabled=?, require_approval=?,
+		 allow_renewal=?, apply_modes=?, description=?, updated_at=?
 		 WHERE uuid=?`,
-		t.Name, t.IssuanceTmplUUID, t.ValidDays, t.CAUUID,
+		t.Name, t.IssuanceTmplUUID,
 		storage.BoolToInt(t.Enabled), storage.BoolToInt(t.RequireApproval), storage.BoolToInt(t.AllowRenewal),
-		t.AllowedKeyTypes, t.PriceCents, t.Description, t.SubjectTmplUUID, t.ExtensionTmplUUID, time.Now(), tmplUUID,
+		t.ApplyModes, t.Description, time.Now(), tmplUUID,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		writeError(w, http.StatusNotFound, "证书申请模板不存在")
+		writeError(w, http.StatusNotFound, "证书开通模板不存在")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "证书申请模板已更新"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "证书开通模板已更新"})
 }
 
 // handleDeleteCertApplyTemplate 删除证书申请模板（管理员）。

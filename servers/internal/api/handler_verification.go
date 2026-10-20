@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -180,12 +181,20 @@ func (s *Server) handleStartSubjectIdentity(w http.ResponseWriter, r *http.Reque
 	if strings.HasPrefix(req.ReturnURL, "/") && !strings.HasPrefix(req.ReturnURL, "//") {
 		ret = base + req.ReturnURL
 	}
-	url, err := s.identityStore.StartIdentity(r.Context(), providerUUID, info.UUID, claims.UserUUID, base, ret)
+	// 主体字段用于向实名服务预填姓名 / 证件号
+	fields := map[string]string{}
+	json.Unmarshal([]byte(info.FieldValues), &fields) //nolint:errcheck
+	target, err := s.identityStore.StartIdentity(r.Context(), providerUUID, info.UUID, claims.UserUUID, base, ret, fields)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"redirect_url": url})
+	// 回调地址由服务端生成，返回给前端便于展示/人工配置
+	callbackURL := base + "/api/identity/callback/" + providerUUID
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"redirect_url": target,
+		"callback_url": callbackURL,
+	})
 }
 
 // handleIdentityCallback POST /api/identity/callback/{provider}：第三方实名结果回调（HMAC 签名）。
@@ -200,25 +209,66 @@ func (s *Server) handleIdentityCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	providerUUID := r.PathValue("provider")
-	res, err := s.identityStore.HandleCallback(r.Context(), providerUUID, body, r.Header.Get("X-Signature"))
+	res, respBody, err := s.identityStore.HandleCallback(r.Context(), providerUUID, r, body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.applyIdentityResult(r, providerUUID, res)
+	// 第三方通常只关心 HTTP 状态码与业务码，按接口配置的返回内容回写
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write(respBody) //nolint:errcheck
+}
+
+// applyIdentityResult 把实名结果同步到主体信息状态（通过则自动审核通过，失败则驳回）。
+func (s *Server) applyIdentityResult(r *http.Request, providerUUID string, res *identity.CallbackResult) {
+	if res == nil {
 		return
 	}
 	if res.Passed {
 		if err := s.verifySvc.MarkSubjectIdentityPassed(r.Context(), res.SubjectInfoUUID, providerUUID); err != nil &&
 			!strings.Contains(err.Error(), "不能审核通过") {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			slog.Warn("实名通过后更新主体信息失败", "subject_info", res.SubjectInfoUUID, "error", err)
 		}
-	} else {
-		reason := "实名认证未通过"
-		if res.Message != "" {
-			reason += "：" + res.Message
-		}
-		s.verifySvc.RejectSubjectInfoWithReason(r.Context(), res.SubjectInfoUUID, "identity:"+providerUUID, reason) //nolint:errcheck
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "ok"})
+	reason := "实名认证未通过"
+	if res.Message != "" {
+		reason += "：" + res.Message
+	}
+	s.verifySvc.RejectSubjectInfoWithReason(r.Context(), res.SubjectInfoUUID, "identity:"+providerUUID, reason) //nolint:errcheck
+}
+
+// handleIdentityReturn GET /api/identity/return/{session}：第三方认证完成后跳回本平台的落地页。
+// 真实结果以查询接口为准，避免"用户手工构造 return 参数即视为通过"。
+func (s *Server) handleIdentityReturn(w http.ResponseWriter, r *http.Request) {
+	if s.identityStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "实名认证未启用")
+		return
+	}
+	sessionUUID := r.PathValue("session")
+	sess, err := s.identityStore.GetSession(r.Context(), sessionUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	res, qerr := s.identityStore.QueryIdentity(r.Context(), sess.ProviderUUID, sessionUUID)
+	if qerr != nil {
+		// 查询失败不当作失败：保持 pending，由用户在页面重新发起
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":  sess.Status,
+			"pending": true,
+			"message": qerr.Error(),
+		})
+		return
+	}
+	s.applyIdentityResult(r, sess.ProviderUUID, res)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  map[bool]string{true: "passed", false: "failed"}[res.Passed],
+		"passed":  res.Passed,
+		"message": res.Message,
+	})
 }
 
 // ---- 扩展信息 ----
@@ -498,6 +548,8 @@ func (s *Server) handleSaveVerifyProvider(w http.ResponseWriter, r *http.Request
 		return
 	}
 	p.UUID = r.PathValue("uuid") // POST 为空（创建），PUT 为更新
+	// 历史驱动名（webhook / wechat）在保存时统一转换为新名字
+	p.Driver = identity.NormalizeDriver(p.Driver)
 	if err := s.identityStore.Save(r.Context(), &p); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -518,24 +570,115 @@ func (s *Server) handleDeleteVerifyProvider(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]string{"message": "已删除"})
 }
 
-// handleTestVerifyProvider POST /api/verify-providers/{uuid}/test：邮件接口发送测试邮件。
+// handleSetDefaultVerifyProvider POST /api/verify-providers/{uuid}/default：设为同类中的默认接口。
+func (s *Server) handleSetDefaultVerifyProvider(w http.ResponseWriter, r *http.Request) {
+	if s.identityStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "认证接口服务未启用")
+		return
+	}
+	providerUUID := r.PathValue("uuid")
+	if err := s.identityStore.SetDefault(r.Context(), providerUUID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	provider, _ := s.identityStore.Get(r.Context(), providerUUID)
+	claims := claimsFromCtx(r.Context())
+	name := ""
+	if provider != nil {
+		name = provider.Name
+	}
+	s.auditIdentity(r, "set_default_provider", providerUUID, name)
+	_ = claims
+	writeJSON(w, http.StatusOK, map[string]string{"message": "已设为默认接口"})
+}
+
+// handleTestVerifyProvider POST /api/verify-providers/{uuid}/test：按接口类型做连通性测试。
+//
+//   - 邮件接口：实际发送一封测试邮件（需要 to）
+//   - 域名接口：解析 / 抓取一个测试域名（需要 domain；dry_run 时只回显将要执行的检查）
+//   - 实名接口：检查必填配置是否齐全，避免"配置缺项直到用户点击才报错"
 func (s *Server) handleTestVerifyProvider(w http.ResponseWriter, r *http.Request) {
 	if s.identityStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "认证接口服务未启用")
 		return
 	}
 	var req struct {
-		To string `json:"to"`
+		To     string `json:"to"`
+		Domain string `json:"domain"`
+		DryRun bool   `json:"dry_run"`
 	}
 	json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
-	if !strings.Contains(req.To, "@") {
-		writeError(w, http.StatusBadRequest, "请填写接收测试邮件的邮箱")
+
+	provider, err := s.identityStore.Get(r.Context(), r.PathValue("uuid"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if err := s.identityStore.SendMail(r.Context(), r.PathValue("uuid"), req.To,
-		"OpenCert 邮件接口测试", "这是一封测试邮件，说明邮件接口配置正确。"); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if !provider.Enabled {
+		writeError(w, http.StatusBadRequest, "接口已停用，请先启用")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "测试邮件已发送"})
+
+	switch provider.Kind {
+	case identity.KindEmail:
+		if !strings.Contains(req.To, "@") {
+			writeError(w, http.StatusBadRequest, "请填写接收测试邮件的邮箱")
+			return
+		}
+		if err := s.identityStore.SendVia(r.Context(), provider.UUID, req.To,
+			"OpenCert 邮件接口测试", "这是一封测试邮件，说明邮件接口配置正确。"); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "message": "测试邮件已发送"})
+
+	case identity.KindDomain:
+		cfg, err := s.identityStore.DomainConfigForProvider(r.Context(), provider.UUID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.DryRun || strings.TrimSpace(req.Domain) == "" {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok": true, "dry_run": true,
+				"method":        cfg.Method,
+				"record_prefix": cfg.RecordPrefix,
+				"path_prefix":   cfg.PathPrefix,
+				"port":          cfg.Port,
+				"resolver":      cfg.Resolver,
+				"timeout_s":     int(cfg.Timeout.Seconds()),
+				"message":       "配置已生效；填入域名后可执行一次真实校验",
+			})
+			return
+		}
+		if err := s.verifySvc.TestDomainProvider(r.Context(), cfg, strings.TrimSpace(req.Domain)); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "message": "域名校验通过"})
+
+	case identity.KindIdentity:
+		// 实名接口需要用户配合才能走完整流程，这里只校验配置完整性
+		missing := []string{}
+		for _, f := range identity.Drivers {
+			if f.Kind != identity.KindIdentity || f.Driver != identity.NormalizeDriver(provider.Driver) {
+				continue
+			}
+			for _, field := range f.Fields {
+				if field.Required && strings.TrimSpace(provider.Config[field.Key]) == "" {
+					missing = append(missing, field.Label)
+				}
+			}
+		}
+		if len(missing) > 0 {
+			writeError(w, http.StatusBadRequest, "以下必填项未配置："+strings.Join(missing, "、"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok": true, "message": "配置完整；真实认证需由用户在申请流程中发起",
+		})
+
+	default:
+		writeError(w, http.StatusBadRequest, "该接口不支持测试")
+	}
 }

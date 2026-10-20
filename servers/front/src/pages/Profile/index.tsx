@@ -281,7 +281,7 @@ const Profile: React.FC = () => {
                 : [{ label: '默认渠道', value: 'default' }]}
             />
           </Form.Item>
-          <Alert type="info" showIcon message="未接入在线支付时，可由管理员确认线下到账后入账" />
+          <Alert type="info" showIcon message="如不便在线支付，可选择线下付款并联系客服确认到账" />
         </Form>
       </Modal>
 

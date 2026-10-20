@@ -253,11 +253,41 @@ func deriveLabel(d string) string {
 
 // TypePolicy 是某一类扩展信息（域名/邮箱/IP）的验证策略。
 type TypePolicy struct {
-	Enabled      bool     `json:"enabled"`       // 是否允许此类扩展信息
-	Mode         string   `json:"mode"`          // manual/auto/none
-	Methods      []string `json:"methods"`       // 域名：dns/http/tls；IP：http；邮箱：email
-	ProviderUUID string   `json:"provider_uuid"` // 邮箱验证使用的邮件接口（空 = 系统默认 SMTP）
-	Validity     string   `json:"validity"`      // 验证有效期：1d/7d/30d...
+	Enabled bool     `json:"enabled"` // 是否允许此类扩展信息
+	Mode    string   `json:"mode"`    // manual/auto/none
+	Methods []string `json:"methods"` // 域名：dns/http/tls；IP：http；邮箱：email
+	// ProviderUUIDs 是所选验证接口（按顺序优先使用；为空使用系统默认接口）。
+	// 域名对应「域名验证接口」，邮箱对应「邮件接口」。
+	ProviderUUIDs []string `json:"provider_uuids,omitempty"`
+	// ProviderUUID 是历史字段（单个接口），读取时并入 ProviderUUIDs。
+	ProviderUUID string `json:"provider_uuid,omitempty"`
+	Validity     string `json:"validity"` // 验证有效期：1d/7d/30d...
+}
+
+// Providers 返回生效的接口 UUID 列表（兼容历史单值字段，去重且去空）。
+func (tp *TypePolicy) Providers() []string {
+	if tp == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range append([]string{tp.ProviderUUID}, tp.ProviderUUIDs...) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// PrimaryProvider 返回首选接口 UUID（无配置时为空，表示使用系统默认接口）。
+func (tp *TypePolicy) PrimaryProvider() string {
+	if ids := tp.Providers(); len(ids) > 0 {
+		return ids[0]
+	}
+	return ""
 }
 
 // ExtensionPolicy 是扩展信息模板的验证策略集合。

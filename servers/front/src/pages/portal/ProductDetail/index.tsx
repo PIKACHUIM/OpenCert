@@ -143,13 +143,12 @@ const PortalProductDetail: React.FC = () => {
 
       <Divider style={{ margin: '48px 0 28px' }} />
       <Title level={4} style={{ marginBottom: 6 }}>选择套餐</Title>
-      <Text style={{ color: '#6b7280' }}>实际价格、库存与开通参数以服务端为准</Text>
+      <Text style={{ color: '#6b7280' }}>价格与库存以下单时页面显示为准</Text>
 
       {skus.length === 0 ? (
         <Alert
           type="info" showIcon style={{ marginTop: 20 }}
-          message="该产品暂未配置可购买套餐"
-          description="管理员需在控制台为商品配置规格（价格、时长与开通模板）后才能开放购买。"
+          message="该产品即将上线，敬请期待"
         />
       ) : (
         <Row gutter={[20, 20]} style={{ marginTop: 20 }}>

@@ -128,6 +128,9 @@ func (s *Slot) Mechanisms() []pkcs11types.MechanismType {
 		pkcs11types.CKM_ECDSA_SHA256,
 		pkcs11types.CKM_ECDSA_SHA384,
 		pkcs11types.CKM_ECDSA_SHA512,
+		// 国密：云端按 SM2WithSM3 签名（服务端计算 Z 值与 SM3）
+		pkcs11types.CKM_SM2,
+		pkcs11types.CKM_SM3,
 	}
 }
 
@@ -551,6 +554,9 @@ func mechanismToString(t pkcs11types.MechanismType) string {
 		return "RSA_PKCS"
 	case pkcs11types.CKM_RSA_PKCS_OAEP:
 		return "RSA_OAEP"
+	case pkcs11types.CKM_SM2:
+		// 服务端按 GB/T 32918 计算 SM3(Z‖M)，客户端只上传原文
+		return "SM2_SM3"
 	default:
 		return fmt.Sprintf("UNKNOWN_0x%X", uint32(t))
 	}

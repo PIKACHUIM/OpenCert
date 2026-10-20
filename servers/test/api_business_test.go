@@ -249,17 +249,27 @@ func TestAPIBusinessFlow(t *testing.T) {
 
 	var applyTmpl struct {
 		UUID            string `json:"uuid"`
-		SubjectTmplUUID string `json:"subject_tmpl_uuid"`
 		RequireApproval bool   `json:"require_approval"`
 	}
-	env.mustCall(http.MethodPost, "/api/templates/cert-apply", admin, map[string]interface{}{
-		"name": "集成开通模板", "issuance_tmpl_uuid": issuance.UUID, "valid_days": 365, "ca_uuid": caResp.UUID,
-		"enabled": true, "require_approval": false, "allow_renewal": true, "allowed_key_types": `["ec256"]`,
+	// 技术配置（CA、有效期、算法、资料要求）统一绑定在颁发模板上
+	env.mustCall(http.MethodPut, "/api/templates/issuance/"+issuance.UUID, admin, map[string]interface{}{
+		"name": "集成颁发模板", "category": "ssl", "enabled": true, "valid_days": "[365]", "default_valid_days": 365,
+		"allowed_key_types": `["ec256"]`, "allowed_ca_uuids": fmt.Sprintf(`["%s"]`, caResp.UUID),
+		"default_ca_uuid":   caResp.UUID,
 		"subject_tmpl_uuid": subjectTmpl.UUID, "extension_tmpl_uuid": extTmpl.UUID,
+	}, nil)
+	// 开通模板只管业务规则，旧的技术字段会被忽略
+	env.mustCall(http.MethodPost, "/api/templates/cert-apply", admin, map[string]interface{}{
+		"name": "集成开通模板", "issuance_tmpl_uuid": issuance.UUID,
+		"enabled": true, "require_approval": false, "allow_renewal": true,
 	}, &applyTmpl)
-	if applyTmpl.SubjectTmplUUID != subjectTmpl.UUID || applyTmpl.RequireApproval {
-		t.Fatalf("开通模板绑定/审批配置不正确: %+v", applyTmpl)
+	if applyTmpl.RequireApproval {
+		t.Fatalf("开通模板审批配置不正确: %+v", applyTmpl)
 	}
+	// 可申请方式非法应被拒绝
+	env.mustFail(http.MethodPost, "/api/templates/cert-apply", admin, map[string]interface{}{
+		"name": "非法申请方式", "issuance_tmpl_uuid": issuance.UUID, "enabled": true, "apply_modes": `["bogus"]`,
+	})
 	// 引用不存在的颁发模板应被拒绝
 	env.mustFail(http.MethodPost, "/api/templates/cert-apply", admin, map[string]interface{}{
 		"name": "断链模板", "issuance_tmpl_uuid": "missing", "enabled": true,

@@ -373,6 +373,149 @@ func TestContractInitPIN(t *testing.T) {
 		"Login(InitPIN 后的 PIN)")
 }
 
+// ---- 国密：SM2 / SM3 ----
+
+// TestContractSM2KeyGenAndSign 验证 CKM_SM2_KEY_PAIR_GEN 生成真实 SM2 密钥，
+// 并且 CKM_SM2 的输入是原文、签名为 64 字节 r‖s。
+func TestContractSM2KeyGenAndSign(t *testing.T) {
+	h := newContractFixture(t)
+	sid := openAndLogin(t, h)
+
+	kp := invokeOK(t, h.handleGenerateKeyPair,
+		fmt.Sprintf(`{"session_id":%d,"mechanism":%d}`, sid, uint32(pkcs11types.CKM_SM2_KEY_PAIR_GEN)),
+		"GenerateKeyPair(SM2)")
+	handle := uint32Field(t, kp, "priv_handle", "GenerateKeyPair(SM2)")
+	if handle == 0 {
+		t.Fatal("SM2 GenerateKeyPair 返回句柄 0")
+	}
+
+	invokeOK(t, h.handleSignInit,
+		fmt.Sprintf(`{"session_id":%d,"mechanism":%d,"key_handle":%d}`,
+			sid, uint32(pkcs11types.CKM_SM2), handle),
+		"SignInit(SM2)")
+
+	data := base64.StdEncoding.EncodeToString([]byte("国密签名原文"))
+	signed := invokeOK(t, h.handleSign,
+		fmt.Sprintf(`{"session_id":%d,"key_handle":%d,"mechanism":%d,"data":"%s"}`,
+			sid, handle, uint32(pkcs11types.CKM_SM2), data),
+		"Sign(SM2)")
+
+	sigB64, _ := signed["signature"].(string)
+	sig, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil {
+		t.Fatalf("SM2 签名不是合法 base64: %v", err)
+	}
+	if len(sig) != 64 {
+		t.Fatalf("SM2 签名长度应为 64（r‖s），实际 %d", len(sig))
+	}
+}
+
+// TestContractSM3Digest 验证 CKM_SM3 摘要链路的字段与结果。
+func TestContractSM3Digest(t *testing.T) {
+	h := newContractFixture(t)
+	sid := openAndLogin(t, h)
+
+	invokeOK(t, h.handleDigestInit,
+		fmt.Sprintf(`{"session_id":%d,"mechanism":%d}`, sid, uint32(pkcs11types.CKM_SM3)),
+		"DigestInit(SM3)")
+
+	out := invokeOK(t, h.handleDigest,
+		fmt.Sprintf(`{"session_id":%d,"data":"%s"}`, sid, base64.StdEncoding.EncodeToString([]byte("abc"))),
+		"Digest(SM3)")
+
+	digestB64, _ := out["digest"].(string)
+	got, err := base64.StdEncoding.DecodeString(digestB64)
+	if err != nil {
+		t.Fatalf("SM3 摘要不是合法 base64: %v", err)
+	}
+	const wantHex = "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0"
+	if fmt.Sprintf("%x", got) != wantHex {
+		t.Fatalf("SM3(\"abc\") 结果不正确: %x", got)
+	}
+}
+
+// TestContractSM2MechanismInfo 验证机制信息表把 SM2 报为 256 位可签名/验签/加解密。
+func TestContractSM2MechanismInfo(t *testing.T) {
+	h := newContractFixture(t)
+
+	data := invokeOK(t, h.handleGetMechanismInfo,
+		fmt.Sprintf(`{"slot_id":1,"mechanism":%d}`, uint32(pkcs11types.CKM_SM2)),
+		"GetMechanismInfo(SM2)")
+
+	if v := uint32Field(t, data, "min_key_size", "GetMechanismInfo"); v != 256 {
+		t.Errorf("SM2 min_key_size = %d，期望 256", v)
+	}
+	if v := uint32Field(t, data, "max_key_size", "GetMechanismInfo"); v != 256 {
+		t.Errorf("SM2 max_key_size = %d，期望 256", v)
+	}
+}
+
+// ---- 国密对称加密：SM4 ----
+
+// TestContractSM4SecretKeyCrypt 验证 C_CreateObject 创建 SM4 密钥对象后，
+// 通过 EncryptInit/Encrypt/DecryptInit/Decrypt 完成一次 CBC 往返，
+// 同时覆盖驱动把 IV 放进 mech_param 的契约。
+func TestContractSM4SecretKeyCrypt(t *testing.T) {
+	h := newContractFixture(t)
+	sid := openAndLogin(t, h)
+
+	// C_CreateObject：CKO_SECRET_KEY + CKK_SM4 + CKA_VALUE
+	created := invokeOK(t, h.handleCreateObject,
+		fmt.Sprintf(`{"session_id":%d,"attr_count":4,"template":[
+			{"type":%d,"value":"%s"},
+			{"type":%d,"value":"%s"},
+			{"type":%d,"value":"%s"},
+			{"type":%d,"value":"%s"}]}`,
+			sid,
+			uint32(pkcs11types.CKA_CLASS),
+			base64.StdEncoding.EncodeToString(bigEndianUint32(uint32(pkcs11types.CKO_SECRET_KEY))),
+			uint32(pkcs11types.CKA_KEY_TYPE),
+			base64.StdEncoding.EncodeToString(bigEndianUint32(uint32(pkcs11types.CKK_SM4))),
+			uint32(pkcs11types.CKA_VALUE),
+			base64.StdEncoding.EncodeToString([]byte("0123456789abcdef")),
+			uint32(pkcs11types.CKA_LABEL),
+			base64.StdEncoding.EncodeToString([]byte("sm4-contract")),
+		),
+		"CreateObject(SM4)")
+	keyHandle := uint32Field(t, created, "handle", "CreateObject(SM4)")
+
+	iv := base64.StdEncoding.EncodeToString([]byte("abcdefghijklmnop"))
+	invokeOK(t, h.handleEncryptInit,
+		fmt.Sprintf(`{"session_id":%d,"mechanism":%d,"key_handle":%d,"mech_param":"%s"}`,
+			sid, uint32(pkcs11types.CKM_SM4_CBC), keyHandle, iv),
+		"EncryptInit(SM4-CBC)")
+
+	plaintext := []byte("sm4 ipc contract payload")
+	enc := invokeOK(t, h.handleEncrypt,
+		fmt.Sprintf(`{"session_id":%d,"key_handle":%d,"mechanism":%d,"data":"%s"}`,
+			sid, keyHandle, uint32(pkcs11types.CKM_SM4_CBC),
+			base64.StdEncoding.EncodeToString(plaintext)),
+		"Encrypt(SM4-CBC)")
+	ctB64, _ := enc["ciphertext"].(string)
+	ciphertext, err := base64.StdEncoding.DecodeString(ctB64)
+	if err != nil || len(ciphertext) == 0 {
+		t.Fatalf("密文无效: %v", err)
+	}
+
+	invokeOK(t, h.handleDecryptInit,
+		fmt.Sprintf(`{"session_id":%d,"mechanism":%d,"key_handle":%d,"mech_param":"%s"}`,
+			sid, uint32(pkcs11types.CKM_SM4_CBC), keyHandle, iv),
+		"DecryptInit(SM4-CBC)")
+	dec := invokeOK(t, h.handleDecrypt,
+		fmt.Sprintf(`{"session_id":%d,"key_handle":%d,"mechanism":%d,"data":"%s"}`,
+			sid, keyHandle, uint32(pkcs11types.CKM_SM4_CBC), ctB64),
+		"Decrypt(SM4-CBC)")
+
+	ptB64, _ := dec["plaintext"].(string)
+	got, err := base64.StdEncoding.DecodeString(ptB64)
+	if err != nil {
+		t.Fatalf("明文不是合法 base64: %v", err)
+	}
+	if string(got) != string(plaintext) {
+		t.Fatalf("SM4 往返结果不一致: %q", got)
+	}
+}
+
 // ---- 未实现能力的返回码 ----
 
 func TestContractUnsupportedMechanism(t *testing.T) {

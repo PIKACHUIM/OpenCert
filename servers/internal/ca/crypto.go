@@ -14,20 +14,25 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+
+	"github.com/emmansun/gmsm/sm2"
 )
 
 // parseCertPEM 解析 PEM 格式的证书（取第一个证书）。
+//
+// 同时兼容 SM2 证书（标准库无法识别其签名算法，回退到国密库解析）。
 func parseCertPEM(certPEM string) (*x509.Certificate, error) {
 	block, _ := pem.Decode([]byte(certPEM))
 	if block == nil || block.Type != "CERTIFICATE" {
 		return nil, fmt.Errorf("无效的 PEM 证书")
 	}
-	return x509.ParseCertificate(block.Bytes)
+	cert, _, err := parseCertificateAny(block.Bytes)
+	return cert, err
 }
 
-// parsePrivateKeyAny 依次尝试以 PKCS8 / PKCS1 RSA / EC 格式解析私钥 DER。
+// parsePrivateKeyAny 依次尝试以 PKCS8（含 SM2）/ PKCS1 RSA / EC 格式解析私钥 DER。
 func parsePrivateKeyAny(der []byte) (crypto.PrivateKey, error) {
-	if k, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+	if k, err := parsePrivateKeyAnyImpl(der); err == nil {
 		return k, nil
 	}
 	if k, err := x509.ParsePKCS1PrivateKey(der); err == nil {
@@ -45,11 +50,11 @@ func verifyKeyPair(cert *x509.Certificate, priv crypto.PrivateKey) error {
 	if err != nil {
 		return err
 	}
-	privPubDER, err := x509.MarshalPKIXPublicKey(privPub)
+	privPubDER, err := marshalPublicKeyAny(privPub)
 	if err != nil {
 		return fmt.Errorf("序列化私钥对应公钥失败: %w", err)
 	}
-	certPubDER, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	certPubDER, err := marshalPublicKeyAny(cert.PublicKey)
 	if err != nil {
 		return fmt.Errorf("序列化证书公钥失败: %w", err)
 	}
@@ -68,6 +73,8 @@ func extractPublicKey(priv crypto.PrivateKey) (crypto.PublicKey, error) {
 		return &k.PublicKey, nil
 	case ed25519.PrivateKey:
 		return k.Public(), nil
+	case *sm2.PrivateKey:
+		return sm2PublicKeyOf(k), nil
 	default:
 		return nil, fmt.Errorf("不支持的私钥类型 %T", priv)
 	}
@@ -79,12 +86,18 @@ func decryptPrivateKey(masterKey, encData []byte) (crypto.Signer, error) {
 	if err != nil {
 		return nil, err
 	}
+	return signerFromDER(privDER)
+}
 
-	key, err := x509.ParsePKCS8PrivateKey(privDER)
+// signerFromDER 从 PKCS#8 私钥 DER 构造 crypto.Signer（支持 SM2）。
+func signerFromDER(privDER []byte) (crypto.Signer, error) {
+	key, err := parsePrivateKeyAnyImpl(privDER)
 	if err != nil {
 		return nil, fmt.Errorf("解析私钥失败: %w", err)
 	}
-
+	if k, ok := key.(*sm2.PrivateKey); ok {
+		return asSM2Signer(k), nil
+	}
 	signer, ok := key.(crypto.Signer)
 	if !ok {
 		return nil, fmt.Errorf("私钥不支持签名操作")

@@ -6,8 +6,33 @@ package certprop
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/x509"
 	"log/slog"
+
+	"github.com/emmansun/gmsm/sm2"
+	"github.com/emmansun/gmsm/smx509"
 )
+
+// IsSM2Cert 判断 DER 证书是否为国密 SM2 证书。
+//
+// Windows 的 CNG 没有国密算法标识，KSP 无法承载 SM2 私钥；
+// 这类证书只在 PKCS#11 中使用，不注册到系统证书存储。
+func IsSM2Cert(der []byte) bool {
+	if len(der) == 0 {
+		return false
+	}
+	if cert, err := x509.ParseCertificate(der); err == nil {
+		pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+		return ok && pub.Curve == sm2.P256()
+	}
+	gmCert, err := smx509.ParseCertificate(der)
+	if err != nil {
+		return false
+	}
+	pub, ok := gmCert.PublicKey.(*ecdsa.PublicKey)
+	return ok && pub.Curve == sm2.P256()
+}
 
 // ContainerPrefix 是密钥容器名称前缀。
 const ContainerPrefix = "OpenCert_"

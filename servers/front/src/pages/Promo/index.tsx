@@ -295,8 +295,6 @@ const PromoPage: React.FC = () => {
               key: 'plans', label: '订阅套餐',
               children: (
                 <>
-                  <Alert type="info" showIcon style={{ marginBottom: 12 }}
-                    message="套餐决定周期内的证书类型、张数、单证有效期与吊销规则；配置说明见帮助文档" />
                   <Space style={{ marginBottom: 12 }}>
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => openPlan()}>新增套餐</Button>
                     <Button icon={<TagsOutlined />} onClick={() => { grantForm.resetFields(); setGrantOpen(true); }}>发放订阅</Button>

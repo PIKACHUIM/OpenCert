@@ -258,6 +258,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/cas/{uuid}", s.adminOnly(s.handleDeleteCA))
 	mux.HandleFunc("POST /api/cas/{uuid}/import-chain", s.adminOnly(s.handleImportCAChain))
 	mux.HandleFunc("GET /api/cas/{uuid}/chain", s.authMiddleware(s.handleGetCAChain))
+	mux.HandleFunc("GET /api/cas/{uuid}/download", s.authMiddleware(s.handleDownloadCA))
 	mux.HandleFunc("GET /api/cas/{uuid}/chain-view", s.authMiddleware(s.handleGetCAChainView))
 	mux.HandleFunc("GET /api/cas/{uuid}/revoked", s.authMiddleware(s.handleListRevokedCerts))
 	mux.HandleFunc("POST /api/cas/{uuid}/revoke", s.adminOnly(s.handleRevokeCert))
@@ -288,11 +289,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// 密钥用途模板管理（管理员）
 	mux.HandleFunc("GET /api/templates/key-usage", s.authMiddleware(s.handleListKeyUsageTemplates))
 	mux.HandleFunc("POST /api/templates/key-usage", s.adminOnly(s.handleCreateKeyUsageTemplate))
+	mux.HandleFunc("PUT /api/templates/key-usage/{uuid}", s.adminOnly(s.handleUpdateKeyUsageTemplate))
 	mux.HandleFunc("DELETE /api/templates/key-usage/{uuid}", s.adminOnly(s.handleDeleteKeyUsageTemplate))
 
 	// 证书拓展模板管理（管理员）
 	mux.HandleFunc("GET /api/templates/cert-ext", s.authMiddleware(s.handleListCertExtTemplates))
 	mux.HandleFunc("POST /api/templates/cert-ext", s.adminOnly(s.handleCreateCertExtTemplate))
+	mux.HandleFunc("PUT /api/templates/cert-ext/{uuid}", s.adminOnly(s.handleUpdateCertExtTemplate))
 	mux.HandleFunc("DELETE /api/templates/cert-ext/{uuid}", s.adminOnly(s.handleDeleteCertExtTemplate))
 
 	// 审计日志查询（管理员）
@@ -305,14 +308,22 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/templates/cert-apply/{uuid}", s.adminOnly(s.handleUpdateCertApplyTemplate))
 	mux.HandleFunc("DELETE /api/templates/cert-apply/{uuid}", s.adminOnly(s.handleDeleteCertApplyTemplate))
 
-	// 存储区域管理（管理员）
+	// 私钥存储区域管理（读取需认证，写入需管理员）
+	// 存储区域决定卡片私钥落在哪里：本地加密库 / TPM / HSM（PKCS#11）
 	mux.HandleFunc("GET /api/storage-zones", s.authMiddleware(s.handleListStorageZones))
 	mux.HandleFunc("POST /api/storage-zones", s.adminOnly(s.handleCreateStorageZone))
+	mux.HandleFunc("PUT /api/storage-zones/{uuid}", s.adminOnly(s.handleUpdateStorageZone))
 	mux.HandleFunc("DELETE /api/storage-zones/{uuid}", s.adminOnly(s.handleDeleteStorageZone))
+	mux.HandleFunc("POST /api/storage-zones/{uuid}/check", s.adminOnly(s.handleCheckStorageZone))
+	// 驱动能力清单、本机 PKCS#11 模块扫描、连接测试
+	mux.HandleFunc("GET /api/storage-zones/drivers", s.authMiddleware(s.handleListKeyDrivers))
+	mux.HandleFunc("GET /api/storage-zones/scan", s.adminOnly(s.handleScanKeyModules))
+	mux.HandleFunc("POST /api/storage-zones/probe", s.adminOnly(s.handleProbeKeyBackend))
 
 	// OID 管理（管理员）
 	mux.HandleFunc("GET /api/oids", s.authMiddleware(s.handleListOIDs))
 	mux.HandleFunc("POST /api/oids", s.adminOnly(s.handleCreateOID))
+	mux.HandleFunc("PUT /api/oids/{uuid}", s.adminOnly(s.handleUpdateOID))
 	mux.HandleFunc("DELETE /api/oids/{uuid}", s.adminOnly(s.handleDeleteOID))
 
 	// 元数据接口（静态预置数据，需要认证即可访问）
@@ -354,6 +365,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/extension-infos/{uuid}/reject", s.operatorOnly(s.handleRejectExtensionInfo))
 	mux.HandleFunc("DELETE /api/extension-infos/{uuid}", s.writeOnly(s.handleDeleteExtensionInfo))
 
+	// 系统设置：只保留"系统邮件 / 系统信息"
+	mux.HandleFunc("GET /api/system/info", s.adminOnly(s.handleSystemInfo))
+	mux.HandleFunc("GET /api/system/mail", s.adminOnly(s.handleGetSystemMail))
+	mux.HandleFunc("PUT /api/system/mail", s.adminOnly(s.handleUpdateSystemMail))
+
+	// 管理员代用户提交证书申请（operator 及以上）
+	mux.HandleFunc("GET /api/admin/apply-context", s.operatorOnly(s.handleAdminApplyContext))
+	mux.HandleFunc("POST /api/admin/cert-applications", s.operatorOnly(s.handleAdminCreateApplication))
+
 	// 身份认证审核与自动审核接口（管理员）
 	mux.HandleFunc("GET /api/admin/identity-reviews", s.operatorOnly(s.handleListIdentityReviews))
 	mux.HandleFunc("GET /api/verify-providers", s.adminOnly(s.handleListVerifyProviders))
@@ -361,8 +381,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/verify-providers/{uuid}", s.adminOnly(s.handleSaveVerifyProvider))
 	mux.HandleFunc("DELETE /api/verify-providers/{uuid}", s.adminOnly(s.handleDeleteVerifyProvider))
 	mux.HandleFunc("POST /api/verify-providers/{uuid}/test", s.adminOnly(s.handleTestVerifyProvider))
-	// 实名认证结果回调（第三方调用，HMAC 签名校验）
+	mux.HandleFunc("POST /api/verify-providers/{uuid}/default", s.adminOnly(s.handleSetDefaultVerifyProvider))
+	// 实名认证结果回调（第三方调用，按接口配置校验签名）与完成后跳回的落地页
 	mux.HandleFunc("POST /api/identity/callback/{provider}", s.handleIdentityCallback)
+	mux.HandleFunc("GET /api/identity/callback/{provider}", s.handleIdentityCallback)
+	mux.HandleFunc("GET /api/identity/return/{session}", s.handleIdentityReturn)
 
 	// OCSP 响应服务与证书策略（管理员）
 	mux.HandleFunc("GET /api/ocsp-responders", s.adminOnly(s.handleListOCSPResponders))
@@ -507,6 +530,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// ACME 配置管理（管理员）
 	mux.HandleFunc("GET /api/acme-configs", s.adminOnly(s.handleListACMEConfigs))
 	mux.HandleFunc("POST /api/acme-configs", s.adminOnly(s.handleCreateACMEConfig))
+	mux.HandleFunc("PUT /api/acme-configs/{uuid}", s.adminOnly(s.handleUpdateACMEConfig))
 	mux.HandleFunc("DELETE /api/acme-configs/{uuid}", s.adminOnly(s.handleDeleteACMEConfig))
 
 	// CT 记录管理（需要认证）

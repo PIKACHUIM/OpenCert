@@ -115,7 +115,7 @@ func (s *Server) handleACMENewAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleACMENewOrder 创建 ACME 订单（RFC 8555）。
-// 同时为每个 identifier 自动创建 Authorization，并为每个 Authorization 创建 http-01 和 dns-01 挑战。
+// 同时为每个 identifier 自动创建 Authorization，并为每个 Authorization 创建该 ACME 服务允许的挑战。
 func (s *Server) handleACMENewOrder(w http.ResponseWriter, r *http.Request) {
 	if s.acmeSvc == nil {
 		writeError(w, http.StatusServiceUnavailable, "ACME 服务未启用")
@@ -158,7 +158,13 @@ func (s *Server) handleACMENewOrder(w http.ResponseWriter, r *http.Request) {
 		order.FinalizeURL, order.UUID,
 	)
 
-	// 为每个 identifier 创建 Authorization + 两种挑战
+	// 验证方式由 ACME 服务配置决定（未配置时默认 http-01 与 dns-01）
+	challengeTypes, err := s.acmeSvc.ChallengesForPath(r.Context(), path)
+	if err != nil || len(challengeTypes) == 0 {
+		challengeTypes = acme.DefaultACMEChallenges
+	}
+
+	// 为每个 identifier 创建 Authorization + 允许的挑战
 	authzURLs := make([]string, 0, len(payload.Identifiers))
 	for _, id := range payload.Identifiers {
 		idJSON, _ := json.Marshal(id)
@@ -170,7 +176,7 @@ func (s *Server) handleACMENewOrder(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "创建授权失败: "+err.Error())
 			return
 		}
-		for _, chType := range []string{"http-01", "dns-01"} {
+		for _, chType := range challengeTypes {
 			ch := &acme.Challenge{AuthzUUID: authz.UUID, Type: chType}
 			if err := s.acmeSvc.CreateChallenge(r.Context(), ch); err != nil {
 				writeError(w, http.StatusInternalServerError, "创建挑战失败: "+err.Error())
@@ -519,6 +525,28 @@ func (s *Server) handleCreateACMEConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusCreated, cfg)
+}
+
+func (s *Server) handleUpdateACMEConfig(w http.ResponseWriter, r *http.Request) {
+	var cfg acme.Config
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	cfg.UUID = r.PathValue("uuid")
+	if cfg.Path == "" {
+		writeError(w, http.StatusBadRequest, "ACME 路径不能为空")
+		return
+	}
+	if cfg.CAUUID == "" {
+		writeError(w, http.StatusBadRequest, "请选择签发 CA")
+		return
+	}
+	if err := s.acmeSvc.UpdateConfig(r.Context(), &cfg); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
 }
 
 func (s *Server) handleDeleteACMEConfig(w http.ResponseWriter, r *http.Request) {

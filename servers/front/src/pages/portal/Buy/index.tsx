@@ -240,7 +240,7 @@ const PortalBuy: React.FC = () => {
 
             <Paragraph style={{ fontSize: 12, color: '#9ca3af', marginTop: 16, marginBottom: 0 }}>
               <SafetyOutlined style={{ marginRight: 6 }} />
-              金额由服务端根据套餐与数量实时计算，提交订单后以订单金额为准。
+              最终金额以下单确认页显示为准。
             </Paragraph>
           </Card>
         </Col>

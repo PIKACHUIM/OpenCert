@@ -16,6 +16,16 @@ func TestIssuanceTemplateCRUD(t *testing.T) {
 	svc := issuance.NewService(db)
 	ctx := context.Background()
 
+	// CA 类颁发模板必须关联带「证书签名」的密钥用途模板（KeyUsageCertSign = 1<<5）
+	caKU := &storage.KeyUsageTemplate{Name: "CA 用途", KeyUsage: 1<<5 | 1<<6, ExtKeyUsages: `[]`}
+	if err := svc.CreateKeyUsageTemplate(ctx, caKU); err != nil {
+		t.Fatalf("创建 CA 密钥用途模板失败: %v", err)
+	}
+	plainKU := &storage.KeyUsageTemplate{Name: "仅数字签名", KeyUsage: 1, ExtKeyUsages: `[]`}
+	if err := svc.CreateKeyUsageTemplate(ctx, plainKU); err != nil {
+		t.Fatalf("创建密钥用途模板失败: %v", err)
+	}
+
 	tests := []struct {
 		name    string
 		tmpl    *storage.IssuanceTemplate
@@ -29,8 +39,6 @@ func TestIssuanceTemplateCRUD(t *testing.T) {
 				ValidDays:       `[365,730]`,
 				AllowedKeyTypes: `["ec256","rsa2048"]`,
 				AllowedCAUUIDs:  `[]`,
-				PriceCents:      100,
-				Stock:           -1,
 				Category:        "tls",
 				Enabled:         true,
 			},
@@ -39,16 +47,41 @@ func TestIssuanceTemplateCRUD(t *testing.T) {
 		{
 			name: "创建 CA 颁发模板",
 			tmpl: &storage.IssuanceTemplate{
-				Name:            "中间 CA 模板",
-				IsCA:            true,
-				PathLen:         0,
-				ValidDays:       `[3650]`,
-				AllowedKeyTypes: `["rsa4096"]`,
-				AllowedCAUUIDs:  `[]`,
-				Category:        "ca",
-				Enabled:         true,
+				Name:             "中间 CA 模板",
+				IsCA:             true,
+				PathLen:          0,
+				ValidDays:        `[3650]`,
+				AllowedKeyTypes:  `["rsa4096"]`,
+				AllowedCAUUIDs:   `[]`,
+				KeyUsageTmplUUID: caKU.UUID,
+				Category:         "ca",
+				Enabled:          true,
 			},
 			wantErr: false,
+		},
+		{
+			name: "CA 模板关联无证书签名用途应失败",
+			tmpl: &storage.IssuanceTemplate{
+				Name: "错误 CA 模板", IsCA: true, ValidDays: `[3650]`, AllowedKeyTypes: `["rsa4096"]`,
+				AllowedCAUUIDs: `[]`, KeyUsageTmplUUID: plainKU.UUID, Category: "ca",
+			},
+			wantErr: true,
+		},
+		{
+			name: "CA 模板未关联密钥用途应失败",
+			tmpl: &storage.IssuanceTemplate{
+				Name: "无用途 CA 模板", IsCA: true, ValidDays: `[3650]`, AllowedKeyTypes: `["rsa4096"]`,
+				AllowedCAUUIDs: `[]`, Category: "ca",
+			},
+			wantErr: true,
+		},
+		{
+			name: "默认有效期不在可选列表应失败",
+			tmpl: &storage.IssuanceTemplate{
+				Name: "默认有效期错误", ValidDays: `[365]`, DefaultValidDays: 90, AllowedKeyTypes: `["ec256"]`,
+				AllowedCAUUIDs: `[]`, Category: "tls",
+			},
+			wantErr: true,
 		},
 		{
 			name:    "创建名称为空的模板应失败",

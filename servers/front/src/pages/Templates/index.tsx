@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Tabs, Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Space, Tag,
-  Typography, message, Popconfirm, Checkbox, Alert, Tooltip, Card,
+  Typography, message, Popconfirm, Checkbox, Tooltip, Card,
 } from 'antd';
 import { PlusOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
@@ -9,15 +9,14 @@ import {
   listIssuanceTemplates, createIssuanceTemplate, deleteIssuanceTemplate,
   listSubjectTemplates, createSubjectTemplate, deleteSubjectTemplate, updateSubjectTemplate,
   listExtensionTemplates, createExtensionTemplate, deleteExtensionTemplate, updateExtensionTemplate,
-  listKeyUsageTemplates, createKeyUsageTemplate, deleteKeyUsageTemplate,
-  listCertExtTemplates, createCertExtTemplate, deleteCertExtTemplate,
-  listKeyStorageTemplates, createKeyStorageTemplate, deleteKeyStorageTemplate,
+  listKeyUsageTemplates, createKeyUsageTemplate, updateKeyUsageTemplate, deleteKeyUsageTemplate,
+  listCertExtTemplates, createCertExtTemplate, updateCertExtTemplate, deleteCertExtTemplate,
   listCAs, listSubjectFieldMeta, listVerifyProviders,
-  listOIDs, createOID, deleteOID,
+  listOIDs, createOID, updateOID, deleteOID,
 } from '../../api';
 import type {
   IssuanceTemplate, SubjectTemplate, SubjectTemplateField, ExtensionTemplate,
-  KeyUsageTemplate, CertExtTemplate, KeyStorageTemplate, CA, SubjectFieldMeta, VerifyProvider,
+  KeyUsageTemplate, CertExtTemplate, CA, SubjectFieldMeta, VerifyProvider,
 } from '../../types';
 import HelpLink from '../../components/HelpLink';
 
@@ -78,9 +77,6 @@ const IssuanceTab: React.FC<{ cas: CA[] }> = ({ cas }) => {
 
   return (
     <>
-      <Alert type="info" showIcon style={{ marginBottom: 12 }}
-        message="颁发模板＝技术签发策略（CA、有效期、算法、密钥用途、证书扩展、密钥存储）"
-        description="价格、库存与 SAN 数量限制属于商品规格（销售管理 → 销售商品管理）；面向用户的资料与审批要求属于证书开通模板（证书模板 → 证书开通模板）。" />
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>创建颁发模板</Button>
       </div>
@@ -223,9 +219,6 @@ const SubjectTab: React.FC = () => {
 
   return (
     <>
-      <Alert type="info" showIcon style={{ marginBottom: 12 }}
-        message="主体模板定义证书主体字段的填写与验证规则"
-        description="字段名从预置列表选择（CN/O/OU/C 等）；验证方式可为人工审核、自动实名接口或免验证；域名/邮箱证书可让字段「派生」自第一个扩展信息，此时无需用户填写也无需单独审核。" />
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>创建主体模板</Button>
       </div>
@@ -416,9 +409,6 @@ const ExtensionTab: React.FC = () => {
 
   return (
     <>
-      <Alert type="info" showIcon style={{ marginBottom: 12 }}
-        message="扩展信息模板定义域名/邮箱/IP 的所有权验证方式与验证有效期"
-        description="单张证书允许的域名、邮箱、IP 数量与格式（通配符、IPv4/IPv6、邮箱后缀）在「销售管理 → 销售商品管理 → 规格」中按商品配置。" />
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>创建扩展信息模板</Button>
       </div>
@@ -444,24 +434,84 @@ const ExtensionTab: React.FC = () => {
 };
 
 // ---- 密钥用途模板 ----
+const keyUsageOptions = [
+  { value: 1 << 0, label: '数字签名' },
+  { value: 1 << 1, label: '内容承诺' },
+  { value: 1 << 2, label: '密钥加密' },
+  { value: 1 << 3, label: '数据加密' },
+  { value: 1 << 4, label: '密钥协商' },
+  { value: 1 << 5, label: '证书签名（CA）' },
+  { value: 1 << 6, label: 'CRL 签名（CA）' },
+];
+
+const ekuOptions = [
+  { value: '1.3.6.1.5.5.7.3.1', label: '服务器认证' },
+  { value: '1.3.6.1.5.5.7.3.2', label: '客户端认证' },
+  { value: '1.3.6.1.5.5.7.3.3', label: '代码签名' },
+  { value: '1.3.6.1.5.5.7.3.4', label: '邮件保护' },
+  { value: '1.3.6.1.5.5.7.3.8', label: '时间戳' },
+  { value: '1.3.6.1.5.5.7.3.9', label: 'OCSP 签名' },
+];
+
 const KeyUsageTab: React.FC = () => {
   const [data, setData] = useState<KeyUsageTemplate[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<KeyUsageTemplate | null>(null);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
 
-  const load = async () => { setLoading(true); try { const r = await listKeyUsageTemplates(); setData(Array.isArray(r) ? r : (r as any).items || []); } catch {} finally { setLoading(false); } };
+  const load = async () => {
+    setLoading(true);
+    try { setData(await listKeyUsageTemplates()); }
+    catch { /* 忽略 */ } finally { setLoading(false); }
+  };
   useEffect(() => { load(); }, []);
+
+  const openCreate = () => {
+    setEditing(null);
+    form.resetFields();
+    form.setFieldsValue({ key_usage: 1 | (1 << 2), ext_key_usage: [] });
+    setOpen(true);
+  };
+
+  const openEdit = (r: KeyUsageTemplate) => {
+    setEditing(r);
+    // 位掩码 → 勾选项
+    const bits = keyUsageOptions.filter((o) => (r.key_usage & o.value) !== 0).map((o) => o.value);
+    form.setFieldsValue({ name: r.name, key_usage: bits, ext_key_usage: r.ext_key_usage ?? [] });
+    setOpen(true);
+  };
 
   const columns = [
     { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '扩展密钥用法', dataIndex: 'ext_key_usage', key: 'ext_key_usage', render: (v: string[]) => v?.map(u => <Tag key={u} style={{ fontSize: 11 }}>{u}</Tag>) },
     {
-      title: '操作', key: 'action', render: (_: any, r: KeyUsageTemplate) => (
-        <Popconfirm title="确认删除？" onConfirm={async () => { await deleteKeyUsageTemplate(r.uuid); load(); }}>
-          <Button size="small" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
+      title: '密钥用法', dataIndex: 'key_usage', key: 'key_usage',
+      render: (v: number) => (
+        <Space size={4} wrap>
+          {keyUsageOptions.filter((o) => (v & o.value) !== 0)
+            .map((o) => <Tag key={o.value} color="blue">{o.label}</Tag>)}
+        </Space>
+      ),
+    },
+    {
+      title: '扩展密钥用法', dataIndex: 'ext_key_usage', key: 'ext_key_usage',
+      render: (v: string[]) => (v?.length
+        ? v.map((u) => <Tag key={u} style={{ fontSize: 11 }}>{ekuOptions.find((o) => o.value === u)?.label || u}</Tag>)
+        : <Text type="secondary">—</Text>),
+    },
+    {
+      title: '操作', key: 'action', width: 150, fixed: 'right' as const,
+      render: (_: any, r: KeyUsageTemplate) => (
+        <Space size={4} style={{ whiteSpace: 'nowrap' }}>
+          <Button type="link" size="small" onClick={() => openEdit(r)}>编辑</Button>
+          <Popconfirm title="被颁发模板引用时无法删除" onConfirm={async () => {
+            try { await deleteKeyUsageTemplate(r.uuid); message.success('已删除'); load(); }
+            catch (e: any) { message.error(e.message || '删除失败'); }
+          }}>
+            <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
       ),
     },
   ];
@@ -469,28 +519,33 @@ const KeyUsageTab: React.FC = () => {
   return (
     <>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>创建密钥用途模板</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建密钥用途模板</Button>
       </div>
-      <Table rowKey="uuid" columns={columns} dataSource={data} loading={loading} size="small" />
-      <Modal title="创建密钥用途模板" open={open} onCancel={() => setOpen(false)} footer={null} width={520}>
+      <Table rowKey="uuid" columns={columns as any} dataSource={data} loading={loading} size="small" scroll={{ x: 800 }} />
+      <Modal title={editing ? '编辑密钥用途模板' : '新建密钥用途模板'} open={open}
+        onCancel={() => setOpen(false)} footer={null} width={560}>
         <Form form={form} layout="vertical" onFinish={async (v) => {
           setSaving(true);
-          try { await createKeyUsageTemplate({ ...v, key_usage: 0 }); message.success('创建成功'); setOpen(false); form.resetFields(); load(); }
-          catch (e: any) { message.error(e.message); } finally { setSaving(false); }
+          try {
+            const mask = (v.key_usage as number[]).reduce((a, b) => a | b, 0);
+            const payload = { name: v.name, key_usage: mask, ext_key_usage: v.ext_key_usage ?? [] };
+            if (editing) await updateKeyUsageTemplate(editing.uuid, payload);
+            else await createKeyUsageTemplate(payload);
+            message.success('已保存'); setOpen(false); form.resetFields(); load();
+          } catch (e: any) { message.error(e.message); } finally { setSaving(false); }
         }} style={{ marginTop: 16 }}>
-          <Form.Item label="名称" name="name" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item label="名称" name="name" rules={[{ required: true, message: '请填写名称' }]}><Input /></Form.Item>
+          <Form.Item label="密钥用法" name="key_usage" extra="CA 证书必须包含「证书签名」">
+            <Select mode="multiple" options={keyUsageOptions} />
+          </Form.Item>
           <Form.Item label="扩展密钥用法" name="ext_key_usage">
-            <Select mode="multiple">
-              <Option value="1.3.6.1.5.5.7.3.1">服务器认证</Option>
-              <Option value="1.3.6.1.5.5.7.3.2">客户端认证</Option>
-              <Option value="1.3.6.1.5.5.7.3.3">代码签名</Option>
-              <Option value="1.3.6.1.5.5.7.3.4">邮件保护</Option>
-              <Option value="1.3.6.1.5.5.7.3.8">时间戳</Option>
-              <Option value="1.3.6.1.5.5.7.3.9">OCSP 签名</Option>
-            </Select>
+            <Select mode="multiple" options={ekuOptions} />
           </Form.Item>
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
-            <Space><Button onClick={() => setOpen(false)}>取消</Button><Button type="primary" htmlType="submit" loading={saving}>创建</Button></Space>
+            <Space>
+              <Button onClick={() => setOpen(false)}>取消</Button>
+              <Button type="primary" htmlType="submit" loading={saving}>保存</Button>
+            </Space>
           </Form.Item>
         </Form>
       </Modal>
@@ -503,163 +558,108 @@ const CertExtTab: React.FC = () => {
   const [data, setData] = useState<CertExtTemplate[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<CertExtTemplate | null>(null);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
 
-  const load = async () => { setLoading(true); try { const r = await listCertExtTemplates(); setData(Array.isArray(r) ? r : (r as any).items || []); } catch {} finally { setLoading(false); } };
+  const load = async () => {
+    setLoading(true);
+    try { setData(await listCertExtTemplates()); }
+    catch { /* 忽略 */ } finally { setLoading(false); }
+  };
   useEffect(() => { load(); }, []);
+
+  const openCreate = () => {
+    setEditing(null);
+    form.resetFields();
+    setOpen(true);
+  };
+
+  const openEdit = (r: CertExtTemplate) => {
+    setEditing(r);
+    form.setFieldsValue({
+      name: r.name,
+      crl_distribution_points: (r.crl_distribution_points ?? []).join('\n'),
+      ocsp_servers: (r.ocsp_servers ?? []).join('\n'),
+      aia_issuers: (r.aia_issuers ?? []).join('\n'),
+      ct_servers: (r.ct_servers ?? []).join('\n'),
+      ev_policy_oid: r.ev_policy_oid,
+    });
+    setOpen(true);
+  };
 
   const columns = [
     { title: '名称', dataIndex: 'name', key: 'name' },
     { title: 'CRL 分发点', dataIndex: 'crl_distribution_points', key: 'crl', render: (v: string[]) => v?.length || 0 },
     { title: 'OCSP 服务器', dataIndex: 'ocsp_servers', key: 'ocsp', render: (v: string[]) => v?.length || 0 },
+    { title: 'AIA 颁发者', dataIndex: 'aia_issuers', key: 'aia', render: (v: string[]) => v?.length || 0 },
     { title: 'CT 服务器', dataIndex: 'ct_servers', key: 'ct', render: (v: string[]) => v?.length || 0 },
-    { title: 'EV 策略 OID', dataIndex: 'ev_policy_oid', key: 'ev', render: (v: string) => v ? <Text code style={{ fontSize: 11 }}>{v}</Text> : '-' },
     {
-      title: '操作', key: 'action', render: (_: any, r: CertExtTemplate) => (
-        <Popconfirm title="确认删除？" onConfirm={async () => { await deleteCertExtTemplate(r.uuid); load(); }}>
-          <Button size="small" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
-      ),
+      title: 'EV 策略 OID', dataIndex: 'ev_policy_oid', key: 'ev',
+      render: (v: string) => (v ? <Text code style={{ fontSize: 11 }}>{v}</Text> : '-'),
     },
-  ];
-
-  return (
-    <>
-      <Alert type="info" showIcon style={{ marginBottom: 12 }}
-        message="证书扩展模板配置 CRL 分发点、OCSP/AIA/CT 地址与证书策略 OID"
-        description="CPS/CP 文档地址可在「证书服务 → 证书策略管理」中创建后填入证书策略扩展。" />
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>创建证书拓展模板</Button>
-      </div>
-      <Table rowKey="uuid" columns={columns} dataSource={data} loading={loading} size="small" />
-      <Modal title="创建证书拓展模板" open={open} onCancel={() => setOpen(false)} footer={null} width={560}>
-        <Form form={form} layout="vertical" onFinish={async (v) => {
-          setSaving(true);
-          try {
-            await createCertExtTemplate({
-              name: v.name,
-              crl_distribution_points: v.crl_distribution_points ? v.crl_distribution_points.split('\n').map((s: string) => s.trim()).filter(Boolean) : [],
-              ocsp_servers: v.ocsp_servers ? v.ocsp_servers.split('\n').map((s: string) => s.trim()).filter(Boolean) : [],
-              aia_issuers: v.aia_issuers ? v.aia_issuers.split('\n').map((s: string) => s.trim()).filter(Boolean) : [],
-              ct_servers: v.ct_servers ? v.ct_servers.split('\n').map((s: string) => s.trim()).filter(Boolean) : [],
-              ev_policy_oid: v.ev_policy_oid || undefined,
-            });
-            message.success('创建成功'); setOpen(false); form.resetFields(); load();
-          } catch (e: any) { message.error(e.message); } finally { setSaving(false); }
-        }} style={{ marginTop: 16 }}>
-          <Form.Item label="名称" name="name" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item label="CRL 分发点（每行一个 URL）" name="crl_distribution_points"><Input.TextArea rows={3} placeholder="http://crl.example.com/ca.crl" /></Form.Item>
-          <Form.Item label="OCSP 服务器（每行一个 URL）" name="ocsp_servers"><Input.TextArea rows={2} placeholder="http://ocsp.example.com/ocsp/r/unified" /></Form.Item>
-          <Form.Item label="AIA 颁发者（每行一个 URL）" name="aia_issuers"><Input.TextArea rows={2} placeholder="http://ca.example.com/ca.crt" /></Form.Item>
-          <Form.Item label="CT 服务器（每行一个 URL）" name="ct_servers"><Input.TextArea rows={2} placeholder="https://ct.googleapis.com/logs/argon2024" /></Form.Item>
-          <Form.Item label="EV 策略 OID（可选）" name="ev_policy_oid"><Input placeholder="2.23.140.1.1" /></Form.Item>
-          <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
-            <Space><Button onClick={() => setOpen(false)}>取消</Button><Button type="primary" htmlType="submit" loading={saving}>创建</Button></Space>
-          </Form.Item>
-        </Form>
-      </Modal>
-    </>
-  );
-};
-
-// ---- 密钥存储类型模板 ----
-const KeyStorageTab: React.FC = () => {
-  const [data, setData] = useState<KeyStorageTemplate[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [hasVirtual, setHasVirtual] = useState(false);
-  const [secLevel, setSecLevel] = useState<string>('medium');
-  const [cloudBackup, setCloudBackup] = useState(false);
-  const [form] = Form.useForm();
-
-  const load = async () => { setLoading(true); try { const r = await listKeyStorageTemplates(); setData(Array.isArray(r) ? r : (r as any).items || []); } catch {} finally { setLoading(false); } };
-  useEffect(() => { load(); }, []);
-
-  const columns = [
-    { title: '名称', dataIndex: 'name', key: 'name' },
     {
-      title: '允许存储方式', key: 'storage', render: (_: any, r: KeyStorageTemplate) => (
-        <Space wrap size={4}>
-          {r.allow_file_download && <Tag color="blue">文件下载</Tag>}
-          {r.allow_cloud_card && <Tag color="purple">云端智能卡</Tag>}
-          {r.allow_physical_card && <Tag color="green">实体智能卡</Tag>}
-          {r.allow_virtual_card && <Tag color="orange">虚拟智能卡</Tag>}
+      title: '操作', key: 'action', width: 150, fixed: 'right' as const,
+      render: (_: any, r: CertExtTemplate) => (
+        <Space size={4} style={{ whiteSpace: 'nowrap' }}>
+          <Button type="link" size="small" onClick={() => openEdit(r)}>编辑</Button>
+          <Popconfirm title="被颁发模板引用时无法删除" onConfirm={async () => {
+            try { await deleteCertExtTemplate(r.uuid); message.success('已删除'); load(); }
+            catch (e: any) { message.error(e.message || '删除失败'); }
+          }}>
+            <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
         </Space>
       ),
     },
-    { title: '安全等级', dataIndex: 'virtual_card_security', key: 'security', render: (v: string) => ({ high: '高', medium: '中', low: '低' }[v] || v) },
-    { title: '云端备份', dataIndex: 'cloud_backup', key: 'cloud_backup', render: (v: boolean) => <Tag color={v ? 'green' : 'default'}>{v ? '是' : '否'}</Tag> },
-    { title: '最大下发次数', dataIndex: 'max_reissue_count', key: 'max_reissue_count', render: (v: number) => v === -1 ? '无限' : v },
-    {
-      title: '操作', key: 'action', render: (_: any, r: KeyStorageTemplate) => (
-        <Popconfirm title="确认删除？" onConfirm={async () => { await deleteKeyStorageTemplate(r.uuid); load(); }}>
-          <Button size="small" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
-      ),
-    },
   ];
 
   return (
     <>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>创建密钥存储模板</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建证书拓展模板</Button>
       </div>
-      <Table rowKey="uuid" columns={columns} dataSource={data} loading={loading} size="small" />
-      <Modal title="创建密钥存储类型模板" open={open}
-        onCancel={() => { setOpen(false); form.resetFields(); setHasVirtual(false); setSecLevel('medium'); setCloudBackup(false); }}
-        footer={null} width={560}>
+      <Table rowKey="uuid" columns={columns as any} dataSource={data} loading={loading} size="small" scroll={{ x: 900 }} />
+      <Modal title={editing ? '编辑证书拓展模板' : '新建证书拓展模板'} open={open}
+        onCancel={() => setOpen(false)} footer={null} width={600}>
         <Form form={form} layout="vertical" onFinish={async (v) => {
           setSaving(true);
           try {
-            await createKeyStorageTemplate({
+            const split = (s?: string) => (s ? s.split('\n').map((x: string) => x.trim()).filter(Boolean) : []);
+            const payload = {
               name: v.name,
-              allow_file_download: v.storage_modes?.includes('file') || false,
-              allow_cloud_card: v.storage_modes?.includes('cloud') || false,
-              allow_physical_card: v.storage_modes?.includes('physical') || false,
-              allow_virtual_card: v.storage_modes?.includes('virtual') || false,
-              virtual_card_security: v.virtual_card_security || 'medium',
-              allow_reimport: secLevel !== 'high' ? (v.allow_reimport || false) : false,
-              cloud_backup: v.cloud_backup || false,
-              allow_reissue: v.allow_reissue || false,
-              max_reissue_count: v.allow_reissue ? (v.max_reissue_count || -1) : 0,
-            });
-            message.success('创建成功'); setOpen(false); form.resetFields(); setHasVirtual(false); setSecLevel('medium'); setCloudBackup(false); load();
+              crl_distribution_points: split(v.crl_distribution_points),
+              ocsp_servers: split(v.ocsp_servers),
+              aia_issuers: split(v.aia_issuers),
+              ct_servers: split(v.ct_servers),
+              ev_policy_oid: v.ev_policy_oid || undefined,
+            };
+            if (editing) await updateCertExtTemplate(editing.uuid, payload);
+            else await createCertExtTemplate(payload);
+            message.success('已保存'); setOpen(false); form.resetFields(); load();
           } catch (e: any) { message.error(e.message); } finally { setSaving(false); }
         }} style={{ marginTop: 16 }}>
-          <Form.Item label="名称" name="name" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item label="存储方式" name="storage_modes" rules={[{ required: true, message: '请选择至少一种存储方式' }]}>
-            <Checkbox.Group onChange={(v) => setHasVirtual(v.includes('virtual'))} options={[
-              { label: '文件下载', value: 'file' },
-              { label: '云端智能卡', value: 'cloud' },
-              { label: '实体智能卡', value: 'physical' },
-              { label: '虚拟智能卡', value: 'virtual' },
-            ]} />
+          <Form.Item label="名称" name="name" rules={[{ required: true, message: '请填写名称' }]}><Input /></Form.Item>
+          <Form.Item label="CRL 分发点（每行一个 URL）" name="crl_distribution_points" extra="签发时写入证书，客户端据此下载吊销列表">
+            <Input.TextArea rows={2} placeholder="http://crl.example.com/ca.crl" />
           </Form.Item>
-          {hasVirtual && (
-            <Form.Item label="虚拟卡安全等级" name="virtual_card_security" initialValue="medium">
-              <Select onChange={setSecLevel}>
-                <Option value="high">高安全性（不可重新导入）</Option>
-                <Option value="medium">中安全性</Option>
-                <Option value="low">低安全性</Option>
-              </Select>
-            </Form.Item>
-          )}
-          <Form.Item label="允许重新导入" name="allow_reimport" valuePropName="checked" initialValue={false}>
-            <Switch disabled={secLevel === 'high'} />
+          <Form.Item label="OCSP 服务器（每行一个 URL）" name="ocsp_servers">
+            <Input.TextArea rows={2} placeholder="http://ocsp.example.com" />
           </Form.Item>
-          <Form.Item label="云端备份私钥" name="cloud_backup" valuePropName="checked" initialValue={false}>
-            <Switch onChange={setCloudBackup} />
+          <Form.Item label="AIA 颁发者（每行一个 URL）" name="aia_issuers" extra="指向 CA 证书，便于客户端补链">
+            <Input.TextArea rows={2} placeholder="http://ca.example.com/ca.crt" />
           </Form.Item>
-          {cloudBackup && (
-            <>
-              <Form.Item label="支持重新下发" name="allow_reissue" valuePropName="checked" initialValue={false}><Switch /></Form.Item>
-              <Form.Item label="最大下发次数（-1=无限）" name="max_reissue_count" initialValue={-1}><InputNumber min={-1} style={{ width: '100%' }} /></Form.Item>
-            </>
-          )}
+          <Form.Item label="CT 服务器（每行一个 URL）" name="ct_servers">
+            <Input.TextArea rows={2} placeholder="https://ct.example.com/logs/1" />
+          </Form.Item>
+          <Form.Item label="EV 策略 OID（可选）" name="ev_policy_oid">
+            <Input placeholder="2.23.140.1.1" />
+          </Form.Item>
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
-            <Space><Button onClick={() => setOpen(false)}>取消</Button><Button type="primary" htmlType="submit" loading={saving}>创建</Button></Space>
+            <Space>
+              <Button onClick={() => setOpen(false)}>取消</Button>
+              <Button type="primary" htmlType="submit" loading={saving}>保存</Button>
+            </Space>
           </Form.Item>
         </Form>
       </Modal>
@@ -673,6 +673,7 @@ const OidTab: React.FC = () => {
   const [data, setData] = useState<any[]>([]);
   const [filter, setFilter] = useState<string | undefined>();
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
   const [form] = Form.useForm();
 
   const fetch = async () => {
@@ -693,13 +694,13 @@ const OidTab: React.FC = () => {
 
   return (
     <>
-      <Alert type="info" showIcon style={{ marginBottom: 12 }}
-        message="自定义 OID 供证书拓展模板引用（扩展密钥用途、主体字段、EV 策略、ASN.1 扩展）" />
       <Space style={{ marginBottom: 12 }}>
         <Select allowClear placeholder="按用途筛选" style={{ width: 200 }} value={filter} onChange={setFilter}
           options={Object.entries(usageTexts).map(([v, l]) => ({ label: l, value: v }))} />
         <Button icon={<ReloadOutlined />} onClick={fetch}>刷新</Button>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>新增 OID</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditing(null); form.resetFields(); setOpen(true); }}>
+          新增 OID
+        </Button>
       </Space>
       <Table rowKey="uuid" loading={loading} dataSource={filtered} size="small"
         columns={[
@@ -708,32 +709,52 @@ const OidTab: React.FC = () => {
           { title: '名称', dataIndex: 'name', key: 'name' },
           { title: '用途类型', dataIndex: 'usage_type', key: 'usage_type',
             render: (v: string) => <Tag>{usageTexts[v] || v}</Tag> },
-          { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
-          { title: '创建时间', dataIndex: 'created_at', key: 'created_at',
-            render: (v: string) => (v ? new Date(v).toLocaleString('zh-CN') : '—') },
+          { title: 'ASN.1 类型', dataIndex: 'asn1_type', key: 'asn1_type',
+            render: (v: string) => v || '—' },
           {
-            title: '操作', key: 'actions', width: 100,
+            title: '关键扩展', dataIndex: 'is_critical', key: 'is_critical', width: 100,
+            render: (v: boolean) => (v ? <Tag color="orange">是</Tag> : <Tag>否</Tag>),
+          },
+          { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
+          {
+            title: '操作', key: 'actions', width: 150, fixed: 'right' as const,
             render: (_: any, r: any) => (
-              <Popconfirm title="确认删除此 OID？" onConfirm={async () => {
-                try { await deleteOID(r.uuid); fetch(); } catch (e: any) { message.error(e.message); }
-              }}>
-                <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
-              </Popconfirm>
+              <Space size={4} style={{ whiteSpace: 'nowrap' }}>
+                <Button type="link" size="small" onClick={() => {
+                  setEditing(r);
+                  form.setFieldsValue({
+                    oid: r.oid_value || r.oid, name: r.name, usage_type: r.usage_type,
+                    asn1_type: r.asn1_type || 'UTF8String', is_critical: !!r.is_critical,
+                    description: r.description,
+                  });
+                  setOpen(true);
+                }}>编辑</Button>
+                <Popconfirm title="被模板引用时无法删除" onConfirm={async () => {
+                  try { await deleteOID(r.uuid); fetch(); }
+                  catch (e: any) { message.error(e.message); }
+                }}>
+                  <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                </Popconfirm>
+              </Space>
             ),
           },
         ] as any} />
 
-      <Modal open={open} title="新增 OID" onCancel={() => { setOpen(false); form.resetFields(); }}
-        onOk={() => form.submit()} destroyOnClose>
-        <Form form={form} layout="vertical" initialValues={{ usage_type: 'ext_key_usage' }}
+      <Modal open={open} title={editing ? '编辑 OID' : '新增 OID'}
+        onCancel={() => { setOpen(false); form.resetFields(); }}
+        onOk={() => form.submit()} width={560}>
+        <Form form={form} layout="vertical" initialValues={{ usage_type: 'ext_key_usage', asn1_type: 'UTF8String' }}
           onFinish={async (v) => {
             try {
-              await createOID({
-                oid_value: v.oid, name: v.name, description: v.description, usage_type: v.usage_type,
-              } as any);
-              message.success('OID 已添加');
+              const payload = {
+                oid: v.oid, name: v.name, description: v.description,
+                usage_type: v.usage_type, asn1_type: v.asn1_type, is_critical: !!v.is_critical,
+              } as any;
+              if (editing) await updateOID(editing.uuid, payload);
+              else await createOID(payload);
+              message.success('已保存');
               setOpen(false); form.resetFields(); fetch();
-            } catch (e: any) { message.error(e.message || '添加失败'); }
+            } catch (e: any) { message.error(e.message || '保存失败'); }
           }}>
           <Form.Item name="oid" label="OID" rules={[{ required: true, message: '请输入 OID' },
             { pattern: /^(\d+\.)+\d+$/, message: 'OID 格式错误，如：1.3.6.1.4.1.311' }]}>
@@ -745,6 +766,16 @@ const OidTab: React.FC = () => {
           <Form.Item name="usage_type" label="用途类型" rules={[{ required: true }]}>
             <Select options={Object.entries(usageTexts).map(([v, l]) => ({ label: l, value: v }))} />
           </Form.Item>
+          <Space size={16} style={{ display: 'flex' }}>
+            <Form.Item name="asn1_type" label="ASN.1 类型" style={{ flex: 1 }}
+              extra="仅在证书拓展模板中作为自定义扩展使用时生效">
+              <Select options={['UTF8String', 'PrintableString', 'IA5String', 'OCTET STRING', 'INTEGER', 'BOOLEAN', 'NULL']
+                .map((v) => ({ label: v, value: v }))} />
+            </Form.Item>
+            <Form.Item name="is_critical" label="标记为关键扩展" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+          </Space>
           <Form.Item name="description" label="描述"><Input.TextArea rows={3} maxLength={500} /></Form.Item>
         </Form>
       </Modal>
@@ -765,7 +796,7 @@ const Templates: React.FC = () => {
   return (
     <div>
       <Title level={4} style={{ margin: '0 0 16px' }}>
-        证书模板 <HelpLink doc="admin-03-ca-templates" /> <HelpLink doc="admin-13-identity-review" label="身份认证文档" />
+        证书模板 <HelpLink doc="admin-03-ca-templates" /> <HelpLink doc="admin-13-identity-verification" label="身份认证文档" />
       </Title>
       <Tabs
         activeKey={tab}
@@ -776,7 +807,6 @@ const Templates: React.FC = () => {
           { key: 'extension', label: '扩展信息模板', children: <ExtensionTab /> },
           { key: 'key_usage', label: '密钥用途模板', children: <KeyUsageTab /> },
           { key: 'cert_ext', label: '证书拓展模板', children: <CertExtTab /> },
-          { key: 'key_storage', label: '密钥存储类型模板', children: <KeyStorageTab /> },
           { key: 'oids', label: '自定义 OID', children: <OidTab /> },
         ]}
       />

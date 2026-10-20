@@ -42,11 +42,11 @@ openssl ocsp -issuer ca.pem -cert user.pem \
 返回 `good` / `revoked` / `unknown`。
 
 若需要**用单个签名证书统一响应多个 CA**（对外统一入口、OCSP 委托签名场景），请使用
-**证书服务 → 证书OCSP服务**（地址 `/ocsp/r/{path}`），配置方法见《OCSP 响应服务与证书策略》。
+**证书服务管理 → OCSP服务**（地址 `/ocsp/r/{path}`），配置方法见《OCSP 响应服务与证书策略》。
 
 ## 4. ACME
 
-入口：**证书服务 → 证书 ACME 服务**。
+入口：**证书服务管理 → ACME服务**。
 
 | 字段 | 说明 |
 |---|---|
@@ -67,4 +67,4 @@ ACME 签发不经过商城订单，请只对可信网络或内部域名开放，
 
 ## 5. 证书透明度（CT）
 
-入口：**证书颁发 → 证书审计日志 → 证书透明度（CT）选项卡**（CT 记录与操作审计同属可审计证据，已合并到同一页面）。平台记录签发的证书用于审计；`POST /ct/submit` 需要携带 `SERVER_CARD_CT_SUBMIT_TOKEN`，`GET /ct/query` 可按证书哈希查询。
+入口：**证书颁发管理 → 证书审计日志 → 证书透明度（CT）选项卡**（CT 记录与操作审计同属可审计证据，已合并到同一页面）。平台记录签发的证书用于审计；`POST /ct/submit` 需要携带 `SERVER_CARD_CT_SUBMIT_TOKEN`，`GET /ct/query` 可按证书哈希查询。

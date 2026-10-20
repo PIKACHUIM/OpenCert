@@ -149,7 +149,7 @@ func (r *PortalRepo) DeleteProduct(ctx context.Context, productUUID string) erro
 
 const portalSKUColumns = `uuid, product_uuid, code, name, price_cents, currency, stock, min_qty, max_qty,
 	duration_months, delivery_mode, key_types, san_included, cert_apply_tmpl_uuid, cloud_card_tmpl_uuid,
-	san_policy, enabled, sort_weight, created_at, updated_at`
+	san_policy, enabled, sort_weight, created_at, updated_at, valid_days`
 
 func scanPortalSKU(scan func(dest ...interface{}) error) (*PortalProductSKU, error) {
 	s := &PortalProductSKU{}
@@ -157,7 +157,7 @@ func scanPortalSKU(scan func(dest ...interface{}) error) (*PortalProductSKU, err
 	if err := scan(&s.UUID, &s.ProductUUID, &s.Code, &s.Name, &s.PriceCents, &s.Currency, &s.Stock,
 		&s.MinQty, &s.MaxQty, &s.DurationMonths, &s.DeliveryMode, &s.KeyTypes, &s.SANIncluded,
 		&s.CertApplyTmplUUID, &s.CloudCardTmplUUID, &s.SANPolicy, &enabled, &s.SortWeight,
-		&s.CreatedAt, &s.UpdatedAt); err != nil {
+		&s.CreatedAt, &s.UpdatedAt, &s.ValidDays); err != nil {
 		return nil, err
 	}
 	s.Enabled = enabled == 1
@@ -282,11 +282,12 @@ func (r *PortalRepo) CreateSKU(ctx context.Context, s *PortalProductSKU) error {
 		`INSERT INTO portal_product_skus
 		 (uuid, product_uuid, code, name, price_cents, currency, stock, min_qty, max_qty,
 		  duration_months, delivery_mode, key_types, san_included, cert_apply_tmpl_uuid,
-		  cloud_card_tmpl_uuid, san_policy, enabled, sort_weight, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  cloud_card_tmpl_uuid, san_policy, enabled, sort_weight, created_at, updated_at, valid_days)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.UUID, s.ProductUUID, s.Code, s.Name, s.PriceCents, s.Currency, s.Stock, s.MinQty, s.MaxQty,
 		s.DurationMonths, s.DeliveryMode, s.KeyTypes, s.SANIncluded, s.CertApplyTmplUUID,
 		s.CloudCardTmplUUID, normalizeJSONObject(s.SANPolicy), boolToInt(s.Enabled), s.SortWeight, s.CreatedAt, s.UpdatedAt,
+		s.ValidDays,
 	)
 	return err
 }
@@ -306,11 +307,11 @@ func (r *PortalRepo) UpdateSKU(ctx context.Context, s *PortalProductSKU) error {
 		`UPDATE portal_product_skus SET code = ?, name = ?, price_cents = ?, currency = ?, stock = ?,
 		 min_qty = ?, max_qty = ?, duration_months = ?, delivery_mode = ?, key_types = ?,
 		 san_included = ?, cert_apply_tmpl_uuid = ?, cloud_card_tmpl_uuid = ?, san_policy = ?, enabled = ?,
-		 sort_weight = ?, updated_at = ?
+		 sort_weight = ?, updated_at = ?, valid_days = ?
 		 WHERE uuid = ?`,
 		s.Code, s.Name, s.PriceCents, s.Currency, s.Stock, s.MinQty, s.MaxQty, s.DurationMonths,
 		s.DeliveryMode, s.KeyTypes, s.SANIncluded, s.CertApplyTmplUUID, s.CloudCardTmplUUID,
-		normalizeJSONObject(s.SANPolicy), boolToInt(s.Enabled), s.SortWeight, s.UpdatedAt, s.UUID,
+		normalizeJSONObject(s.SANPolicy), boolToInt(s.Enabled), s.SortWeight, s.UpdatedAt, s.ValidDays, s.UUID,
 	)
 	return err
 }

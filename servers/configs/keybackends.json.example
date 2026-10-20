@@ -1,0 +1,36 @@
+{
+  "_comment": "私钥存储后端（PKCS#11 等）扩展清单。复制为 keybackends.json 后生效，缺失该文件不影响启动。用于把厂商 PKCS#11 模块登记为「扫描本机 HSM」可发现的预设。",
+  "presets": [
+    {
+      "id": "mytoken-2000",
+      "name": "示例：自研令牌 2000",
+      "description": "厂商驱动安装后提供的 PKCS#11 模块",
+      "driver": "pkcs11",
+      "kind": "hsm",
+      "params": {
+        "library": "C:\\Vendor\\MyToken\\mytoken-pkcs11.dll",
+        "keygen": "true",
+        "label_prefix": "opencert/"
+      },
+      "search_paths": [
+        "C:\\Vendor\\MyToken\\mytoken-pkcs11.dll",
+        "/usr/local/lib/libmytoken_pkcs11.so"
+      ]
+    },
+    {
+      "id": "network-hsm",
+      "name": "示例：网络 HSM（客户端模式）",
+      "description": "通过厂商提供的 PKCS#11 客户端库连接网络 HSM",
+      "driver": "pkcs11",
+      "kind": "hsm",
+      "params": {
+        "library": "C:\\Program Files\\Vendor HSM\\hsm-pkcs11.dll",
+        "token": "HSM-PROD-01",
+        "keygen": "true"
+      },
+      "search_paths": [
+        "C:\\Program Files\\Vendor HSM\\hsm-pkcs11.dll"
+      ]
+    }
+  ]
+}

@@ -11,9 +11,11 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/asn1"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -22,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/emmansun/gmsm/sm2"
 	"github.com/globaltrusts/server-card/internal/storage"
 )
 
@@ -29,17 +32,22 @@ import (
 type IssueRequest struct {
 	CAUUID      string             // 签发 CA 的 UUID
 	Subject     pkix.Name          // 证书主体
-	KeyType     string             // 密钥类型（rsa2048/rsa4096/ec256/ec384/ec521）
-	ValidDays   int                // 有效期（天）
+	KeyType     string             // 密钥类型（rsa2048/rsa4096/ec256/ec384/ec521/sm2）
+	ValidDays   int                // 有效期（天，当 NotAfter 为空时生效）
+	NotBefore   *time.Time         // 显式生效时间（为空时取当前时间）
+	NotAfter    *time.Time         // 显式失效时间（为空时按 ValidDays 计算）
 	IsCA        bool               // 是否为 CA 证书
 	PathLen     int                // CA 路径长度（仅 IsCA=true 时有效）
 	KeyUsage    x509.KeyUsage      // 密钥用途
 	ExtKeyUsage []x509.ExtKeyUsage // 扩展密钥用途
-	DNSNames    []string           // SAN DNS 名称
-	IPAddresses []net.IP           // SAN IP 地址
-	EmailAddrs  []string           // SAN 邮箱
-	URIs        []string           // SAN URI （写入证书的 Subject Alternative Name - uniformResourceIdentifier）
-	PolicyOIDs  []string           // 证书策略 OID 列表（Certificate Policies 扩展，与 EVPolicyOID 合并写入）
+	// UnknownExtKeyUsage 是标准库没有常量的扩展密钥用途 OID（自定义 OID、国密专用用途等），
+	// 与 ExtKeyUsage 一起写入证书的 Extended Key Usage 扩展，不会被静默丢弃。
+	UnknownExtKeyUsage []asn1.ObjectIdentifier
+	DNSNames           []string // SAN DNS 名称
+	IPAddresses        []net.IP // SAN IP 地址
+	EmailAddrs         []string // SAN 邮箱
+	URIs               []string // SAN URI （写入证书的 Subject Alternative Name - uniformResourceIdentifier）
+	PolicyOIDs         []string // 证书策略 OID 列表（Certificate Policies 扩展，与 EVPolicyOID 合并写入）
 
 	// 模板约束（可选，签发前验证）
 	IssuanceTmplUUID string // 颁发模板 UUID（用于约束验证）
@@ -78,13 +86,28 @@ type IssueRequest struct {
 	// CSRPublicKey 可选：直接使用申请者 CSR 中的公钥进行签发（ACME / 自带密钥场景）。
 	// 非 nil 时 IssueCert 不生成新密钥对，返回的 IssueResponse.PrivateEnc 为空。
 	CSRPublicKey interface{}
+
+	// KeyZoneUUID 可选：用户私钥在哪个存储区域生成。
+	//   - 为空，或区域为本地加密存储：在内存生成后用主密钥加密，随 IssueResponse.PrivateEnc 返回；
+	//   - 区域为硬件（HSM / TPM）：在设备内生成，私钥不出域，IssueResponse 返回 KeyRef / KeyBackend。
+	// CSRPublicKey 非空时忽略（私钥不在平台）。
+	KeyZoneUUID string
+
+	// ParentSigner 可选：指定签发者私钥（用于创建中间 CA，父 CA 不落库的场景）。
+	// 为空时按 CAUUID 从数据库读取并解密。
+	ParentSigner crypto.Signer
+
+	// ParentCert 可选：与 ParentSigner 配套的签发者证书。
+	ParentCert *x509.Certificate
 }
 
 // IssueResponse 是证书签发响应。
 type IssueResponse struct {
 	CertPEM      string    // 签发的证书 PEM
 	CertDER      []byte    // 签发的证书 DER
-	PrivateEnc   []byte    // 加密的私钥
+	PrivateEnc   []byte    // 加密的私钥（本地存储时）
+	KeyBackend   string    // 私钥所在后端驱动（硬件区域时为 pkcs11 / tpm2；本地为空）
+	KeyRef       string    // 硬件后端内的私钥引用
 	SerialNumber string    // 证书序列号（十六进制）
 	SubjectDN    string    // 主体 DN
 	IssuerDN     string    // 颁发者 DN
@@ -111,7 +134,7 @@ func (s *Service) IssueCert(ctx context.Context, req *IssueRequest) (*IssueRespo
 		}
 	}
 
-	// 获取 CA
+	// 获取 CA（证书 + 签发者私钥）。允许调用方直接传入父 Signer（创建中间 CA 时避免私钥二次落库）。
 	ca, err := s.GetByUUID(ctx, req.CAUUID)
 	if err != nil {
 		return nil, fmt.Errorf("获取 CA 失败: %w", err)
@@ -126,17 +149,40 @@ func (s *Service) IssueCert(ctx context.Context, req *IssueRequest) (*IssueRespo
 		return nil, fmt.Errorf("解析 CA 证书失败: %w", err)
 	}
 
-	// 解密 CA 私钥
-	caKey, err := decryptPrivateKey(s.masterKey, ca.PrivateEnc)
-	if err != nil {
-		return nil, fmt.Errorf("解密 CA 私钥失败: %w", err)
+	// CA 私钥：优先使用调用方传入的 Signer，否则解密库内私钥。
+	caKey := req.ParentSigner
+	if caKey == nil {
+		caKey, err = s.CAKeySigner(ctx, ca)
+		if err != nil {
+			return nil, fmt.Errorf("解密 CA 私钥失败: %w", err)
+		}
+	}
+	if req.ParentCert != nil {
+		caCert = req.ParentCert
 	}
 
 	// 生成密钥对（若请求中直接带 CSRPublicKey，则跳过生成，使用申请者公钥）
 	var privKey crypto.PrivateKey
 	var pubKey crypto.PublicKey
+	var userKeyRef, userKeyBackend string
 	if req.CSRPublicKey != nil {
 		pubKey = req.CSRPublicKey
+	} else if req.KeyZoneUUID != "" && s.zoneKeyGen != nil {
+		// 指定了存储区域：硬件区域在设备内生成（私钥不出域）；本地区域退回内存生成路径。
+		pub, ref, backend, _, genErr := s.zoneKeyGen(ctx, req.KeyZoneUUID, req.KeyType)
+		switch {
+		case genErr == nil:
+			pubKey, userKeyRef, userKeyBackend = pub, ref, backend
+		case errors.Is(genErr, ErrUseLocalKeyGen):
+			pk, err := generateKey(req.KeyType)
+			if err != nil {
+				return nil, fmt.Errorf("生成密钥对失败: %w", err)
+			}
+			privKey = pk
+			pubKey = publicKey(pk)
+		default:
+			return nil, fmt.Errorf("在存储区域内生成密钥失败: %w", genErr)
+		}
 	} else {
 		pk, err := generateKey(req.KeyType)
 		if err != nil {
@@ -153,21 +199,38 @@ func (s *Service) IssueCert(ctx context.Context, req *IssueRequest) (*IssueRespo
 	}
 
 	now := time.Now()
-	notAfter := now.AddDate(0, 0, req.ValidDays)
-
-	// 限制有效期不超过 CA 有效期
+	// 生效时间：显式指定优先，未指定时取当前时间。
+	notBefore := now
+	if req.NotBefore != nil {
+		notBefore = *req.NotBefore
+	}
+	// 失效时间：显式指定优先，否则按 ValidDays 计算；两者都受 CA 有效期上限约束。
+	var notAfter time.Time
+	if req.NotAfter != nil {
+		notAfter = *req.NotAfter
+	} else {
+		days := req.ValidDays
+		if days <= 0 {
+			days = 365
+		}
+		notAfter = notBefore.AddDate(0, 0, days)
+	}
 	if notAfter.After(ca.NotAfter) {
 		notAfter = ca.NotAfter
+	}
+	if !notAfter.After(notBefore) {
+		return nil, fmt.Errorf("失效时间必须晚于生效时间（且不超过 CA 有效期 %s）", ca.NotAfter.Format(time.RFC3339))
 	}
 
 	// 构建证书模板
 	template := &x509.Certificate{
 		SerialNumber:          serialNumber,
 		Subject:               req.Subject,
-		NotBefore:             now,
+		NotBefore:             notBefore,
 		NotAfter:              notAfter,
 		KeyUsage:              req.KeyUsage,
 		ExtKeyUsage:           req.ExtKeyUsage,
+		UnknownExtKeyUsage:    req.UnknownExtKeyUsage,
 		BasicConstraintsValid: true,
 		IsCA:                  req.IsCA,
 		DNSNames:              req.DNSNames,
@@ -246,13 +309,14 @@ func (s *Service) IssueCert(ctx context.Context, req *IssueRequest) (*IssueRespo
 	}
 
 	// 签发证书（pubKey 已在前面根据 CSR/生成分支获取）
-	certDER, err := x509.CreateCertificate(rand.Reader, template, caCert, pubKey, caKey)
+	// 使用分派层：SM2 参与方走国密库 smx509，其余走标准库。
+	certDER, err := createCertificate(rand.Reader, template, caCert, pubKey, caKey)
 	if err != nil {
 		return nil, fmt.Errorf("签发证书失败: %w", err)
 	}
 
-	// 解析签发后的证书获取完整元数据
-	issuedCert, err := x509.ParseCertificate(certDER)
+	// 解析签发后的证书获取完整元数据（兼容 SM2 证书）
+	issuedCert, _, err := parseCertificateAny(certDER)
 	if err != nil {
 		return nil, fmt.Errorf("解析签发证书失败: %w", err)
 	}
@@ -263,7 +327,7 @@ func (s *Service) IssueCert(ctx context.Context, req *IssueRequest) (*IssueRespo
 	// 加密私钥（仅在本次签发自行生成了密钥时执行；CSRPublicKey 场景下 privKey 为 nil，不返回私钥）
 	var privEnc []byte
 	if privKey != nil {
-		privDER, err := x509.MarshalPKCS8PrivateKey(privKey)
+		privDER, err := marshalPrivateKeyAnyImpl(privKey)
 		if err != nil {
 			return nil, fmt.Errorf("序列化私钥失败: %w", err)
 		}
@@ -282,6 +346,8 @@ func (s *Service) IssueCert(ctx context.Context, req *IssueRequest) (*IssueRespo
 		CertPEM:      string(certPEM),
 		CertDER:      certDER,
 		PrivateEnc:   privEnc,
+		KeyBackend:   userKeyBackend,
+		KeyRef:       userKeyRef,
 		SerialNumber: fmt.Sprintf("%x", serialNumber),
 		SubjectDN:    issuedCert.Subject.String(),
 		IssuerDN:     issuedCert.Issuer.String(),
@@ -290,12 +356,72 @@ func (s *Service) IssueCert(ctx context.Context, req *IssueRequest) (*IssueRespo
 	}, nil
 }
 
-// CreateSelfSignedCA 创建自签名根 CA。
-func (s *Service) CreateSelfSignedCA(ctx context.Context, name string, subject pkix.Name, keyType string, validYears int) (*storage.CA, error) {
-	// 生成密钥对
-	privKey, err := generateKey(keyType)
-	if err != nil {
-		return nil, fmt.Errorf("生成密钥对失败: %w", err)
+// CACreateParams 是创建 CA（根 CA 或中间 CA）的参数。
+type CACreateParams struct {
+	Name        string            // CA 显示名称
+	Subject     pkix.Name         // 主体
+	KeyType     string            // 密钥算法（rsa2048/ec256/.../sm2）
+	NotBefore   *time.Time        // 生效时间（为空取当前时间）
+	NotAfter    *time.Time        // 失效时间（为空时按 ValidDays 计算）
+	ValidDays   int               // 有效期（天），NotAfter 为空时使用
+	PathLen     int               // 路径长度限制
+	PathLenZero bool              // 路径长度是否固定为 0（签发的中间 CA 不能再签发下级）
+	KeyUsage    x509.KeyUsage     // 密钥用途（为空时默认 CertSign|CRLSign）
+	ParentUUID  string            // 上级 CA UUID（为空表示自签根 CA）
+	ParentCert  *x509.Certificate // 上级 CA 证书（自签时为空）
+	ParentKey   crypto.Signer     // 上级 CA 私钥（自签时为空）
+
+	IssuanceTmplUUID string // 创建时使用的颁发模板（记录来源，便于审计）
+	StorageZoneUUID  string // 私钥所在存储区域（当前为本地加密库）
+}
+
+// CreateCA 创建 CA 证书（自签根 CA 或由上级 CA 签发的中间 CA）。
+//
+// 与普通签发共用同一套密钥生成、扩展构造与签名分派逻辑，区别仅在于
+// 主体由调用方直接给出、BasicConstraints 为 CA、私钥需要落库保管。
+func (s *Service) CreateCA(ctx context.Context, p *CACreateParams) (*storage.CA, error) {
+	if strings.TrimSpace(p.Name) == "" {
+		return nil, fmt.Errorf("CA 名称不能为空")
+	}
+
+	// 生成密钥对：指定了存储区域（且注入了区域密钥生成器）时在该区域内生成
+	// （硬件区域私钥不出域，signer 直接可用）；否则在本地内存生成后加密入库。
+	var (
+		pubKey     crypto.PublicKey
+		localPriv  crypto.PrivateKey
+		keySigner  crypto.Signer
+		keyRef     string
+		keyBackend = "database"
+	)
+	if p.StorageZoneUUID != "" && s.zoneKeyGen != nil {
+		pub, ref, backend, signer, err := s.zoneKeyGen(ctx, p.StorageZoneUUID, p.KeyType)
+		switch {
+		case err == nil:
+			pubKey, keyRef, keyBackend, keySigner = pub, ref, backend, signer
+		case errors.Is(err, ErrUseLocalKeyGen):
+			// 调用方表示该区域（如本地加密存储）应走本地生成路径。
+			priv, genErr := generateKey(p.KeyType)
+			if genErr != nil {
+				return nil, fmt.Errorf("生成密钥对失败: %w", genErr)
+			}
+			localPriv = priv
+			pubKey = publicKey(priv)
+			keySigner = asSigner(priv)
+			keyBackend = "database"
+		default:
+			return nil, fmt.Errorf("在存储区域内生成密钥失败: %w", err)
+		}
+	} else {
+		priv, err := generateKey(p.KeyType)
+		if err != nil {
+			return nil, fmt.Errorf("生成密钥对失败: %w", err)
+		}
+		localPriv = priv
+		pubKey = publicKey(priv)
+		keySigner = asSigner(priv)
+	}
+	if pubKey == nil {
+		return nil, fmt.Errorf("不支持的密钥算法: %s", p.KeyType)
 	}
 
 	// 生成随机序列号
@@ -304,49 +430,122 @@ func (s *Service) CreateSelfSignedCA(ctx context.Context, name string, subject p
 		return nil, fmt.Errorf("生成序列号失败: %w", err)
 	}
 
-	now := time.Now()
-	notAfter := now.AddDate(validYears, 0, 0)
-
-	// 构建自签名 CA 证书模板
-	template := &x509.Certificate{
-		SerialNumber:          serialNumber,
-		Subject:               subject,
-		NotBefore:             now,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		MaxPathLenZero:        false,
-		MaxPathLen:            -1,
+	// 生效/失效时间
+	notBefore := time.Now()
+	if p.NotBefore != nil {
+		notBefore = *p.NotBefore
+	}
+	notAfter := notBefore.AddDate(0, 0, 3650)
+	if p.ValidDays > 0 {
+		notAfter = notBefore.AddDate(0, 0, p.ValidDays)
+	}
+	if p.NotAfter != nil {
+		notAfter = *p.NotAfter
 	}
 
-	pubKey := publicKey(privKey)
+	keyUsage := p.KeyUsage
+	if keyUsage == 0 {
+		keyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign
+	}
 
-	// 自签名
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, pubKey, privKey)
+	template := &x509.Certificate{
+		SerialNumber:          serialNumber,
+		Subject:               p.Subject,
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		KeyUsage:              keyUsage,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            p.PathLen,
+		MaxPathLenZero:        p.PathLenZero,
+	}
+
+	// 自签：父证书就是自己，签名者是自己；中间 CA：父证书与签名者来自上级 CA。
+	parentCert := template
+	signerKey := keySigner
+	if p.ParentUUID != "" {
+		parent, err := s.GetByUUID(ctx, p.ParentUUID)
+		if err != nil {
+			return nil, fmt.Errorf("上级 CA 不存在: %w", err)
+		}
+		if parent.Status != "active" {
+			return nil, fmt.Errorf("上级 CA 状态不可用: %s", parent.Status)
+		}
+		pc := p.ParentCert
+		if pc == nil {
+			pc, err = parseCertPEM(parent.CertPEM)
+			if err != nil {
+				return nil, fmt.Errorf("解析上级 CA 证书失败: %w", err)
+			}
+		}
+		pk := p.ParentKey
+		if pk == nil {
+			pk, err = s.CAKeySigner(ctx, parent)
+			if err != nil {
+				return nil, fmt.Errorf("解密上级 CA 私钥失败: %w", err)
+			}
+		}
+		parentCert = pc
+		signerKey = pk
+		// 不能签发超过上级 CA 有效期的证书
+		if notAfter.After(parent.NotAfter) {
+			notAfter = parent.NotAfter
+			template.NotAfter = notAfter
+		}
+		// SM2 与标准算法不能混用：SM2 上级 CA 只能签发 SM2 下级 CA
+		if isSM2Signature(parentCert) && !isSM2PublicKey(pubKey) {
+			return nil, fmt.Errorf("SM2 CA 只能签发 SM2 证书，请将密钥算法改为 SM2")
+		}
+		if !isSM2Signature(parentCert) && isSM2PublicKey(pubKey) {
+			return nil, fmt.Errorf("SM2 证书必须由 SM2 CA 签发，请更换上级 CA")
+		}
+	}
+	if !notAfter.After(notBefore) {
+		return nil, fmt.Errorf("失效时间必须晚于生效时间")
+	}
+
+	certDER, err := createCertificate(rand.Reader, template, parentCert, pubKey, signerKey)
 	if err != nil {
-		return nil, fmt.Errorf("创建自签名证书失败: %w", err)
+		return nil, fmt.Errorf("创建 CA 证书失败: %w", err)
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
-	// 加密私钥
-	privDER, err := x509.MarshalPKCS8PrivateKey(privKey)
-	if err != nil {
-		return nil, fmt.Errorf("序列化私钥失败: %w", err)
-	}
-	privEnc, err := encryptPrivateKey(s.masterKey, privDER)
-	if err != nil {
-		return nil, fmt.Errorf("加密私钥失败: %w", err)
+	// 本地生成的密钥需要加密入库；存储区域生成的密钥只记录引用，私钥不出域。
+	var privEnc []byte
+	if localPriv != nil {
+		privDER, err := marshalPrivateKeyAnyImpl(localPriv)
+		if err != nil {
+			return nil, fmt.Errorf("序列化私钥失败: %w", err)
+		}
+		privEnc, err = encryptPrivateKey(s.masterKey, privDER)
+		if err != nil {
+			return nil, fmt.Errorf("加密私钥失败: %w", err)
+		}
 	}
 
+	parsed, _, err := parseCertificateAny(certDER)
+	if err != nil {
+		return nil, fmt.Errorf("解析新建 CA 证书失败: %w", err)
+	}
+
+	keySource := "generated"
 	ca := &storage.CA{
-		Name:       name,
-		CertPEM:    string(certPEM),
-		PrivateEnc: privEnc,
-		Status:     "active",
-		NotBefore:  now,
-		NotAfter:   notAfter,
+		Name:             p.Name,
+		CertPEM:          string(certPEM),
+		PrivateEnc:       privEnc,
+		ParentUUID:       p.ParentUUID,
+		Status:           "active",
+		NotBefore:        parsed.NotBefore,
+		NotAfter:         parsed.NotAfter,
+		KeyType:          p.KeyType,
+		SigAlg:           signatureAlgorithmName(parsed),
+		SubjectDN:        parsed.Subject.String(),
+		KeySource:        keySource,
+		KeyBackend:       keyBackend,
+		StorageZone:      p.StorageZoneUUID,
+		KeyRef:           keyRef,
+		IssuanceTmplUUID: p.IssuanceTmplUUID,
 	}
 
 	if err := s.Create(ctx, ca); err != nil {
@@ -354,6 +553,44 @@ func (s *Service) CreateSelfSignedCA(ctx context.Context, name string, subject p
 	}
 
 	return ca, nil
+}
+
+// CreateSelfSignedCA 创建自签名根 CA（兼容旧调用方的简化入口）。
+//
+// 等价于调用 CreateCA 且不指定上级 CA、不指定颁发模板约束；有效期按年换算为天。
+// 新代码应直接使用 CreateCA 以获得颁发模板约束、生效/失效时间与存储区域支持。
+func (s *Service) CreateSelfSignedCA(ctx context.Context, name string, subject pkix.Name, keyType string, validYears int) (*storage.CA, error) {
+	if validYears <= 0 {
+		validYears = 10
+	}
+	return s.CreateCA(ctx, &CACreateParams{
+		Name:      name,
+		Subject:   subject,
+		KeyType:   keyType,
+		ValidDays: validYears * 365,
+	})
+}
+
+// asSigner 将私钥转换为 crypto.Signer（SM2 需要包装以适配签名选项）。
+func asSigner(priv crypto.PrivateKey) crypto.Signer {
+	if k, ok := priv.(*sm2.PrivateKey); ok {
+		return asSM2Signer(k)
+	}
+	if k, ok := priv.(crypto.Signer); ok {
+		return k
+	}
+	return nil
+}
+
+// signatureAlgorithmName 返回证书签名算法的可读名称（SM2 会显示为 SM2WithSM3）。
+func signatureAlgorithmName(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	if isSM2Signature(cert) {
+		return "SM2WithSM3"
+	}
+	return cert.SignatureAlgorithm.String()
 }
 
 // ---- 内部工具函数 ----
@@ -413,6 +650,8 @@ func publicKey(priv crypto.PrivateKey) crypto.PublicKey {
 		return &k.PublicKey
 	case *ecdsa.PrivateKey:
 		return &k.PublicKey
+	case *sm2.PrivateKey:
+		return sm2PublicKeyOf(k)
 	case ed25519.PrivateKey:
 		return k.Public()
 	default:
@@ -429,9 +668,11 @@ func (s *Service) applyCertExtTemplate(ctx context.Context, req *IssueRequest) e
 		`SELECT cert_ext_tmpl_uuid FROM issuance_templates WHERE uuid = ?`,
 		req.IssuanceTmplUUID,
 	).Scan(&certExtTmplUUID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("颁发模板不存在: %s", req.IssuanceTmplUUID)
+	}
 	if err != nil {
-		// 模板不存在或读取失败时静默跳过，不阻塞签发
-		return nil
+		return fmt.Errorf("读取颁发模板失败: %w", err)
 	}
 	if certExtTmplUUID == "" {
 		return nil
@@ -446,8 +687,11 @@ func (s *Service) applyCertExtTemplate(ctx context.Context, req *IssueRequest) e
 		 FROM cert_ext_templates WHERE uuid = ?`, certExtTmplUUID,
 	).Scan(&crlJSON, &ocspJSON, &aiaJSON, &ctJSON, &evOID,
 		&netscapeJSON, &cspJSON, &asn1JSON)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("颁发模板关联的证书扩展模板不存在")
+	}
 	if err != nil {
-		return nil
+		return fmt.Errorf("读取证书扩展模板失败: %w", err)
 	}
 
 	// 3. 解析 JSON 数组并回填（只在 req 未设置时）
@@ -599,7 +843,13 @@ func (s *Service) applyKeyUsageTemplate(ctx context.Context, req *IssueRequest) 
 		`SELECT key_usage_tmpl_uuid FROM issuance_templates WHERE uuid = ?`,
 		req.IssuanceTmplUUID,
 	).Scan(&keyUsageTmplUUID)
-	if err != nil || keyUsageTmplUUID == "" {
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("颁发模板不存在: %s", req.IssuanceTmplUUID)
+	}
+	if err != nil {
+		return fmt.Errorf("读取颁发模板失败: %w", err)
+	}
+	if keyUsageTmplUUID == "" {
 		return nil
 	}
 
@@ -609,8 +859,12 @@ func (s *Service) applyKeyUsageTemplate(ctx context.Context, req *IssueRequest) 
 		`SELECT key_usage, ext_key_usages FROM key_usage_templates WHERE uuid = ?`,
 		keyUsageTmplUUID,
 	).Scan(&keyUsage, &extKeyUsagesJSON)
+	if err == sql.ErrNoRows {
+		// 模板配置断链时拒绝签发，避免签出缺少用途限制的证书
+		return fmt.Errorf("颁发模板关联的密钥用途模板不存在")
+	}
 	if err != nil {
-		return nil
+		return fmt.Errorf("读取密钥用途模板失败: %w", err)
 	}
 
 	// 只在 req 未显式设置 KU 时覆盖（0 表示未设置）
@@ -618,18 +872,38 @@ func (s *Service) applyKeyUsageTemplate(ctx context.Context, req *IssueRequest) 
 		req.KeyUsage = x509.KeyUsage(keyUsage)
 	}
 
-	// EKU：只在 req 为空时回填
-	if len(req.ExtKeyUsage) == 0 {
-		oidList := parseJSONStringArray(extKeyUsagesJSON)
-		for _, oidStr := range oidList {
+	// EKU：只在 req 为空时回填；已有常量的走标准字段，其余 OID 写入 UnknownExtKeyUsage
+	if len(req.ExtKeyUsage) == 0 && len(req.UnknownExtKeyUsage) == 0 {
+		for _, oidStr := range parseJSONStringArray(extKeyUsagesJSON) {
 			if eku, ok := ekuOIDToConstant(oidStr); ok {
 				req.ExtKeyUsage = append(req.ExtKeyUsage, eku)
+				continue
 			}
-			// 对于未知 OID，当前版本忽略（避免引入 UnknownExtKeyUsage 复杂性）；
-			// T14 中补充 ExtraExtensions 写入支持任意 EKU OID。
+			oid, err := parseOIDString(oidStr)
+			if err != nil {
+				return fmt.Errorf("密钥用途模板中的扩展密钥用途 %q 不是合法 OID", oidStr)
+			}
+			req.UnknownExtKeyUsage = append(req.UnknownExtKeyUsage, oid)
 		}
 	}
 	return nil
+}
+
+// parseOIDString 解析点分十进制 OID。
+func parseOIDString(s string) (asn1.ObjectIdentifier, error) {
+	parts := strings.Split(strings.TrimSpace(s), ".")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("OID 至少需要两段")
+	}
+	oid := make(asn1.ObjectIdentifier, len(parts))
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("OID 第 %d 段不是非负整数", i+1)
+		}
+		oid[i] = n
+	}
+	return oid, nil
 }
 
 // ekuOIDToConstant 将字符串 OID 映射到 x509.ExtKeyUsage 常量。

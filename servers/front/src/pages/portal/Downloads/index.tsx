@@ -113,11 +113,6 @@ const PortalDownloads: React.FC = () => {
           ))}
         </Row>
 
-        <Alert
-          type="info" showIcon style={{ marginTop: 20 }}
-          message="关于 CSP 名称的说明"
-          description="本页的 CSP 指 Windows CryptoAPI 的加密服务提供程序。若您查找的是证书业务规则文档（CP/CPS），请通过页脚的条款链接获取。"
-        />
       </Card>
 
       <Card style={{ borderRadius: 14, border: '1px solid #e8ecf3', marginTop: 24 }} styles={{ body: { padding: 28 } }}>
@@ -160,9 +155,8 @@ const PortalDownloads: React.FC = () => {
 
       {!hasAnyDownload && (
         <Alert
-          type="warning" showIcon style={{ marginTop: 24 }}
-          message="下载地址尚未配置"
-          description="管理员可在控制台「系统管理 → 站点设置」中填写客户端与驱动下载地址，填写后本页会立即展示。"
+          type="info" showIcon style={{ marginTop: 24 }}
+          message="下载即将开放，敬请期待"
         />
       )}
     </div>

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Card, Table, Button, Space, Tag, Typography, Modal, Form, Input, Switch, Select,
-  message, Popconfirm, Alert,
+  message, Popconfirm,
 } from 'antd';
 import {
   FileTextOutlined, PlusOutlined, ReloadOutlined, DeleteOutlined, EditOutlined,
@@ -105,11 +105,8 @@ const CertPoliciesPage: React.FC = () => {
           </Space>
         }
       >
-        <Alert
-          type="info" showIcon style={{ marginBottom: 16 }}
-          message="每个策略一个页面：/policy/{路径}；内容建议与引用方式见帮助文档"
-        />
-        <Table rowKey="uuid" loading={loading} dataSource={data} columns={columns as any} />
+        <Table rowKey="uuid" loading={loading} dataSource={data} columns={columns as any}
+          locale={{ emptyText: '还没有证书策略。发布后可对外提供公开链接。' }} />
       </Card>
 
       <Modal

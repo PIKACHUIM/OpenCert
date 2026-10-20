@@ -151,10 +151,8 @@ const ExtensionInfosPage: React.FC = () => {
           </Space>
         }
       >
-        <Alert type="info" showIcon style={{ marginBottom: 16 }}
-          message="域名/邮箱/IP 需通过所有权验证后才能写入证书"
-          description="验证方式与有效期由扩展信息模板配置：DNS TXT 记录、HTTP 文件、TLS-ALPN（RFC 8737）、邮箱验证码或人工审核。单张证书允许的数量与格式（通配符、IPv4/IPv6、邮箱后缀）在商品规格中限制。" />
-        <Table rowKey="uuid" loading={loading} dataSource={data} columns={columns as any} />
+        <Table rowKey="uuid" loading={loading} dataSource={data} columns={columns as any}
+          locale={{ emptyText: '还没有扩展信息。添加并通过所有权验证后即可写入证书。' }} />
       </Card>
 
       <Modal open={open} title="添加扩展信息" onCancel={() => setOpen(false)}

@@ -10,6 +10,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -209,17 +210,20 @@ func (s *Server) handlePortalCapabilities(w http.ResponseWriter, r *http.Request
 	templates := []selfApplyTemplate{}
 	if modes.CertApplyMode == storage.ModeSelfService || isAdmin {
 		rows, err := s.db.QueryContext(r.Context(),
-			`SELECT uuid, name, description, allowed_key_types, require_approval
-			 FROM cert_apply_templates WHERE enabled = 1 ORDER BY created_at DESC`)
+			`SELECT a.uuid, a.name, a.description, i.allowed_key_types, a.require_approval
+			 FROM cert_apply_templates a
+			 LEFT JOIN issuance_templates i ON i.uuid = a.issuance_tmpl_uuid
+			 WHERE a.enabled = 1 AND a.apply_modes LIKE '%"self"%'
+			 ORDER BY a.created_at DESC`)
 		if err == nil {
 			for rows.Next() {
 				var t selfApplyTemplate
-				var keyTypes string
+				var keyTypes sql.NullString
 				var requireApproval int
 				if rows.Scan(&t.UUID, &t.Name, &t.Description, &keyTypes, &requireApproval) != nil {
 					continue
 				}
-				json.Unmarshal([]byte(keyTypes), &t.AllowedKeyTypes) //nolint:errcheck
+				json.Unmarshal([]byte(keyTypes.String), &t.AllowedKeyTypes) //nolint:errcheck
 				t.RequireApproval = requireApproval == 1
 				templates = append(templates, t)
 			}

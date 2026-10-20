@@ -110,7 +110,16 @@ func (s *Slot) TokenInfo() pkcs11types.TokenInfo {
 
 // Mechanisms 返回支持的算法列表（与 local slot 相同）。
 func (s *Slot) Mechanisms() []pkcs11types.MechanismType {
-	return s.localSlot.Mechanisms()
+	// TPM 不支持国密算法，过滤掉本地卡能力表中的 SM2/SM3/SM4
+	all := s.localSlot.Mechanisms()
+	out := make([]pkcs11types.MechanismType, 0, len(all))
+	for _, m := range all {
+		if local.IsGMMechanism(m) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // Login 验证卡片密码，通过 TPM Unseal 解锁主密钥。
@@ -166,18 +175,27 @@ func (s *Slot) GetAttributes(ctx context.Context, handle pkcs11types.ObjectHandl
 	return s.localSlot.GetAttributes(ctx, handle, attrs)
 }
 
-// Sign 委托给 local slot。
+// Sign 委托给 local slot；国密机制明确拒绝。
 func (s *Slot) Sign(ctx context.Context, handle pkcs11types.ObjectHandle, mechanism pkcs11types.Mechanism, data []byte) ([]byte, error) {
+	if local.IsGMMechanism(mechanism.Type) {
+		return nil, fmt.Errorf("%w: TPM 卡不支持国密算法", pkcs11types.CKR_MECHANISM_INVALID)
+	}
 	return s.localSlot.Sign(ctx, handle, mechanism, data)
 }
 
-// Decrypt 委托给 local slot。
+// Decrypt 委托给 local slot；国密机制明确拒绝。
 func (s *Slot) Decrypt(ctx context.Context, handle pkcs11types.ObjectHandle, mechanism pkcs11types.Mechanism, ciphertext []byte) ([]byte, error) {
+	if local.IsGMMechanism(mechanism.Type) {
+		return nil, fmt.Errorf("%w: TPM 卡不支持国密算法", pkcs11types.CKR_MECHANISM_INVALID)
+	}
 	return s.localSlot.Decrypt(ctx, handle, mechanism, ciphertext)
 }
 
-// Encrypt 委托给 local slot。
+// Encrypt 委托给 local slot；国密机制明确拒绝。
 func (s *Slot) Encrypt(ctx context.Context, handle pkcs11types.ObjectHandle, mechanism pkcs11types.Mechanism, plaintext []byte) ([]byte, error) {
+	if local.IsGMMechanism(mechanism.Type) {
+		return nil, fmt.Errorf("%w: TPM 卡不支持国密算法", pkcs11types.CKR_MECHANISM_INVALID)
+	}
 	return s.localSlot.Encrypt(ctx, handle, mechanism, plaintext)
 }
 

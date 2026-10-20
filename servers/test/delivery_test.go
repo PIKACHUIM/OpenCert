@@ -21,6 +21,7 @@ import (
 	"software.sslmate.com/src/go-pkcs12"
 
 	"github.com/globaltrusts/server-card/internal/card"
+	"github.com/globaltrusts/server-card/internal/issuance"
 	"github.com/globaltrusts/server-card/internal/storage"
 	"github.com/globaltrusts/server-card/internal/workflow"
 )
@@ -199,13 +200,14 @@ func TestApplicationRequiresPaidOrder(t *testing.T) {
 func TestApplicationRejectsInvalidCSRAndKeyType(t *testing.T) {
 	t.Parallel()
 	db := setupServerDB(t)
-	svc := workflow.NewService(db, nil, nil)
+	issSvc := issuance.NewService(db)
+	svc := workflow.NewService(db, nil, issSvc)
 	ctx := context.Background()
 
 	userUUID := createTestUser(t, db, "csrcheck@test.com")
 
 	// 商品只允许 ec256
-	insertApplyTemplateWithKeyTypes(t, db, "tmpl-ec256", "仅 ec256", `["ec256"]`)
+	insertApplyTemplateWithKeyTypes(t, db, issSvc, "tmpl-ec256", "仅 ec256", `["ec256"]`)
 	order := &storage.CertOrder{UserUUID: userUUID, CertApplyTmplUUID: "tmpl-ec256"}
 	if err := svc.CreateOrder(ctx, order); err != nil {
 		t.Fatalf("创建订单失败: %v", err)
@@ -259,16 +261,24 @@ func generateECDSACSRPEM(t *testing.T, commonName string) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))
 }
 
-// insertApplyTemplateWithKeyTypes 插入指定算法白名单的申请模板。
-func insertApplyTemplateWithKeyTypes(t *testing.T, db *storage.DB, uuid, name, keyTypes string) {
+// insertApplyTemplateWithKeyTypes 插入开通模板，并在其关联的颁发模板上设置算法白名单
+// （算法范围属于颁发模板，开通模板不再配置）。
+func insertApplyTemplateWithKeyTypes(t *testing.T, db *storage.DB, issSvc *issuance.Service, uuid, name, keyTypes string) {
 	t.Helper()
-	_, err := db.ExecContext(context.Background(),
+	ctx := context.Background()
+	it := &storage.IssuanceTemplate{
+		Name: name + " 颁发模板", ValidDays: `[365]`, AllowedKeyTypes: keyTypes, AllowedCAUUIDs: `[]`,
+		Category: "ssl", Enabled: true,
+	}
+	if err := issSvc.CreateIssuanceTemplate(ctx, it); err != nil {
+		t.Fatalf("创建颁发模板失败: %v", err)
+	}
+	_, err := db.ExecContext(ctx,
 		`INSERT INTO cert_apply_templates
-		 (uuid, name, issuance_tmpl_uuid, valid_days, ca_uuid, enabled, require_approval,
-		  allow_renewal, allowed_key_types, price_cents, description, created_at, updated_at)
-		 VALUES (?, ?, '', 365, '', 1, 0, 1, ?, 100, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-		uuid, name, keyTypes)
+		 (uuid, name, issuance_tmpl_uuid, enabled, require_approval, allow_renewal, description, created_at, updated_at)
+		 VALUES (?, ?, ?, 1, 0, 1, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		uuid, name, it.UUID)
 	if err != nil {
-		t.Fatalf("插入申请模板失败: %v", err)
+		t.Fatalf("插入开通模板失败: %v", err)
 	}
 }

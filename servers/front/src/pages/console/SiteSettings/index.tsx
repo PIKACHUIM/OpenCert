@@ -92,7 +92,7 @@ const ConsoleSiteSettings: React.FC = () => {
           <Alert
             type="info" showIcon style={{ marginBottom: 12 }}
             message="决定用户能否自助申请证书/开通智能卡，或必须先购买订单"
-            description="销售模式下用户必须凭已支付订单操作，控制台会自动隐藏不具备条件的入口；所有限制均由服务端在写入接口再次强制校验。详细说明见帮助中心《业务模式与站点设置》。"
+            description="销售模式下用户须凭已支付订单操作，不符合条件的入口会自动隐藏。"
           />
           <Row gutter={16}>
             <Col xs={24} md={8}>

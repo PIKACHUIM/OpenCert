@@ -254,6 +254,10 @@ func (s *Service) Respond(ctx context.Context, r *Responder, reqDER []byte) ([]b
 	if !signerCert.Equal(issuer) {
 		tmpl.Certificate = signerCert
 	}
+	// SM2 CA/签名证书标准库不认识，需要走国密专用编码（见 ocsp_gm.go）。
+	if isSM2PubKey(issuer) || isSM2PubKey(signerCert) {
+		return CreateOCSPResponseSM2(issuer, signerCert, tmpl, signer)
+	}
 	return ocsp.CreateResponse(issuer, signerCert, tmpl, signer)
 }
 

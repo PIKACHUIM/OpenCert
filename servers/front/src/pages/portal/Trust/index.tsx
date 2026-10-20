@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Empty, Row, Space, Skeleton, Tag, Tooltip, Typography, message,
+  Button, Card, Col, Empty, Row, Space, Skeleton, Tag, Tooltip, Typography, message,
 } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -125,7 +125,7 @@ const PortalTrust: React.FC = () => {
                 />
                 <EndpointRow
                   label="OCSP 服务地址" value={ca.ocsp_url}
-                  hint="在线证书状态查询协议地址，不是普通网页，需由客户端以 OCSP 协议访问"
+                  hint="供软件实时查询证书是否有效，浏览器直接打开会报错"
                 />
               </Card>
             </Col>
@@ -147,8 +147,8 @@ const PortalTrust: React.FC = () => {
               <div>
                 <Text strong>吊销状态如何生效</Text>
                 <div style={{ fontSize: 13, color: '#6b7280', lineHeight: 1.8 }}>
-                  CRL 由服务端定时重新生成，客户端应定期重新拉取；
-                  OCSP 为实时查询，需要应用支持该协议。
+                  吊销列表会定期更新，应用需重新拉取后生效；
+                  状态查询为实时结果，随查随用。
                 </div>
               </div>
             </Space>
@@ -170,7 +170,7 @@ const PortalTrust: React.FC = () => {
         </Row>
       </Card>
 
-      {/* 证书策略与合规文档（由「证书服务 → 证书策略管理」发布） */}
+      {/* 证书策略与合规文档（由「证书服务管理 → 证书策略管理」发布） */}
       {policies.length > 0 && (
         <Card style={{ borderRadius: 14, border: '1px solid #e8ecf3', marginTop: 32 }} styles={{ body: { padding: 28 } }}>
           <Title level={4} style={{ marginTop: 0 }}>证书策略与合规文档</Title>
@@ -202,11 +202,6 @@ const PortalTrust: React.FC = () => {
         </Card>
       )}
 
-      <Alert
-        type="info" showIcon style={{ marginTop: 24 }}
-        message="地址由服务端根据实际配置生成"
-        description="若此处未列出您需要的 CA，说明该 CA 未对外发布；请联系管理员在控制台中将该 CA 标记为公开。"
-      />
     </div>
   );
 };

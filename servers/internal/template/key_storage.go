@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/globaltrusts/server-card/internal/keybackend"
 	"github.com/globaltrusts/server-card/internal/storage"
 	"github.com/google/uuid"
 )
@@ -21,35 +22,16 @@ func NewService(db *storage.DB) *Service {
 	return &Service{db: db}
 }
 
-// Create 创建密钥存储类型模板。
-func (s *Service) Create(ctx context.Context, t *storage.KeyStorageTemplate) error {
-	if err := Validate(t); err != nil {
-		return fmt.Errorf("模板配置校验失败: %w", err)
-	}
+const keyStorageColumns = `uuid, name, storage_methods, security_level, allow_reimport, cloud_backup,
+	allow_reissue, max_reissue_count, storage_zone_uuid, key_gen_location, download_formats, created_at, updated_at`
 
-	t.UUID = uuid.New().String()
-	t.CreatedAt = time.Now()
-	t.UpdatedAt = time.Now()
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO key_storage_templates (uuid, name, storage_methods, security_level, allow_reimport, cloud_backup, allow_reissue, max_reissue_count, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.UUID, t.Name, t.StorageMethods, t.SecurityLevel, boolToInt(t.AllowReimport), boolToInt(t.CloudBackup),
-		boolToInt(t.AllowReissue), t.MaxReissueCount, t.CreatedAt, t.UpdatedAt,
-	)
-	return err
-}
-
-// GetByUUID 按 UUID 查询模板。
-func (s *Service) GetByUUID(ctx context.Context, templateUUID string) (*storage.KeyStorageTemplate, error) {
+func scanKeyStorage(scan func(dest ...interface{}) error) (*storage.KeyStorageTemplate, error) {
 	t := &storage.KeyStorageTemplate{}
 	var allowReimport, cloudBackup, allowReissue int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT uuid, name, storage_methods, security_level, allow_reimport, cloud_backup, allow_reissue, max_reissue_count, created_at, updated_at
-		 FROM key_storage_templates WHERE uuid = ?`, templateUUID,
-	).Scan(&t.UUID, &t.Name, &t.StorageMethods, &t.SecurityLevel, &allowReimport, &cloudBackup, &allowReissue, &t.MaxReissueCount, &t.CreatedAt, &t.UpdatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("模板不存在: %s", templateUUID)
+	if err := scan(&t.UUID, &t.Name, &t.StorageMethods, &t.SecurityLevel, &allowReimport, &cloudBackup,
+		&allowReissue, &t.MaxReissueCount, &t.StorageZoneUUID, &t.KeyGenLocation, &t.DownloadFormats,
+		&t.CreatedAt, &t.UpdatedAt); err != nil {
+		return nil, err
 	}
 	t.AllowReimport = allowReimport == 1
 	t.CloudBackup = cloudBackup == 1
@@ -57,56 +39,130 @@ func (s *Service) GetByUUID(ctx context.Context, templateUUID string) (*storage.
 	return t, nil
 }
 
+// zoneIsHardware 判断模板绑定的存储区域是否为硬件区域（私钥不可导出）。
+// 未指定区域（使用默认区域）或区域不存在时按非硬件处理，由签发阶段再校验区域可用性。
+func (s *Service) zoneIsHardware(ctx context.Context, zoneUUID string) (bool, error) {
+	if zoneUUID == "" {
+		return false, nil
+	}
+	var storageType, driver string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT storage_type, hsm_driver FROM storage_zones WHERE uuid = ?`, zoneUUID,
+	).Scan(&storageType, &driver)
+	if err == sql.ErrNoRows {
+		return false, fmt.Errorf("所选存储区域不存在")
+	}
+	if err != nil {
+		return false, err
+	}
+	z := &storage.StorageZone{StorageType: storageType, HSMDriver: driver}
+	return keybackend.IsHardware(z.DriverID()), nil
+}
+
+func (s *Service) validate(ctx context.Context, t *storage.KeyStorageTemplate) error {
+	hw, err := s.zoneIsHardware(ctx, t.StorageZoneUUID)
+	if err != nil {
+		return err
+	}
+	if err := Validate(t, hw); err != nil {
+		return fmt.Errorf("模板配置校验失败: %w", err)
+	}
+	return nil
+}
+
+// Create 创建密钥存储类型模板。
+func (s *Service) Create(ctx context.Context, t *storage.KeyStorageTemplate) error {
+	if err := s.validate(ctx, t); err != nil {
+		return err
+	}
+
+	t.UUID = uuid.New().String()
+	t.CreatedAt = time.Now()
+	t.UpdatedAt = t.CreatedAt
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO key_storage_templates (`+keyStorageColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.UUID, t.Name, t.StorageMethods, t.SecurityLevel, boolToInt(t.AllowReimport), boolToInt(t.CloudBackup),
+		boolToInt(t.AllowReissue), t.MaxReissueCount, t.StorageZoneUUID, t.KeyGenLocation, t.DownloadFormats,
+		t.CreatedAt, t.UpdatedAt,
+	)
+	return err
+}
+
+// GetByUUID 按 UUID 查询模板。
+func (s *Service) GetByUUID(ctx context.Context, templateUUID string) (*storage.KeyStorageTemplate, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+keyStorageColumns+` FROM key_storage_templates WHERE uuid = ?`, templateUUID)
+	t, err := scanKeyStorage(row.Scan)
+	if err != nil {
+		return nil, fmt.Errorf("模板不存在: %s", templateUUID)
+	}
+	return t, nil
+}
+
 // List 查询所有模板。
 func (s *Service) List(ctx context.Context) ([]*storage.KeyStorageTemplate, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT uuid, name, storage_methods, security_level, allow_reimport, cloud_backup, allow_reissue, max_reissue_count, created_at, updated_at
-		 FROM key_storage_templates ORDER BY created_at DESC`,
-	)
+		`SELECT `+keyStorageColumns+` FROM key_storage_templates ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var templates []*storage.KeyStorageTemplate
+	templates := []*storage.KeyStorageTemplate{}
 	for rows.Next() {
-		t := &storage.KeyStorageTemplate{}
-		var allowReimport, cloudBackup, allowReissue int
-		if err := rows.Scan(&t.UUID, &t.Name, &t.StorageMethods, &t.SecurityLevel, &allowReimport, &cloudBackup, &allowReissue, &t.MaxReissueCount, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		t, err := scanKeyStorage(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
-		t.AllowReimport = allowReimport == 1
-		t.CloudBackup = cloudBackup == 1
-		t.AllowReissue = allowReissue == 1
 		templates = append(templates, t)
 	}
 	return templates, rows.Err()
 }
 
-// Update 更新模板（仅允许修改非安全属性：名称、下发次数等）。
-func (s *Service) Update(ctx context.Context, templateUUID string, name string, maxReissueCount int) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE key_storage_templates SET name = ?, max_reissue_count = ?, updated_at = ? WHERE uuid = ?`,
-		name, maxReissueCount, time.Now(), templateUUID,
+// Update 全量更新模板，保存前重新执行完整校验。
+// 已签发证书保存的是签发时的快照，修改模板只影响之后新签发/新下发的证书。
+func (s *Service) Update(ctx context.Context, t *storage.KeyStorageTemplate) error {
+	if err := s.validate(ctx, t); err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE key_storage_templates SET name = ?, storage_methods = ?, security_level = ?, allow_reimport = ?,
+		 cloud_backup = ?, allow_reissue = ?, max_reissue_count = ?, storage_zone_uuid = ?, key_gen_location = ?,
+		 download_formats = ?, updated_at = ? WHERE uuid = ?`,
+		t.Name, t.StorageMethods, t.SecurityLevel, boolToInt(t.AllowReimport), boolToInt(t.CloudBackup),
+		boolToInt(t.AllowReissue), t.MaxReissueCount, t.StorageZoneUUID, t.KeyGenLocation, t.DownloadFormats,
+		time.Now(), t.UUID,
 	)
-	return err
-}
-
-// Delete 删除模板（如果已关联证书则拒绝）。
-func (s *Service) Delete(ctx context.Context, templateUUID string) error {
-	// 检查是否有关联的下发记录
-	var count int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM cert_reissue_counters WHERE template_uuid = ?`, templateUUID,
-	).Scan(&count)
 	if err != nil {
 		return err
 	}
-	if count > 0 {
-		return fmt.Errorf("模板已关联 %d 个证书，无法删除", count)
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("模板不存在")
+	}
+	return nil
+}
+
+// Delete 删除模板：被颁发模板或已签发证书引用时拒绝。
+func (s *Service) Delete(ctx context.Context, templateUUID string) error {
+	var issuanceRefs, certRefs, counterRefs int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT (SELECT COUNT(*) FROM issuance_templates WHERE key_storage_tmpl_uuid = ?),
+		        (SELECT COUNT(*) FROM certificates WHERE key_storage_tmpl_uuid = ?),
+		        (SELECT COUNT(*) FROM cert_reissue_counters WHERE template_uuid = ?)`,
+		templateUUID, templateUUID, templateUUID,
+	).Scan(&issuanceRefs, &certRefs, &counterRefs); err != nil {
+		return err
+	}
+	if issuanceRefs > 0 {
+		return fmt.Errorf("该模板被 %d 个颁发模板使用，请先解除关联", issuanceRefs)
+	}
+	if certRefs > 0 || counterRefs > 0 {
+		return fmt.Errorf("该模板已关联已签发的证书，无法删除")
 	}
 
-	_, err = s.db.ExecContext(ctx, `DELETE FROM key_storage_templates WHERE uuid = ?`, templateUUID)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM key_storage_templates WHERE uuid = ?`, templateUUID)
 	return err
 }
 

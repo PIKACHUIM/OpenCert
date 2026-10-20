@@ -19,6 +19,9 @@ type Config struct {
 	AllowedOrigins []string // CORS 允许的来源列表
 	MasterKeyFile  string   // 主密钥文件路径（优先使用环境变量 SERVER_CARD_MASTER_KEY）
 	WebRoot        string   // 门户/控制台前端静态资源目录（默认：程序目录下 web）
+	// KeyBackendsFile 是私钥存储后端（PKCS#11 等）的外部插件清单路径。
+	// 文件不存在时忽略；存在时用于扩展「扫描本机模块」可发现的厂商驱动。
+	KeyBackendsFile string
 }
 
 // ResolveWebRoot 返回前端静态资源目录，未配置时回退到程序目录下的 web。
@@ -46,7 +49,11 @@ type SMTPConfig struct {
 	Password string // 登录密码（或 App 专用密码）
 	From     string // 发件人邮箱（如 noreply@example.com）
 	FromName string // 发件人显示名称
-	UseTLS   bool   // 是否使用 STARTTLS
+	UseTLS   bool   // 是否使用 STARTTLS（兼容旧配置；TLSMode 为空时生效）
+	// TLSMode 是加密方式：starttls（默认）/ ssl（隐式 SSL，常见于 465 端口）/ none
+	TLSMode string
+	// TimeoutSeconds 是连接与发送超时（秒），0 表示使用默认 15 秒
+	TimeoutSeconds int
 }
 
 // APIConfig 是 HTTP API 配置。
@@ -119,9 +126,10 @@ func Load() *Config {
 		CT: CTConfig{
 			SubmitToken: getEnv("SERVER_CARD_CT_SUBMIT_TOKEN", ""),
 		},
-		AllowedOrigins: allowedOrigins,
-		MasterKeyFile:  getEnv("SERVER_CARD_MASTER_KEY_FILE", ""),
-		WebRoot:        getEnv("SERVER_CARD_WEB_ROOT", ""),
+		AllowedOrigins:  allowedOrigins,
+		MasterKeyFile:   getEnv("SERVER_CARD_MASTER_KEY_FILE", ""),
+		WebRoot:         getEnv("SERVER_CARD_WEB_ROOT", ""),
+		KeyBackendsFile: getEnv("SERVER_CARD_KEYBACKENDS_FILE", defaultKeyBackendsFile()),
 	}
 
 	// BaseURL 未设置时，回退到 http://Host:Port
@@ -205,6 +213,16 @@ func defaultDBPath() string {
 		return "data/server.db"
 	}
 	return filepath.Join(filepath.Dir(exe), "data", "server.db")
+}
+
+// defaultKeyBackendsFile 返回默认的私钥后端插件清单路径（程序目录下 configs/keybackends.json）。
+// 文件不存在时会被忽略，不影响启动。
+func defaultKeyBackendsFile() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "configs/keybackends.json"
+	}
+	return filepath.Join(filepath.Dir(exe), "configs", "keybackends.json")
 }
 
 // defaultWebRoot 返回默认的前端静态资源目录（程序所在目录的 web 子目录）。

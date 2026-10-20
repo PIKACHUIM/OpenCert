@@ -203,13 +203,19 @@ export interface CertPolicy {
 export interface VerifyProviderDriverField {
   key: string;
   label: string;
+  /** text（默认）/ password / number / select / textarea / url */
+  type?: string;
+  options?: string[];
+  default?: string;
+  group?: string;
+  placeholder?: string;
   secret?: boolean;
   required?: boolean;
   help?: string;
 }
 
 export interface VerifyProviderDriver {
-  kind: 'email' | 'identity';
+  kind: 'email' | 'domain' | 'identity';
   driver: string;
   name: string;
   available: boolean;
@@ -220,11 +226,14 @@ export interface VerifyProviderDriver {
 export interface VerifyProvider {
   uuid: string;
   name: string;
-  kind: 'email' | 'identity';
+  kind: 'email' | 'domain' | 'identity';
   driver: string;
   config: Record<string, string>;
+  /** 同类接口中的默认项 */
+  is_default?: boolean;
   enabled: boolean;
   created_at?: string;
+  updated_at?: string;
 }
 
 // ---- 身份认证审核 ----
@@ -325,9 +334,21 @@ export interface CertApplyTemplateInfo {
   /** JSON 字符串数组 */
   allowed_key_types: string;
   description: string;
-  /** 申请资料要求（优先于颁发模板上的同名关联） */
-  subject_tmpl_uuid: string;
-  extension_tmpl_uuid: string;
+  /** 申请资料要求（继承自颁发模板，只读展示） */
+  subject_tmpl_uuid?: string;
+  extension_tmpl_uuid?: string;
+  /** 可申请方式：order / self / subscription（页面内为数组，提交时为 JSON 字符串） */
+  apply_modes?: string[] | string;
+  /** 继承自颁发模板的只读摘要 */
+  inherited?: {
+    ca_uuids?: string[];
+    default_ca_uuid?: string;
+    valid_days?: number[];
+    default_valid_days?: number;
+    allowed_key_types?: string[];
+    subject_tmpl_uuid?: string;
+    extension_tmpl_uuid?: string;
+  };
   created_at?: string;
   updated_at?: string;
 }
@@ -516,11 +537,23 @@ export interface SiteSettings {
 export interface CA {
   uuid: string;
   name: string;
-  status: 'active' | 'revoked' | 'expired';
+  status: 'active' | 'revoked' | 'expired' | 'disabled';
   key_type: string;
-  common_name: string;
+  /** 签名算法（如 SM2WithSM3 / ECDSA-SHA256） */
+  sig_alg?: string;
+  subject_dn?: string;
+  common_name?: string;
   organization?: string;
   country?: string;
+  /** 私钥来源：generated / imported / external（仅证书） */
+  key_source?: string;
+  key_backend?: string;
+  /** 私钥所在存储区域 */
+  storage_zone_uuid?: string;
+  storage_zone_name?: string;
+  is_public?: boolean;
+  parent_uuid?: string;
+  issuance_tmpl_uuid?: string;
   not_before: string;
   not_after: string;
   issued_count: number;
@@ -531,11 +564,23 @@ export interface CA {
 
 export interface CreateCARequest {
   name: string;
-  key_type: 'ec256' | 'ec384' | 'rsa2048' | 'rsa4096';
-  validity_years: number;
+  /** CA 类颁发模板：约束允许的算法、有效期与路径长度 */
+  issuance_tmpl_uuid?: string;
+  /** 上级 CA；为空表示自签根 CA */
+  parent_uuid?: string;
+  key_type: string;
+  /** 签名算法名（如 SHA256_RSA / SM2WithSM3），为空由服务端按 CA 密钥自动选择 */
+  sig_alg?: string;
+  validity_years?: number;
+  valid_days?: number;
+  not_before?: string;
+  not_after?: string;
   common_name: string;
   organization?: string;
   country?: string;
+  path_len?: number;
+  path_len_zero?: boolean;
+  storage_zone_uuid?: string;
 }
 
 export interface RevokedCert {
@@ -553,13 +598,22 @@ export interface RevokeCertRequest {
 export interface IssueCertRequest {
   key_type: string;
   validity_days: number;
+  /** 显式生效 / 失效时间（RFC3339），优先于 validity_days */
+  not_before?: string;
+  not_after?: string;
   common_name: string;
   organization?: string;
   country?: string;
   is_ca: boolean;
+  path_len?: number;
   san_dns?: string[];
   san_ip?: string[];
   san_email?: string[];
+  /** 证书策略 OID */
+  certificate_policies?: string[];
+  /** 颁发模板（决定密钥用途、扩展与算法范围） */
+  issuance_tmpl_uuid?: string;
+  card_uuid?: string;
 }
 
 // ---- 证书类型 ----
@@ -599,8 +653,15 @@ export interface IssuanceTemplate {
   is_ca: boolean;
   enabled: boolean;
   validity_options: number[];
+  /** 默认有效期（天），需在 validity_options 中 */
+  default_valid_days?: number;
   allowed_key_types: string[];
+  /** 允许的签名算法名（如 SHA256_RSA / SM2WithSM3） */
+  allowed_sig_algs?: string[];
   allowed_ca_uuids: string[];
+  /** 默认签发 CA，需在 allowed_ca_uuids 中 */
+  default_ca_uuid?: string;
+  path_len?: number;
   subject_template_uuid?: string;
   extension_template_uuid?: string;
   key_usage_template_uuid?: string;
@@ -721,6 +782,15 @@ export interface KeyStorageTemplate {
   cloud_backup: boolean;
   allow_reissue: boolean;
   max_reissue_count: number;
+  /** 密钥生成并保存所在的存储区域（空 = 默认区域） */
+  storage_zone_uuid?: string;
+  /** 密钥生成位置：server（服务端区域）/ csr（用户自带 CSR）/ card（智能卡内生成） */
+  key_gen_location?: 'server' | 'csr' | 'card';
+  /** 文件下载可选格式（服务端为 JSON 数组字符串，页面内为字符串数组） */
+  download_formats?: string | string[];
+  /** 位掩码：1 文件下载 / 2 云端卡 / 4 实体卡 / 8 虚拟卡（后端字段） */
+  storage_methods?: number;
+  security_level?: 'high' | 'medium' | 'low';
   created_at: string;
 }
 
@@ -812,6 +882,18 @@ export interface CertApplication {
   status: 'pending' | 'approved' | 'rejected';
   reject_reason?: string;
   cert_uuid?: string;
+  /** 列表展示：申请人用户名 / 邮箱 */
+  user_name?: string;
+  user_email?: string;
+  /** 列表展示：订单号与证书类型名称 */
+  order_no?: string;
+  template_name?: string;
+  /** 列表展示：主体与 SAN 摘要 */
+  subject_summary?: string;
+  san_summary?: string;
+  /** 代办信息 */
+  created_by?: string;
+  on_behalf?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -866,13 +948,107 @@ export interface PaymentPlugin {
 
 // ---- 系统配置类型 ----
 
+/** 私钥存储区域：决定卡片私钥存放位置（本地库 / TPM / HSM）。 */
 export interface StorageZone {
   uuid: string;
   name: string;
-  storage_type: 'database' | 'hsm';
+  storage_type: 'database' | 'tpm' | 'hsm';
   hsm_driver?: string;
+  driver_name?: string;
+  kind?: 'database' | 'tpm' | 'hsm';
   status: 'active' | 'disabled';
+  params?: Record<string, string>;
+  capabilities?: KeyBackendCapabilities;
+  available?: boolean;
+  available_detail?: string;
+  last_check_at?: string;
+  last_check_error?: string;
+  last_check_detail?: string;
+  card_count?: number;
   created_at: string;
+  updated_at?: string;
+}
+
+/** 私钥后端能力。 */
+export interface KeyBackendCapabilities {
+  generate?: boolean;
+  import?: boolean;
+  sign?: boolean;
+  decrypt?: boolean;
+  exportable?: boolean;
+  persistent?: boolean;
+  key_types?: string[];
+  sign_schemes?: string[];
+  note?: string;
+}
+
+/** 驱动配置项定义（前端据此动态渲染表单）。 */
+export interface KeyBackendField {
+  key: string;
+  label: string;
+  type: 'text' | 'password' | 'number' | 'select' | 'bool' | 'file';
+  required?: boolean;
+  default?: string;
+  hint?: string;
+  options?: string[];
+  secret?: boolean;
+}
+
+/** 驱动预设（某类设备的推荐参数）。 */
+export interface KeyBackendPreset {
+  id: string;
+  name: string;
+  description?: string;
+  kind?: string;
+  driver?: string;
+  params: Record<string, string>;
+  search_paths?: string[];
+}
+
+/** 可用的私钥存储驱动。 */
+export interface KeyBackendDriver {
+  driver: string;
+  kind: 'database' | 'tpm' | 'hsm';
+  name: string;
+  description: string;
+  fields: KeyBackendField[];
+  presets?: KeyBackendPreset[];
+  capabilities: KeyBackendCapabilities;
+  available: boolean;
+  available_detail?: string;
+}
+
+/** 本机扫描到的 PKCS#11 模块。 */
+export interface DiscoveredKeyModule {
+  preset: string;
+  preset_name: string;
+  driver: string;
+  kind: string;
+  path: string;
+  exists: boolean;
+  verified: boolean;
+  library_name?: string;
+  error?: string;
+  params: Record<string, string>;
+}
+
+/** 存储区域连通性测试结果。 */
+export interface KeyBackendProbeResult {
+  ok: boolean;
+  driver?: string;
+  name?: string;
+  detail?: string;
+  error?: string;
+  capability?: KeyBackendCapabilities;
+  devices?: Array<{
+    name?: string;
+    model?: string;
+    serial?: string;
+    slot_id?: number;
+    slot_index?: number;
+    extra?: string;
+  }>;
+  checked?: string;
 }
 
 export interface CustomOID {
@@ -881,6 +1057,10 @@ export interface CustomOID {
   name: string;
   description?: string;
   usage_type: 'ext_key_usage' | 'subject_field' | 'ev_policy' | 'asn1_extension';
+  /** 自定义扩展值的 ASN.1 类型（服务端字段 asn1_type） */
+  asn1_type?: string;
+  /** 写入 X.509 扩展时是否标记 critical */
+  is_critical?: boolean;
   created_at: string;
 }
 
@@ -992,5 +1172,107 @@ export interface ResetAdminKeyRequest {
   admin_key: string;
   new_pin?: string;
   new_puk?: string;
+}
+
+// ---- 系统设置 ----
+export interface SystemKeyDriver {
+  driver: string;
+  name: string;
+  kind: string;
+  available: boolean;
+  detail?: string;
+  key_types?: string[];
+  exportable: boolean;
+  description?: string;
+}
+
+export interface SystemInfo {
+  version: string;
+  database: { driver: string };
+  key_drivers: SystemKeyDriver[];
+  sm: { sm2: boolean; sm3: boolean; sm4: boolean };
+  storage_zones: Array<{ name: string; storage_type: string; status: string }>;
+}
+
+export interface SystemMailView {
+  default_provider_uuid: string;
+  providers: VerifyProvider[];
+}
+
+// ---- 算法元数据（由 /api/meta/algorithms 提供） ----
+export interface AlgorithmInfo {
+  name: string;
+  display: string;
+  category: 'key' | 'hash' | 'cipher' | 'signature' | string;
+  available: boolean;
+  deprecated?: boolean;
+  description?: string;
+}
+
+export interface SignatureAlgorithmInfo {
+  name: string;
+  display: string;
+  hash: string;
+}
+
+export interface AlgorithmCatalog {
+  algorithms: AlgorithmInfo[];
+  signature_algorithms: SignatureAlgorithmInfo[];
+  key_type_to_sig_hashes: Record<string, string[]>;
+}
+
+// ---- 管理员代办申请 ----
+export interface AdminApplyOrder {
+  order_no: string;
+  cert_apply_tmpl_uuid: string;
+  template_name: string;
+  status: string;
+}
+
+export interface AdminApplyTemplate {
+  uuid: string;
+  name: string;
+  description: string;
+  apply_modes: string[];
+  require_approval: boolean;
+  issuance_tmpl_uuid: string;
+}
+
+export interface AdminApplyContext {
+  user: { uuid: string; username: string; email: string };
+  orders: AdminApplyOrder[];
+  templates: AdminApplyTemplate[];
+  subscriptions: Array<{ uuid: string; plan_name: string; active: boolean }>;
+  subject_infos: SubjectInfo[];
+  extension_infos: ExtensionInfo[];
+  cards: Array<{ uuid: string; card_name: string; card_kind: string }>;
+}
+
+export interface AdminCreateApplicationRequest {
+  user_uuid: string;
+  order_no?: string;
+  cert_apply_tmpl_uuid?: string;
+  subscription_uuid?: string;
+  subject_info_uuid?: string;
+  subject?: Record<string, string>;
+  extension_info_uuids?: string[];
+  extensions?: Array<{ info_type: string; value: string }>;
+  key_type?: string;
+  csr_pem?: string;
+  card_uuid?: string;
+  skip_approval?: boolean;
+}
+
+// ---- CA 导入 ----
+export interface ImportCARequest {
+  name: string;
+  cert_pem?: string;
+  cert_base64?: string;
+  private_key_pem?: string;
+  pkcs12_base64?: string;
+  pkcs12_password?: string;
+  parent_uuid?: string;
+  cert_only?: boolean;
+  storage_zone_uuid?: string;
 }
 

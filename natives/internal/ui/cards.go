@@ -143,8 +143,12 @@ func (cp *CardsPage) buildCardWidget(card *api.Card) fyne.CanvasObject {
 
 func (cp *CardsPage) showKeyGenDialog(card api.Card) {
 	keyTypes := []string{"rsa2048", "rsa4096", "ec256", "ec384", "ec521"}
+	// 国密密钥仅本地卡 / 云卡可用：TPM 与 Windows 虚拟智能卡没有国密算法
+	if card.SlotType != api.SlotTypeTPM2 && card.SlotType != api.SlotTypeTPMSC {
+		keyTypes = append([]string{"sm2"}, keyTypes...)
+	}
 	keyTypeSelect := widget.NewSelect(keyTypes, nil)
-	keyTypeSelect.SetSelected("rsa2048")
+	keyTypeSelect.SetSelected(keyTypes[0])
 
 	passwordEntry := widget.NewPasswordEntry()
 	remarkEntry := widget.NewEntry()

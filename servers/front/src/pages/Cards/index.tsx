@@ -290,9 +290,13 @@ const CardsPage: React.FC = () => {
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} maxLength={200} />
           </Form.Item>
-          <Form.Item name="storage_zone_uuid" label="存储区域">
-            <Select allowClear placeholder="选择存储区域（可选）"
-              options={zones.map((z) => ({ label: z.name, value: z.uuid }))} />
+          <Form.Item name="storage_zone_uuid" label="存储区域"
+            tooltip="决定卡内私钥存放在哪里：本地加密存储可导出备份；TPM/HSM 由硬件保护、私钥不可导出。可在「服务配置 → 私钥存储区域」中新增。">
+            <Select allowClear placeholder="选择存储区域（可选，默认本地加密存储）"
+              options={zones.filter((z) => z.status !== 'disabled').map((z) => ({
+                value: z.uuid,
+                label: `${z.name}${z.kind === 'hsm' ? '（HSM 硬件）' : z.kind === 'tpm' ? '（TPM）' : z.storage_type === 'hsm' ? '（HSM 硬件）' : '（本地加密）'}`,
+              }))} />
           </Form.Item>
           <Form.Item name="pin" label="PIN 码" rules={[{ min: 4, max: 32 }]}>
             <Input.Password placeholder="4-32 位字符；签名/解密/导入证书时需要" />

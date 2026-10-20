@@ -126,6 +126,15 @@ func (p *windowsPropagator) Sync(ctx context.Context, certs []CertInfo) (*SyncRe
 			})
 			continue
 		}
+		// 国密证书无法注册到 Windows 证书存储（CNG 不支持 SM2），只通过 PKCS#11 使用
+		if IsSM2Cert(cert.CertDER) {
+			result.Skipped++
+			result.Details = append(result.Details, PropagateResult{
+				CertUUID: cert.UUID, CommonName: cert.CommonName,
+				Action: "skipped", Error: "国密证书不支持注册到系统证书存储，请通过 PKCS#11 使用",
+			})
+			continue
+		}
 		thumb := thumbprint(cert.CertDER)
 		targetThumbs[thumb] = cert
 	}

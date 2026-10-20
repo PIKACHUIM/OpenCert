@@ -166,7 +166,7 @@ func TestCAUpdate(t *testing.T) {
 		t.Fatalf("创建 CA 失败: %v", err)
 	}
 
-	if err := svc.Update(ctx, caObj.UUID, "新名称", "active"); err != nil {
+	if err := svc.Update(ctx, caObj.UUID, "新名称", "active", nil); err != nil {
 		t.Fatalf("Update() 失败: %v", err)
 	}
 

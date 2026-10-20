@@ -14,12 +14,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/globaltrusts/server-card/internal/auth"
+	"github.com/globaltrusts/server-card/internal/keybackend"
 	"github.com/globaltrusts/server-card/internal/storage"
 )
 
@@ -127,14 +129,40 @@ func (s *Server) handleDeliverCertificate(w http.ResponseWriter, r *http.Request
 	}
 
 	// ---- 以下为私钥交付，需要策略与额度校验 ----
+	// 私钥位于 TPM/HSM 时由硬件保护，PKCS#12 必须内嵌明文私钥，无法交付
+	if keybackend.IsHardware(cert.KeyBackend) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"该证书的私钥位于 %s，由硬件保护不可导出，无法交付私钥材料；"+
+				"请改用云卡远程签名接口，或把证书签发到「本地加密存储」存储区域",
+			keybackend.DriverText(cert.KeyBackend)))
+		return
+	}
 	if len(cert.PrivateData) == 0 {
 		writeError(w, http.StatusBadRequest, "该证书没有托管的私钥，无法下发私钥材料")
 		return
 	}
 
-	keyStorageTmplUUID, err := s.resolveKeyStorageTemplate(r, cert)
+	keyStorage, err := s.resolveKeyStorageTemplate(r, cert)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	keyStorageTmplUUID := keyStorage.UUID
+
+	// 下载格式以签发时的密钥存储模板快照为准：模板只提供 PEM 时不能打包 PKCS#12
+	formats := parseJSONStringArrayLocal(keyStorage.DownloadFormats)
+	if req.Password != "" {
+		if isSM2CertKeyType(cert.KeyType) {
+			writeError(w, http.StatusBadRequest, "国密 SM2 证书不提供 PKCS#12，请下载 PEM 证书与私钥")
+			return
+		}
+		if len(formats) > 0 && !containsStrLocal(formats, "pkcs12") {
+			writeError(w, http.StatusBadRequest, "该证书的存储策略不允许导出 PKCS#12")
+			return
+		}
+	}
+	if len(formats) > 0 && !containsStrLocal(formats, "pem") && req.Password == "" {
+		writeError(w, http.StatusBadRequest, "该证书的存储策略只允许导出 PKCS#12，请设置导出密码")
 		return
 	}
 
@@ -146,6 +174,11 @@ func (s *Server) handleDeliverCertificate(w http.ResponseWriter, r *http.Request
 
 	keyPEM, err := s.cardSvc.ExportPrivateKeyPEM(r.Context(), cert)
 	if err != nil {
+		// 私钥不可导出属于策略限制而非服务故障，返回 400 便于调用方区分
+		if errors.Is(err, keybackend.ErrNotExportable) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -206,31 +239,53 @@ func (s *Server) canAccessCert(r *http.Request, cert *storage.Certificate, claim
 	return err == nil
 }
 
-// resolveKeyStorageTemplate 解析证书关联的密钥存储模板 UUID，并校验允许文件下载。
+// isSM2CertKeyType 判断证书密钥算法是否为国密 SM2。
+func isSM2CertKeyType(keyType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(keyType)), "sm2")
+}
+
+// resolveKeyStorageTemplate 解析证书适用的密钥存储模板，并校验允许文件下载。
+//
+// 优先使用证书上保存的模板快照（key_storage_tmpl_uuid）：之后修改模板只影响新签发的证书，
+// 已签发证书的下发格式与次数上限始终按签发当时的约定执行；历史证书没有快照时回退到
+// 颁发模板当前关联的密钥存储模板。
 //
 // 任何一环缺失都直接拒绝：敏感导出不能因为"配置为空"而放行。
-func (s *Server) resolveKeyStorageTemplate(r *http.Request, cert *storage.Certificate) (string, error) {
-	if cert.IssuanceTmplUUID == "" {
-		return "", fmt.Errorf("该证书未关联颁发模板，未配置密钥存储策略，禁止导出私钥")
+func (s *Server) resolveKeyStorageTemplate(r *http.Request, cert *storage.Certificate) (*storage.KeyStorageTemplate, error) {
+	if s.tmplSvc == nil {
+		return nil, fmt.Errorf("模板服务不可用，禁止导出私钥")
 	}
-	if s.issuanceSvc == nil || s.tmplSvc == nil {
-		return "", fmt.Errorf("模板服务不可用，禁止导出私钥")
+	var ks *storage.KeyStorageTemplate
+	if cert.KeyStorageTmplUUID != "" {
+		loaded, err := s.tmplSvc.GetByUUID(r.Context(), cert.KeyStorageTmplUUID)
+		if err != nil {
+			return nil, fmt.Errorf("读取密钥存储模板失败，禁止导出私钥: %w", err)
+		}
+		ks = loaded
+	} else {
+		if cert.IssuanceTmplUUID == "" || s.issuanceSvc == nil {
+			return nil, fmt.Errorf("该证书未关联颁发模板，未配置密钥存储策略，禁止导出私钥")
+		}
+		tmpl, err := s.issuanceSvc.GetIssuanceTemplate(r.Context(), cert.IssuanceTmplUUID)
+		if err != nil {
+			return nil, fmt.Errorf("读取颁发模板失败，禁止导出私钥: %w", err)
+		}
+		if tmpl.KeyStorageTmplUUID == "" {
+			return nil, fmt.Errorf("颁发模板未关联密钥存储模板，禁止导出私钥")
+		}
+		loaded, err := s.tmplSvc.GetByUUID(r.Context(), tmpl.KeyStorageTmplUUID)
+		if err != nil {
+			return nil, fmt.Errorf("读取密钥存储模板失败，禁止导出私钥: %w", err)
+		}
+		ks = loaded
 	}
-	tmpl, err := s.issuanceSvc.GetIssuanceTemplate(r.Context(), cert.IssuanceTmplUUID)
-	if err != nil {
-		return "", fmt.Errorf("读取颁发模板失败，禁止导出私钥: %w", err)
-	}
-	if tmpl.KeyStorageTmplUUID == "" {
-		return "", fmt.Errorf("颁发模板未关联密钥存储模板，禁止导出私钥")
-	}
-	ks, err := s.tmplSvc.GetByUUID(r.Context(), tmpl.KeyStorageTmplUUID)
-	if err != nil {
-		return "", fmt.Errorf("读取密钥存储模板失败，禁止导出私钥: %w", err)
+	if ks.KeyGenLocation == storage.KeyGenCSR {
+		return nil, fmt.Errorf("该证书的私钥由申请者自行保管，平台没有可下发的私钥")
 	}
 	if !ks.HasMethod(storage.StorageFileDownload) {
-		return "", fmt.Errorf("该证书的密钥存储策略为「%s」，不允许导出私钥", ks.Name)
+		return nil, fmt.Errorf("该证书的密钥存储策略为「%s」，不允许导出私钥", ks.Name)
 	}
-	return ks.UUID, nil
+	return ks, nil
 }
 
 // collectSANs 汇总证书的 SAN 列表，供客户端展示。
