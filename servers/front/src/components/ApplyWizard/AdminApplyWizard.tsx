@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Button, Card, Divider, Drawer, Empty, Form, Input, Select, Space, Switch, message } from 'antd';
 import { UserAddOutlined } from '@ant-design/icons';
-import { listUsers, getAdminApplyContext, adminCreateCertApplication } from '../../api';
+import { listAdminApplyUsers, getAdminApplyContext, adminCreateCertApplication } from '../../api';
 import type { AdminApplyContext, User } from '../../types';
 import AlgorithmSelect from '../AlgorithmSelect';
 
@@ -11,7 +11,7 @@ const AdminApplyWizard: React.FC<{
   onClose: () => void;
   onDone: () => void;
 }> = ({ open, onClose, onDone }) => {
-  const [users, setUsers] = useState<User[]>([]);
+  const [users, setUsers] = useState<Array<Pick<User, 'uuid' | 'username' | 'email'>>>([]);
   const [userUUID, setUserUUID] = useState<string>('');
   const [ctx, setCtx] = useState<AdminApplyContext | null>(null);
   const [loading, setLoading] = useState(false);
@@ -20,9 +20,12 @@ const AdminApplyWizard: React.FC<{
 
   useEffect(() => {
     if (!open) return;
-    listUsers({ page: 1, page_size: 100 })
+    listAdminApplyUsers({ page: 1, page_size: 100 })
       .then((r) => setUsers(r.items))
-      .catch(() => setUsers([]));
+      .catch((err: any) => {
+        setUsers([]);
+        message.error(err.message || '加载客户列表失败');
+      });
   }, [open]);
 
   useEffect(() => {
@@ -40,8 +43,27 @@ const AdminApplyWizard: React.FC<{
   }, [userUUID, form]);
 
   const mode = Form.useWatch('mode', form);
+  const subscriptionUUID = Form.useWatch('subscription_uuid', form) as string | undefined;
   const subjectMode = Form.useWatch('subject_mode', form);
   const extMode = Form.useWatch('ext_mode', form);
+  const selectedSubscription = ctx?.subscriptions.find((subscription) => subscription.uuid === subscriptionUUID);
+  const subscriptionTemplates = ctx?.templates.filter((template) =>
+    template.apply_modes.includes('subscription') &&
+    selectedSubscription?.items.some((item) => item.cert_apply_tmpl_uuid === template.uuid),
+  ) ?? [];
+
+  useEffect(() => {
+    if (!subscriptionUUID || !ctx) return;
+    const subscription = ctx.subscriptions.find((item) => item.uuid === subscriptionUUID);
+    const eligible = ctx.templates.filter((template) =>
+      template.apply_modes.includes('subscription') &&
+      subscription?.items.some((item) => item.cert_apply_tmpl_uuid === template.uuid),
+    );
+    const current = form.getFieldValue('cert_apply_tmpl_uuid');
+    if (!eligible.some((template) => template.uuid === current)) {
+      form.setFieldValue('cert_apply_tmpl_uuid', eligible[0]?.uuid);
+    }
+  }, [subscriptionUUID, ctx, form]);
 
   const handleSubmit = async () => {
     if (!userUUID) { message.warning('请先选择客户'); return; }
@@ -55,8 +77,10 @@ const AdminApplyWizard: React.FC<{
         csr_pem: values.csr_pem || '',
       };
       if (values.mode === 'order') payload.order_no = values.order_no;
-      else if (values.mode === 'subscription') payload.subscription_uuid = values.subscription_uuid;
-      else payload.cert_apply_tmpl_uuid = values.cert_apply_tmpl_uuid;
+      else if (values.mode === 'subscription') {
+        payload.subscription_uuid = values.subscription_uuid;
+        payload.cert_apply_tmpl_uuid = values.cert_apply_tmpl_uuid;
+      } else payload.cert_apply_tmpl_uuid = values.cert_apply_tmpl_uuid;
 
       if (values.subject_mode === 'existing') {
         payload.subject_info_uuid = values.subject_info_uuid;
@@ -121,7 +145,7 @@ const AdminApplyWizard: React.FC<{
                 options={[
                   { value: 'order', label: '该客户的已支付订单' },
                   { value: 'template', label: '直接按证书类型申请' },
-                  ...(ctx.subscriptions.some((s) => s.active)
+                  ...(ctx.subscriptions.some((s) => s.active && s.items.length > 0)
                     ? [{ value: 'subscription', label: '使用订阅额度' }]
                     : []),
                 ]}
@@ -150,11 +174,22 @@ const AdminApplyWizard: React.FC<{
               </Form.Item>
             )}
             {mode === 'subscription' && (
-              <Form.Item label="订阅" name="subscription_uuid" rules={[{ required: true, message: '请选择订阅' }]}>
-                <Select
-                  options={ctx.subscriptions.filter((s) => s.active).map((s) => ({ value: s.uuid, label: s.plan_name }))}
-                />
-              </Form.Item>
+              <>
+                <Form.Item label="订阅" name="subscription_uuid" rules={[{ required: true, message: '请选择订阅' }]}>
+                  <Select
+                    options={ctx.subscriptions.filter((s) => s.active).map((s) => ({ value: s.uuid, label: s.plan_name }))}
+                  />
+                </Form.Item>
+                <Form.Item label="订阅内的证书类型" name="cert_apply_tmpl_uuid" rules={[{ required: true, message: '请选择证书类型' }]}>
+                  <Select
+                    placeholder={subscriptionTemplates.length ? '选择要消耗额度的证书类型' : '该订阅未包含可申请的证书类型'}
+                    options={subscriptionTemplates.map((template) => ({
+                      value: template.uuid,
+                      label: `${template.name}${template.require_approval ? '（需审批）' : '（自动签发）'}`,
+                    }))}
+                  />
+                </Form.Item>
+              </>
             )}
 
             <Divider titlePlacement="start" plain>证书资料</Divider>

@@ -367,10 +367,14 @@ func parseECPoint(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("EC 公钥点为空")
 	}
 	if raw[0] == 0x04 {
-		return raw, nil
+		switch len(raw) {
+		case 65, 97, 133: // 未包装的 P-256/SM2、P-384 或 P-521 非压缩点
+			return raw, nil
+		}
 	}
 	var inner []byte
-	if _, err := asn1.Unmarshal(raw, &inner); err == nil && len(inner) > 0 {
+	rest, err := asn1.Unmarshal(raw, &inner)
+	if err == nil && len(rest) == 0 && len(inner) > 0 {
 		return inner, nil
 	}
 	return raw, nil
@@ -397,21 +401,20 @@ func (s *Session) ImportPrivateKey(req ImportPrivateKeyRequest) (*GeneratedKey, 
 	if err != nil {
 		return nil, "", err
 	}
-	pubDER, err := x509.MarshalPKIXPublicKey(pub)
+	var pubDER []byte
+	if ecPub, ok := pub.(*ecdsa.PublicKey); ok && ecPub.Curve == sm2.P256() {
+		pubDER, err = smx509.MarshalPKIXPublicKey(ecPub)
+	} else {
+		pubDER, err = x509.MarshalPKIXPublicKey(pub)
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("序列化公钥失败: %w", err)
 	}
 
-	// 先创建私钥对象（安全属性尽量收紧，失败时降级重试）
+	// 私钥导入必须保持敏感且不可导出；令牌不支持该属性时拒绝导入，避免降级后可读取 CKA_VALUE。
 	hPriv, err := s.createPrivateKeyObject(privKey, req, true)
-	var warning string
 	if err != nil {
-		hPriv, err = s.createPrivateKeyObject(privKey, req, false)
-		if err != nil {
-			return nil, "", err
-		}
-		warning = "该令牌不支持创建「敏感且不可导出」的私钥对象，已降级为 CKA_SENSITIVE=false；" +
-			"建议改用「设备内生成密钥」以获得更高安全性"
+		return nil, "", fmt.Errorf("令牌无法安全创建敏感私钥对象，已拒绝降级导入: %w", err)
 	}
 
 	// 创建公钥对象（部分令牌在导入私钥时不会自动建立公钥对象）
@@ -422,7 +425,7 @@ func (s *Session) ImportPrivateKey(req ImportPrivateKeyRequest) (*GeneratedKey, 
 		}
 	}
 
-	return &GeneratedKey{PublicDER: pubDER, PublicKey: pub, PublicH: hPub, PrivateH: hPriv}, warning, nil
+	return &GeneratedKey{PublicDER: pubDER, PublicKey: pub, PublicH: hPub, PrivateH: hPriv}, "", nil
 }
 
 func (s *Session) createPrivateKeyObject(privKey any, req ImportPrivateKeyRequest, sensitive bool) (ckULong, error) {
@@ -452,12 +455,23 @@ func (s *Session) createPrivateKeyObject(privKey any, req ImportPrivateKeyReques
 			l.add(ckaCoefficient, k.Precomputed.Qinv.Bytes())
 		}
 		l.addBool(ckaSign, true).addBool(ckaDecrypt, true).addBool(ckaUnwrap, true)
+	case *sm2.PrivateKey:
+		oid, err := curveOIDByCurve(k.Curve)
+		if err != nil {
+			return 0, err
+		}
+		l.addULong(ckaKeyType, ckkSM2).add(ckaEcParams, oid).
+			add(ckaValue, k.D.Bytes()).addBool(ckaSign, true)
 	case *ecdsa.PrivateKey:
 		oid, err := curveOIDByCurve(k.Curve)
 		if err != nil {
 			return 0, err
 		}
-		l.addULong(ckaKeyType, ckkEC).add(ckaEcParams, oid).
+		keyType := ckkEC
+		if k.Curve == sm2.P256() {
+			keyType = ckkSM2
+		}
+		l.addULong(ckaKeyType, keyType).add(ckaEcParams, oid).
 			add(ckaValue, k.D.Bytes()).
 			addBool(ckaSign, true).addBool(ckaDerive, true)
 	default:
@@ -485,7 +499,11 @@ func (s *Session) publicKeyTemplate(pub any, req ImportPrivateKeyRequest) (*attr
 		if err != nil {
 			return nil, err
 		}
-		l.addULong(ckaKeyType, ckkEC).add(ckaEcParams, oid).add(ckaEcPoint, wrapped).
+		keyType := ckkEC
+		if k.Curve == sm2.P256() {
+			keyType = ckkSM2
+		}
+		l.addULong(ckaKeyType, keyType).add(ckaEcParams, oid).add(ckaEcPoint, wrapped).
 			addBool(ckaVerify, true).addBool(ckaDerive, true)
 	default:
 		return nil, fmt.Errorf("不支持的公钥类型: %T", pub)

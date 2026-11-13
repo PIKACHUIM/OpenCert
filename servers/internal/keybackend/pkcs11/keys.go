@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/emmansun/gmsm/sm2"
 	"github.com/globaltrusts/server-card/internal/keybackend"
 )
 
@@ -96,6 +97,8 @@ func curveOIDByCurve(curve elliptic.Curve) ([]byte, error) {
 	switch curve {
 	case elliptic.P256():
 		oid = asn1.ObjectIdentifier{1, 2, 840, 10045, 3, 1, 7}
+	case sm2.P256():
+		oid = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 301}
 	case elliptic.P384():
 		oid = asn1.ObjectIdentifier{1, 3, 132, 0, 34}
 	case elliptic.P521():

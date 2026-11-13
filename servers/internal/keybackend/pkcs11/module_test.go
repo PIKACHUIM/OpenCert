@@ -2,11 +2,14 @@ package pkcs11
 
 import (
 	"bytes"
+	"encoding/asn1"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"unsafe"
+
+	"github.com/emmansun/gmsm/sm2"
 )
 
 // testModulePath 返回可用于测试的 PKCS#11 模块路径。
@@ -209,6 +212,43 @@ func testMechanismMapping(t *testing.T, l layout) {
 	pkcs1, err := buildDecryptMechanism(l, "RSA_PKCS")
 	if err != nil || pkcs1.mech.mechanism() != ckmRSAPKCS {
 		t.Errorf("RSA_PKCS 映射异常: %v", err)
+	}
+}
+
+func TestParseECPointSupportsDERWrappedAndRawPoints(t *testing.T) {
+	point := make([]byte, 65)
+	point[0] = 0x04
+	wrapped, err := asn1.Marshal(point)
+	if err != nil {
+		t.Fatalf("包装 EC 点失败: %v", err)
+	}
+
+	for name, input := range map[string][]byte{"DER 包装": wrapped, "裸点": point} {
+		t.Run(name, func(t *testing.T) {
+			got, err := parseECPoint(input)
+			if err != nil {
+				t.Fatalf("解析 EC 点失败: %v", err)
+			}
+			if !bytes.Equal(got, point) {
+				t.Fatalf("EC 点不匹配: got=%x want=%x", got, point)
+			}
+		})
+	}
+}
+
+func TestSM2CurveOID(t *testing.T) {
+	der, err := curveOIDByCurve(sm2.P256())
+	if err != nil {
+		t.Fatalf("获取 SM2 曲线 OID 失败: %v", err)
+	}
+	var got asn1.ObjectIdentifier
+	rest, err := asn1.Unmarshal(der, &got)
+	if err != nil || len(rest) != 0 {
+		t.Fatalf("解析 SM2 曲线 OID DER 失败: rest=%x err=%v", rest, err)
+	}
+	want := asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 301}
+	if !got.Equal(want) {
+		t.Fatalf("SM2 曲线 OID 不匹配: got=%s want=%s", got, want)
 	}
 }
 

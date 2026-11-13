@@ -16,6 +16,12 @@ import (
 )
 
 // adminApplyContext 是代办申请的上下文：目标用户可用的来源与资料。
+type adminApplyUser struct {
+	UUID     string `json:"uuid"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+}
+
 type adminApplyContext struct {
 	User struct {
 		UUID     string `json:"uuid"`
@@ -33,6 +39,50 @@ type adminApplyContext struct {
 	Cards          []map[string]interface{} `json:"cards"`
 }
 
+// handleAdminApplyUsers GET /api/admin/apply-users?keyword=&page=&page_size=
+// 为 operator 提供代办申请所需的最小客户目录，不复用暴露全量用户管理信息的管理员 API。
+func (s *Server) handleAdminApplyUsers(w http.ResponseWriter, r *http.Request) {
+	keyword := strings.TrimSpace(r.URL.Query().Get("keyword"))
+	page, pageSize := parsePagination(r)
+	where := `WHERE enabled = 1 AND role IN ('user', 'readonly')`
+	args := []interface{}{}
+	if keyword != "" {
+		where += ` AND (username LIKE ? OR email LIKE ? OR display_name LIKE ?)`
+		like := "%" + keyword + "%"
+		args = append(args, like, like, like)
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM users `+where, args...).Scan(&total); err != nil {
+		writeError(w, http.StatusInternalServerError, "读取客户列表失败")
+		return
+	}
+
+	users := []adminApplyUser{}
+	rows, err := s.db.QueryContext(r.Context(),
+		`SELECT uuid, username, COALESCE(email, '') FROM users `+where+
+			` ORDER BY username COLLATE NOCASE LIMIT ? OFFSET ?`,
+		append(args, pageSize, (page-1)*pageSize)...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取客户列表失败")
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var user adminApplyUser
+		if err := rows.Scan(&user.UUID, &user.Username, &user.Email); err != nil {
+			writeError(w, http.StatusInternalServerError, "读取客户列表失败")
+			return
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "读取客户列表失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"users": users, "total": total, "page": page})
+}
+
 // handleAdminApplyContext GET /api/admin/apply-context?user_uuid=
 // 返回代办申请需要的信息：目标用户的订单、可用证书类型、订阅、已通过的主体与扩展信息。
 func (s *Server) handleAdminApplyContext(w http.ResponseWriter, r *http.Request) {
@@ -43,10 +93,13 @@ func (s *Server) handleAdminApplyContext(w http.ResponseWriter, r *http.Request)
 	}
 
 	out := &adminApplyContext{}
+	var role string
+	var enabled int
 	if err := s.db.QueryRowContext(r.Context(),
-		`SELECT uuid, username, COALESCE(email, '') FROM users WHERE uuid = ?`, userUUID,
-	).Scan(&out.User.UUID, &out.User.Username, &out.User.Email); err != nil {
-		writeError(w, http.StatusNotFound, "客户不存在")
+		`SELECT uuid, username, COALESCE(email, ''), role, enabled FROM users WHERE uuid = ?`, userUUID,
+	).Scan(&out.User.UUID, &out.User.Username, &out.User.Email, &role, &enabled); err != nil ||
+		(role != "user" && role != "readonly") || enabled != 1 {
+		writeError(w, http.StatusNotFound, "客户不存在或账号不可代办")
 		return
 	}
 
@@ -107,7 +160,7 @@ func (s *Server) handleAdminApplyContext(w http.ResponseWriter, r *http.Request)
 			for _, sub := range subs {
 				out.Subscriptions = append(out.Subscriptions, map[string]interface{}{
 					"uuid": sub.UUID, "plan_name": sub.Plan.Name,
-					"active": sub.Active(now),
+					"active": sub.Active(now), "items": sub.Plan.Items,
 				})
 			}
 		}
@@ -191,9 +244,12 @@ func (s *Server) handleAdminCreateApplication(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "请选择要代办的客户")
 		return
 	}
-	var exists int
-	if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM users WHERE uuid = ?`, userUUID).Scan(&exists); err != nil || exists == 0 {
-		writeError(w, http.StatusNotFound, "客户不存在")
+	var role string
+	var enabled int
+	if err := s.db.QueryRowContext(r.Context(),
+		`SELECT role, enabled FROM users WHERE uuid = ?`, userUUID,
+	).Scan(&role, &enabled); err != nil || (role != "user" && role != "readonly") || enabled != 1 {
+		writeError(w, http.StatusNotFound, "客户不存在或账号不可代办")
 		return
 	}
 

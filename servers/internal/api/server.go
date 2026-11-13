@@ -371,6 +371,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/system/mail", s.adminOnly(s.handleUpdateSystemMail))
 
 	// 管理员代用户提交证书申请（operator 及以上）
+	mux.HandleFunc("GET /api/admin/apply-users", s.operatorOnly(s.handleAdminApplyUsers))
 	mux.HandleFunc("GET /api/admin/apply-context", s.operatorOnly(s.handleAdminApplyContext))
 	mux.HandleFunc("POST /api/admin/cert-applications", s.operatorOnly(s.handleAdminCreateApplication))
 

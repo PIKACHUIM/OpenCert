@@ -570,6 +570,9 @@ type IssueCertRequest struct {
 	DNSNames         []string `json:"dns_names"`
 	IPAddresses      []string `json:"ip_addresses"`
 	EmailAddrs       []string `json:"email_addresses"`
+	SANDNS           []string `json:"san_dns"`              // 兼容管理控制台字段
+	SANIP            []string `json:"san_ip"`               // 兼容管理控制台字段
+	SANEmail         []string `json:"san_email"`            // 兼容管理控制台字段
 	URIs             []string `json:"uris"`                 // SAN URI 列表
 	PolicyOIDs       []string `json:"certificate_policies"` // 证书策略 OID 列表
 	CardUUID         string   `json:"card_uuid"`            // 签发后存入的卡片 UUID（可选）
@@ -601,6 +604,15 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ValidDays <= 0 {
 		req.ValidDays = 365
+	}
+	if len(req.DNSNames) == 0 {
+		req.DNSNames = req.SANDNS
+	}
+	if len(req.IPAddresses) == 0 {
+		req.IPAddresses = req.SANIP
+	}
+	if len(req.EmailAddrs) == 0 {
+		req.EmailAddrs = req.SANEmail
 	}
 
 	// 解析 IP 地址
@@ -657,6 +669,7 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 		issueReq.NotAfter = t
 	}
 
+	var keyStorageTmplUUID string
 	if req.IssuanceTmplUUID != "" {
 		if s.issuanceSvc == nil {
 			writeError(w, http.StatusInternalServerError, "颁发策略服务不可用")
@@ -710,6 +723,44 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 		if req.IsCA {
 			issueReq.PathLen = policy.PathLen
 		}
+		if policy.KeyStorage != nil {
+			keyStorageTmplUUID = policy.KeyStorage.UUID
+			switch policy.KeyStorage.KeyGenLocation {
+			case "", storage.KeyGenServer:
+				issueReq.KeyZoneUUID = policy.KeyStorage.StorageZoneUUID
+			case storage.KeyGenCSR:
+				writeError(w, http.StatusBadRequest, "该模板要求用户提交 CSR，请通过证书申请流程签发")
+				return
+			case storage.KeyGenCard:
+				writeError(w, http.StatusBadRequest, "该模板要求在用户智能卡内生成密钥，请通过证书申请流程签发")
+				return
+			default:
+				writeError(w, http.StatusBadRequest, "颁发模板的密钥生成位置无效")
+				return
+			}
+		}
+	}
+
+	claims := claimsFromCtx(r.Context())
+	if claims == nil || strings.TrimSpace(claims.UserUUID) == "" {
+		writeError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	cardRepo := storage.NewCardRepo(s.db)
+	var targetCard *storage.Card
+	var err error
+	if req.CardUUID != "" {
+		targetCard, err = cardRepo.GetByUUID(r.Context(), req.CardUUID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "目标智能卡不存在")
+			return
+		}
+	} else {
+		targetCard, err = cardRepo.GetOrCreateHostingCard(r.Context(), claims.UserUUID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "创建证书托管容器失败")
+			return
+		}
 	}
 
 	resp, err := s.caSvc.IssueCert(r.Context(), issueReq)
@@ -718,40 +769,38 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims := claimsFromCtx(r.Context())
-
-	// 如果指定了卡片 UUID，将证书存入卡片
-	var certUUID string
-	if req.CardUUID != "" {
-		certRepo := storage.NewCertRepo(s.db)
-		cert := &storage.Certificate{
-			CardUUID:            req.CardUUID,
-			UserUUID:            claims.UserUUID,
-			CertType:            "x509",
-			KeyType:             req.KeyType,
-			CertContent:         []byte(resp.CertPEM),
-			PrivateData:         resp.PrivateEnc,
-			CAUUID:              caUUID,
-			SerialNumber:        resp.SerialNumber,
-			SerialHex:           resp.SerialNumber,
-			SubjectDN:           resp.SubjectDN,
-			IssuerDN:            resp.IssuerDN,
-			NotBefore:           &resp.NotBefore,
-			NotAfter:            &resp.NotAfter,
-			SANDNS:              jsonStrArray(req.DNSNames),
-			SANIP:               jsonStrArray(req.IPAddresses),
-			SANEmail:            jsonStrArray(req.EmailAddrs),
-			SANURI:              jsonStrArray(req.URIs),
-			CertificatePolicies: jsonStrArray(req.PolicyOIDs),
-			IssuanceTmplUUID:    req.IssuanceTmplUUID,
-			RevocationStatus:    "active",
-		}
-		if err := certRepo.Create(r.Context(), cert); err != nil {
-			writeError(w, http.StatusInternalServerError, "保存证书失败: "+err.Error())
-			return
-		}
-		certUUID = cert.UUID
+	cert := &storage.Certificate{
+		CardUUID:            targetCard.UUID,
+		UserUUID:            targetCard.UserUUID,
+		CertType:            "x509",
+		KeyType:             req.KeyType,
+		CertContent:         []byte(resp.CertPEM),
+		PrivateData:         resp.PrivateEnc,
+		KeyBackend:          resp.KeyBackend,
+		KeyRef:              resp.KeyRef,
+		KeyStorageTmplUUID:  keyStorageTmplUUID,
+		CAUUID:              caUUID,
+		SerialNumber:        resp.SerialNumber,
+		SerialHex:           resp.SerialNumber,
+		SubjectDN:           resp.SubjectDN,
+		IssuerDN:            resp.IssuerDN,
+		NotBefore:           &resp.NotBefore,
+		NotAfter:            &resp.NotAfter,
+		KeyUsage:            int(issueReq.KeyUsage),
+		SANDNS:              jsonStrArray(req.DNSNames),
+		SANIP:               jsonStrArray(req.IPAddresses),
+		SANEmail:            jsonStrArray(req.EmailAddrs),
+		SANURI:              jsonStrArray(req.URIs),
+		CertificatePolicies: jsonStrArray(req.PolicyOIDs),
+		IssuanceTmplUUID:    req.IssuanceTmplUUID,
+		RevocationStatus:    "active",
 	}
+	certRepo := storage.NewCertRepo(s.db)
+	if err := certRepo.Create(r.Context(), cert); err != nil {
+		writeError(w, http.StatusInternalServerError, "证书已签发但保存记录失败，请联系管理员核查")
+		return
+	}
+	certUUID := cert.UUID
 
 	// 写入审计日志
 	s.auditLogRepo.Create(r.Context(), &storage.AuditLog{ //nolint:errcheck

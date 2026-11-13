@@ -824,10 +824,27 @@ func (s *Service) validateAgainstTemplate(ctx context.Context, req *IssueRequest
 		}
 	}
 
-	// 1. 有效期白名单
-	if allowed := allowedDays; len(allowed) > 0 {
-		if !containsInt(allowed, req.ValidDays) {
-			return fmt.Errorf("有效期 %d 天不在模板允许列表 %v 中", req.ValidDays, allowed)
+	// 1. 有效期约束。显式 NotAfter 优先于 ValidDays，但仍受模板最长有效期限制。
+	if len(allowedDays) > 0 {
+		if req.NotAfter == nil {
+			if !containsInt(allowedDays, req.ValidDays) {
+				return fmt.Errorf("有效期 %d 天不在模板允许列表 %v 中", req.ValidDays, allowedDays)
+			}
+		} else {
+			start := time.Now()
+			if req.NotBefore != nil {
+				start = *req.NotBefore
+			}
+			days := req.NotAfter.Sub(start).Hours() / 24
+			maxDays := 0
+			for _, allowed := range allowedDays {
+				if allowed > maxDays {
+					maxDays = allowed
+				}
+			}
+			if days <= 0 || days > float64(maxDays) {
+				return fmt.Errorf("显式证书有效期必须大于 0 且不超过模板允许的最长有效期 %d 天", maxDays)
+			}
 		}
 	}
 

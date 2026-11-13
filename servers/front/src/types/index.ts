@@ -1239,11 +1239,18 @@ export interface AdminApplyTemplate {
   issuance_tmpl_uuid: string;
 }
 
+export interface AdminApplySubscription {
+  uuid: string;
+  plan_name: string;
+  active: boolean;
+  items: Array<{ cert_apply_tmpl_uuid: string; quota: number; valid_days: number }>;
+}
+
 export interface AdminApplyContext {
   user: { uuid: string; username: string; email: string };
   orders: AdminApplyOrder[];
   templates: AdminApplyTemplate[];
-  subscriptions: Array<{ uuid: string; plan_name: string; active: boolean }>;
+  subscriptions: AdminApplySubscription[];
   subject_infos: SubjectInfo[];
   extension_infos: ExtensionInfo[];
   cards: Array<{ uuid: string; card_name: string; card_kind: string }>;

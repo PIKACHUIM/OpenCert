@@ -13,14 +13,22 @@ package test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/emmansun/gmsm/sm2"
+	"github.com/emmansun/gmsm/smx509"
 	"github.com/globaltrusts/server-card/configs"
 	"github.com/globaltrusts/server-card/internal/api"
 	"github.com/globaltrusts/server-card/internal/auth"
@@ -46,6 +54,7 @@ type apiEnv struct {
 	t      *testing.T
 	srv    *httptest.Server
 	client *http.Client
+	db     *storage.DB
 	tokens map[string]string
 }
 
@@ -160,12 +169,21 @@ func newAPIEnv(t *testing.T) *apiEnv {
 	}); err != nil {
 		t.Fatalf("创建用户失败: %v", err)
 	}
+	hash3, _ := bcrypt.GenerateFromPassword([]byte("OperatorPass123"), bcrypt.MinCost)
+	if err := userRepo.Create(ctx, &storage.User{
+		UUID: "operator-uuid", Username: "operator", DisplayName: "操作员", Email: "operator@test.local",
+		PasswordHash: string(hash3), Role: "operator", Enabled: true,
+	}); err != nil {
+		t.Fatalf("创建操作员失败: %v", err)
+	}
 
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
-	env := &apiEnv{t: t, srv: ts, client: ts.Client(), tokens: map[string]string{}}
-	for _, u := range []struct{ name, pass string }{{"admin", "AdminPass123"}, {"buyer", "BuyerPass123"}} {
+	env := &apiEnv{t: t, srv: ts, client: ts.Client(), db: db, tokens: map[string]string{}}
+	for _, u := range []struct{ name, pass string }{
+		{"admin", "AdminPass123"}, {"buyer", "BuyerPass123"}, {"operator", "OperatorPass123"},
+	} {
 		var resp struct {
 			Token string `json:"token"`
 		}
@@ -186,6 +204,124 @@ func TestIssueCertEndpointRequiresIssuanceTemplate(t *testing.T) {
 	env.mustFail(http.MethodPost, "/api/cas/missing-ca/issue", env.tokens["admin"], map[string]string{
 		"common_name": "example.test",
 	})
+}
+
+func TestOperatorCanListCustomersForAdminApply(t *testing.T) {
+	env := newAPIEnv(t)
+	var result struct {
+		Users []struct {
+			UUID     string `json:"uuid"`
+			Username string `json:"username"`
+			Email    string `json:"email"`
+		} `json:"users"`
+		Total int `json:"total"`
+	}
+	env.mustCall(http.MethodGet, "/api/admin/apply-users?keyword=buyer&page=1&page_size=10", env.tokens["operator"], nil, &result)
+	if result.Total != 1 || len(result.Users) != 1 || result.Users[0].Username != "buyer" || result.Users[0].Email != "buyer@test.local" {
+		t.Fatalf("代办客户列表内容不符合最小目录契约: %+v", result)
+	}
+	env.mustFail(http.MethodGet, "/api/users", env.tokens["operator"], nil)
+}
+
+func TestDirectIssuePersistsCertificateAndConsoleSANFields(t *testing.T) {
+	env := newAPIEnv(t)
+	admin := env.tokens["admin"]
+
+	var caResp struct {
+		UUID string `json:"uuid"`
+	}
+	env.mustCall(http.MethodPost, "/api/cas", admin, map[string]interface{}{
+		"name": "直接签发测试 CA", "key_type": "ec256", "validity_years": 5,
+		"common_name": "直接签发测试 CA", "organization": "Test Org", "country": "CN",
+	}, &caResp)
+
+	var issuance struct {
+		UUID string `json:"uuid"`
+	}
+	env.mustCall(http.MethodPost, "/api/templates/issuance", admin, map[string]interface{}{
+		"name": "直接签发模板", "category": "ssl", "enabled": true,
+		"valid_days": "[365]", "default_valid_days": 365,
+		"allowed_key_types": `["ec256"]`,
+		"allowed_ca_uuids":  fmt.Sprintf(`["%s"]`, caResp.UUID),
+	}, &issuance)
+
+	var issued struct {
+		CertUUID string `json:"cert_uuid"`
+		CertPEM  string `json:"cert_pem"`
+	}
+	env.mustCall(http.MethodPost, "/api/cas/"+caResp.UUID+"/issue", admin, map[string]interface{}{
+		"issuance_tmpl_uuid": issuance.UUID,
+		"key_type":           "ec256",
+		"validity_days":      365,
+		"not_after":          time.Now().AddDate(0, 0, 30).Format(time.RFC3339),
+		"common_name":        "www.example.test",
+		"san_dns":            []string{"www.example.test"},
+		"san_ip":             []string{"192.0.2.10"},
+		"san_email":          []string{"admin@example.test"},
+	}, &issued)
+	if issued.CertUUID == "" {
+		t.Fatal("签发成功但未返回可管理的证书 UUID")
+	}
+
+	cert, err := storage.NewCertRepo(env.db).GetByUUID(context.Background(), issued.CertUUID)
+	if err != nil {
+		t.Fatalf("读取持久化证书记录失败: %v", err)
+	}
+	if cert.CardUUID == "" || cert.UserUUID == "" {
+		t.Fatalf("证书未绑定到签发者的托管容器: card=%q user=%q", cert.CardUUID, cert.UserUUID)
+	}
+	cardRecord, err := storage.NewCardRepo(env.db).GetByUUID(context.Background(), cert.CardUUID)
+	if err != nil || !cardRecord.IsHosting() || cardRecord.UserUUID != cert.UserUUID {
+		t.Fatalf("证书目标应为所属用户的系统托管容器: card=%+v cert_user=%q err=%v", cardRecord, cert.UserUUID, err)
+	}
+
+	block, _ := pem.Decode([]byte(issued.CertPEM))
+	if block == nil {
+		t.Fatal("签发响应不是有效 PEM 证书")
+	}
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("解析签发证书失败: %v", err)
+	}
+	if len(parsed.DNSNames) != 1 || parsed.DNSNames[0] != "www.example.test" {
+		t.Fatalf("控制台提交的 DNS SAN 未签入证书: %v", parsed.DNSNames)
+	}
+	if len(parsed.IPAddresses) != 1 || !parsed.IPAddresses[0].Equal(net.ParseIP("192.0.2.10")) {
+		t.Fatalf("控制台提交的 IP SAN 未签入证书: %v", parsed.IPAddresses)
+	}
+	if len(parsed.EmailAddresses) != 1 || parsed.EmailAddresses[0] != "admin@example.test" {
+		t.Fatalf("控制台提交的 Email SAN 未签入证书: %v", parsed.EmailAddresses)
+	}
+	if parsed.NotAfter.After(time.Now().AddDate(0, 0, 31)) {
+		t.Fatalf("显式失效时间未优先于有效期选项: %s", parsed.NotAfter)
+	}
+}
+
+func TestParseAndVerifySM2CSR(t *testing.T) {
+	privateKey, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("生成 SM2 测试密钥失败: %v", err)
+	}
+	der, err := smx509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject:  pkix.Name{CommonName: "example.test"},
+		DNSNames: []string{"example.test"},
+	}, privateKey)
+	if err != nil {
+		t.Fatalf("生成 SM2 CSR 失败: %v", err)
+	}
+	csr, err := ca.ParseCSRDER(der)
+	if err != nil {
+		t.Fatalf("解析并校验 SM2 CSR 失败: %v", err)
+	}
+	if csr.Subject.CommonName != "example.test" || len(csr.DNSNames) != 1 || csr.DNSNames[0] != "example.test" {
+		t.Fatalf("SM2 CSR 字段未保留: subject=%+v dns=%v", csr.Subject, csr.DNSNames)
+	}
+
+	tampered := append([]byte(nil), der...)
+	tampered[len(tampered)-1] ^= 1
+	if _, err := ca.ParseCSRDER(tampered); err == nil {
+		t.Fatal("被篡改的 SM2 CSR 应因签名无效而被拒绝")
+	}
 }
 
 func TestAPIBusinessFlow(t *testing.T) {
@@ -566,6 +702,35 @@ func TestAPIBusinessFlow(t *testing.T) {
 		t.Fatalf("支付后应自动开通订阅: %+v", subs.Items)
 	}
 	subUUID := subs.Items[0].UUID
+	var buyerProfile struct {
+		UUID string `json:"uuid"`
+	}
+	env.mustCall(http.MethodGet, "/api/users/me", buyer, nil, &buyerProfile)
+	var proxyContext struct {
+		Subscriptions []struct {
+			UUID  string `json:"uuid"`
+			Items []struct {
+				CertApplyTmplUUID string `json:"cert_apply_tmpl_uuid"`
+				Quota             int    `json:"quota"`
+			} `json:"items"`
+		} `json:"subscriptions"`
+	}
+	env.mustCall(http.MethodGet, "/api/admin/apply-context?user_uuid="+buyerProfile.UUID,
+		env.tokens["operator"], nil, &proxyContext)
+	foundSubscriptionTemplate := false
+	for _, subscription := range proxyContext.Subscriptions {
+		if subscription.UUID != subUUID {
+			continue
+		}
+		for _, item := range subscription.Items {
+			if item.CertApplyTmplUUID == applyTmpl.UUID && item.Quota == 1 {
+				foundSubscriptionTemplate = true
+			}
+		}
+	}
+	if !foundSubscriptionTemplate {
+		t.Fatalf("代办上下文未返回订阅证书类型与额度: %+v", proxyContext.Subscriptions)
+	}
 
 	var subExt struct {
 		ExtensionInfo struct {

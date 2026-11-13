@@ -99,6 +99,24 @@ func parseCertificateAny(der []byte) (*x509.Certificate, bool, error) {
 	return fromGMCertificate(gmCert), true, nil
 }
 
+// ParseCertificateDER parses a standard or SM2 X.509 certificate into the standard-library representation.
+func ParseCertificateDER(der []byte) (*x509.Certificate, error) {
+	cert, _, err := parseCertificateAny(der)
+	return cert, err
+}
+
+// ParsePublicKeyDER parses a PKIX public key using the standard library, then the GM parser.
+func ParsePublicKeyDER(der []byte) (crypto.PublicKey, error) {
+	if pub, err := x509.ParsePKIXPublicKey(der); err == nil {
+		return pub, nil
+	}
+	pub, err := smx509.ParsePKIXPublicKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("解析 PKIX 公钥失败: %w", err)
+	}
+	return pub, nil
+}
+
 // parseCSRAny 解析 PKCS#10 请求 DER，支持 SM2 请求。
 func parseCSRAny(der []byte) (*x509.CertificateRequest, error) {
 	if csr, err := x509.ParseCertificateRequest(der); err == nil {
@@ -108,23 +126,24 @@ func parseCSRAny(der []byte) (*x509.CertificateRequest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("解析证书请求失败: %w", err)
 	}
-	// smx509.CertificateRequest 与标准库字段布局不完全一致（取决于版本），
-	// 这里只拷贝业务代码实际使用的字段，避免依赖内部表示。
-	return &x509.CertificateRequest{
-		Raw:                gmCSR.Raw,
-		Signature:          gmCSR.Signature,
-		SignatureAlgorithm: gmCSR.SignatureAlgorithm,
-		PublicKeyAlgorithm: gmCSR.PublicKeyAlgorithm,
-		PublicKey:          gmCSR.PublicKey,
-		Subject:            gmCSR.Subject,
-		Attributes:         gmCSR.Attributes,
-		Extensions:         gmCSR.Extensions,
-		ExtraExtensions:    gmCSR.ExtraExtensions,
-		DNSNames:           gmCSR.DNSNames,
-		EmailAddresses:     gmCSR.EmailAddresses,
-		IPAddresses:        gmCSR.IPAddresses,
-		URIs:               gmCSR.URIs,
-	}, nil
+	return gmCSR.ToX509(), nil
+}
+
+// ParseCSRDER parses a standard or SM2 PKCS#10 request and verifies its proof-of-possession signature.
+func ParseCSRDER(der []byte) (*x509.CertificateRequest, error) {
+	if csr, err := x509.ParseCertificateRequest(der); err == nil {
+		if err := csr.CheckSignature(); err == nil {
+			return csr, nil
+		}
+	}
+	gmCSR, err := smx509.ParseCertificateRequest(der)
+	if err != nil {
+		return nil, fmt.Errorf("解析证书请求失败: %w", err)
+	}
+	if err := gmCSR.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("CSR 签名校验失败: %w", err)
+	}
+	return gmCSR.ToX509(), nil
 }
 
 // marshalPublicKeyAny 序列化公钥为 PKIX DER，SM2 走 smx509。

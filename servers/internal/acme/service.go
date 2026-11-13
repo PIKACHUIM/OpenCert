@@ -7,7 +7,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/base64"
@@ -618,13 +617,10 @@ func (s *Service) FinalizeOrder(ctx context.Context, orderUUID string, csrDER []
 		return nil, fmt.Errorf("订单状态不允许 finalize: %s", order.Status)
 	}
 
-	// 解析 CSR
-	csr, err := x509.ParseCertificateRequest(csrDER)
+	// 解析并校验 CSR，包括标准 X.509 与 SM2 请求。
+	csr, err := ca.ParseCSRDER(csrDER)
 	if err != nil {
-		return nil, fmt.Errorf("解析 CSR 失败: %w", err)
-	}
-	if err := csr.CheckSignature(); err != nil {
-		return nil, fmt.Errorf("CSR 签名校验失败: %w", err)
+		return nil, err
 	}
 
 	// 从订单标识符提取待签域名，校验 CSR 中的 SAN/CN 至少覆盖这些域名

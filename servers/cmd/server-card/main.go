@@ -141,7 +141,7 @@ func main() {
 		if block == nil {
 			return nil, fmt.Errorf("CA 证书 PEM 解码失败")
 		}
-		cert, err := x509.ParseCertificate(block.Bytes)
+		cert, err := ca.ParseCertificateDER(block.Bytes)
 		if err != nil {
 			return nil, fmt.Errorf("解析 CA 证书失败: %w", err)
 		}
@@ -166,7 +166,7 @@ func main() {
 		if err != nil {
 			return nil, "", "", nil, fmt.Errorf("存储区域「%s」生成密钥失败: %w", zone.Name, err)
 		}
-		pub, err := x509.ParsePKIXPublicKey(kp.PublicDER)
+		pub, err := ca.ParsePublicKeyDER(kp.PublicDER)
 		if err != nil {
 			return nil, "", "", nil, fmt.Errorf("解析存储区域返回的公钥失败: %w", err)
 		}

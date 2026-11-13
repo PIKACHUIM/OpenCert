@@ -270,6 +270,21 @@ export const listUsers = async (params?: { page?: number; page_size?: number; ke
   } as PageResult<User>;
 };
 
+export const listAdminApplyUsers = async (params?: { page?: number; page_size?: number; keyword?: string }) => {
+  const res = await http.get<{
+    users?: Array<Pick<User, 'uuid' | 'username' | 'email'>>;
+    total?: number;
+    page?: number;
+  }>('/api/admin/apply-users', { params });
+  const data = res.data || {};
+  return {
+    items: data.users ?? [],
+    total: data.total ?? 0,
+    page: data.page ?? params?.page ?? 1,
+    page_size: params?.page_size ?? 10,
+  } as PageResult<Pick<User, 'uuid' | 'username' | 'email'>>;
+};
+
 export const createUser = (data: {
   username: string; password: string; email: string; display_name: string; role?: UserRole;
 }) => http.post<User>('/api/users', data).then((r) => r.data);
