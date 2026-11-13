@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Table, Button, Modal, Form, Input, InputNumber, Space, Tag, Typography,
-  Drawer, message, Switch, Tooltip, Select, Radio, DatePicker, Descriptions, Upload, Divider, Dropdown,
+  Drawer, message, Switch, Tooltip, Select, Radio, Descriptions, Upload, Divider, Dropdown,
 } from 'antd';
 import {
   PlusOutlined, ImportOutlined, SafetyCertificateOutlined,
@@ -12,11 +12,10 @@ import {
   importCA, importCAChain, listRevokedCerts, revokeCAcert, listIssuanceTemplates, listStorageZones,
 } from '../../api';
 import type { CA, IssuanceTemplate, StorageZone, RevokedCert } from '../../types';
-import AlgorithmSelect from '../../components/AlgorithmSelect';
+import IssueForm from '../../components/IssueForm';
 import StorageZoneSelect, { isHardwareZone } from '../../components/StorageZoneSelect';
 
 const { Title, Text } = Typography;
-const { RangePicker } = DatePicker;
 
 const reasonOptions = [
   { value: 0, label: '未指定' }, { value: 1, label: '密钥泄露' },
@@ -26,6 +25,16 @@ const reasonOptions = [
 
 const statusColor: Record<string, string> = { active: 'green', disabled: 'default', revoked: 'red', expired: 'orange' };
 const statusText: Record<string, string> = { active: '有效', disabled: '已停用', revoked: '已吊销', expired: '已过期' };
+
+const filterSignatureAlgorithms = (algorithms: string[] | undefined, keyType?: string) => {
+  if (!algorithms?.length || !keyType) return algorithms;
+  const key = keyType.toLowerCase();
+  if (key.startsWith('sm2')) return algorithms.filter((algorithm) => algorithm.toUpperCase().includes('SM2'));
+  if (key.startsWith('rsa')) return algorithms.filter((algorithm) => /_RSA(?:_PSS)?$/i.test(algorithm));
+  if (key.startsWith('ec')) return algorithms.filter((algorithm) => algorithm.toUpperCase().startsWith('ECDSA_'));
+  if (key.startsWith('ed25519')) return algorithms.filter((algorithm) => algorithm.toUpperCase() === 'ED25519');
+  return algorithms;
+};
 
 /** 读取上传文件为文本或 base64 */
 const readFile = (file: File, as: 'text' | 'base64'): Promise<string> =>
@@ -83,7 +92,7 @@ const CAPage: React.FC = () => {
     loadCAs();
     // 只取 CA 类颁发模板（创建 CA 时用来约束算法、有效期与路径长度）
     listIssuanceTemplates({ page: 1, page_size: 100 })
-      .then((r) => setTemplates(r.items.filter((t) => t.is_ca)))
+      .then((r) => setTemplates(r.items.filter((template) => template.enabled)))
       .catch(() => setTemplates([]));
     listStorageZones().then(setZones).catch(() => setZones([]));
   }, []);
@@ -92,7 +101,43 @@ const CAPage: React.FC = () => {
 
   // 创建 CA：模板变化时联动算法范围
   const createTmplUUID = Form.useWatch('issuance_tmpl_uuid', createForm);
-  const createTmpl = useMemo(() => templates.find((t) => t.uuid === createTmplUUID), [templates, createTmplUUID]);
+  const createTmpl = useMemo(() => templates.find((t) => t.uuid === createTmplUUID && t.is_ca), [templates, createTmplUUID]);
+  const createParentUUID = Form.useWatch('parent_uuid', createForm);
+  const createKeyType = Form.useWatch('key_type', createForm);
+  const createSigningKeyType = cas.find((ca) => ca.uuid === createParentUUID)?.key_type || createKeyType;
+  const createAllowedSigAlgs = useMemo(
+    () => filterSignatureAlgorithms(createTmpl?.allowed_sig_algs, createSigningKeyType),
+    [createSigningKeyType, createTmpl],
+  );
+  const issueTmplUUID = Form.useWatch('issuance_tmpl_uuid', issueForm);
+  const issueTmpl = useMemo(() => templates.find((t) => t.uuid === issueTmplUUID && !t.is_ca), [templates, issueTmplUUID]);
+  const issueTemplates = useMemo(() => templates.filter((t) => !t.is_ca &&
+    (!t.allowed_ca_uuids?.length || (selectedCA && t.allowed_ca_uuids.includes(selectedCA.uuid)))), [templates, selectedCA]);
+  const issueAllowedKeyTypes = useMemo(() => {
+    if (!issueTmpl) return undefined;
+    const allowed = issueTmpl.allowed_key_types ?? [];
+    if (!selectedCA?.key_type?.toLowerCase().startsWith('sm2')) return allowed;
+    if (allowed.length === 0) return ['sm2'];
+    const compatible = allowed.filter((keyType) => keyType.toLowerCase().startsWith('sm2'));
+    return compatible.length > 0 ? compatible : ['__unsupported__'];
+  }, [issueTmpl, selectedCA]);
+  const issueAllowedSigAlgs = useMemo(
+    () => filterSignatureAlgorithms(issueTmpl?.allowed_sig_algs, selectedCA?.key_type),
+    [issueTmpl, selectedCA],
+  );
+  useEffect(() => {
+    if (!issueTmpl) return;
+    const allowed = issueAllowedKeyTypes ?? [];
+    const current = issueForm.getFieldValue('key_type');
+    if (!current || (allowed.length > 0 && !allowed.includes(current))) {
+      issueForm.setFieldValue('key_type', allowed.length > 0 && allowed[0] !== '__unsupported__'
+        ? allowed[0]
+        : allowed.length === 0 && selectedCA?.key_type?.toLowerCase().startsWith('sm2') ? 'sm2' : undefined);
+    }
+  }, [issueAllowedKeyTypes, issueForm, issueTmpl, selectedCA]);
+  useEffect(() => {
+    if (createTmpl) createForm.setFieldValue('path_len', createTmpl.path_len);
+  }, [createForm, createTmpl]);
   const importZoneUUID = Form.useWatch('storage_zone_uuid', importForm);
   const importCertOnly = Form.useWatch('cert_only', importForm);
   const importMode = Form.useWatch('mode', importForm);
@@ -156,14 +201,15 @@ const CAPage: React.FC = () => {
       const days = notAfter && notBefore ? Math.max(1, notAfter.diff(notBefore, 'day')) : 365;
       await issueCert(selectedCA.uuid, {
         key_type: values.key_type,
+        sig_alg: values.sig_alg || undefined,
         validity_days: days,
+        issuance_tmpl_uuid: values.issuance_tmpl_uuid,
         not_before: notBefore ? notBefore.toISOString() : undefined,
         not_after: notAfter ? notAfter.toISOString() : undefined,
         common_name: values.common_name,
         organization: values.organization,
         country: values.country,
-        is_ca: !!values.is_ca,
-        path_len: values.path_len,
+        is_ca: false,
         san_dns: values.san_dns ? values.san_dns.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
         san_ip: values.san_ip ? values.san_ip.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
         san_email: values.san_email ? values.san_email.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
@@ -172,6 +218,18 @@ const CAPage: React.FC = () => {
       setIssueOpen(false); issueForm.resetFields();
     } catch (err: any) { message.error(err.message); }
     finally { setIssueLoading(false); }
+  };
+
+  const openIssue = (ca: CA) => {
+    const available = templates.filter((template) => !template.is_ca &&
+      (!template.allowed_ca_uuids?.length || template.allowed_ca_uuids.includes(ca.uuid)));
+    setSelectedCA(ca);
+    issueForm.resetFields();
+    issueForm.setFieldsValue({
+      issuance_tmpl_uuid: available.length === 1 ? available[0].uuid : undefined,
+      is_ca: false,
+    });
+    setIssueOpen(true);
   };
 
   const handleImportChain = async (values: { chain_pem: string }) => {
@@ -276,7 +334,7 @@ const CAPage: React.FC = () => {
       render: (_: any, r: CA) => (
         <Space size={4} style={{ whiteSpace: 'nowrap' }}>
           <Button size="small" type="primary" icon={<SafetyCertificateOutlined />}
-            onClick={() => { setSelectedCA(r); setIssueOpen(true); }}>签发证书</Button>
+            onClick={() => openIssue(r)}>签发证书</Button>
           <Button size="small" icon={<EyeOutlined />}
             onClick={() => { setSelectedCA(r); setDetailOpen(true); }}>详情</Button>
           <Dropdown
@@ -337,35 +395,23 @@ const CAPage: React.FC = () => {
           <Form.Item label="颁发模板" name="issuance_tmpl_uuid"
             extra="决定可选算法、有效期范围与路径长度；没有 CA 类模板时可先在「模板管理」中创建">
             <Select allowClear placeholder="不指定（手工配置）"
-              options={templates.map((t) => ({ value: t.uuid, label: t.name }))} />
+              options={templates.filter((t) => t.is_ca).map((t) => ({ value: t.uuid, label: t.name }))} />
           </Form.Item>
           <Form.Item label="上级 CA" name="parent_uuid" extra="留空表示自签根 CA">
             <Select allowClear placeholder="自签根 CA"
               options={cas.filter((c) => c.status === 'active').map((c) => ({ value: c.uuid, label: c.name }))} />
           </Form.Item>
-          <Form.Item label="密钥算法" name="key_type" rules={[{ required: true, message: '请选择密钥算法' }]}>
-            <AlgorithmSelect allowed={createTmpl?.allowed_key_types} family={undefined} />
-          </Form.Item>
-          {createTmpl && (createTmpl.allowed_sig_algs?.length ?? 0) > 0 && (
-            <Form.Item label="签名算法" name="sig_alg" extra="留空按 CA 密钥类型自动选择">
-              <Select allowClear placeholder="自动选择"
-                options={(createTmpl.allowed_sig_algs ?? []).map((s) => ({ value: s, label: s }))} />
-            </Form.Item>
-          )}
-          <Form.Item label="CommonName" name="common_name" rules={[{ required: true, message: '请填写 CommonName' }]}>
-            <Input placeholder="例如：Example Root CA" />
-          </Form.Item>
+          <IssueForm
+            allowedKeyTypes={createTmpl?.allowed_key_types}
+            signatureAlgorithms={createAllowedSigAlgs}
+            signatureAlgorithmRequired={!!createTmpl?.allowed_sig_algs?.length}
+            validityHint="不填则按模板默认有效期计算"
+            commonNamePlaceholder="例如：Example Root CA"
+          />
           <Space style={{ width: '100%' }} size={12}>
-            <Form.Item label="组织" name="organization" style={{ flex: 1 }}><Input /></Form.Item>
-            <Form.Item label="国家代码" name="country" style={{ width: 140 }}><Input maxLength={2} placeholder="CN" /></Form.Item>
-          </Space>
-          <Form.Item label="生效 / 失效时间" name="validity" extra="不填则按模板默认有效期计算">
-            <RangePicker showTime style={{ width: '100%' }} />
-          </Form.Item>
-          <Space style={{ width: '100%' }} size={12}>
-            <Form.Item label="路径长度" name="path_len" initialValue={0} style={{ flex: 1 }}
-              extra="0 表示只能签发终端证书（不能再签下级 CA）">
-              <InputNumber min={0} max={10} style={{ width: '100%' }} />
+            <Form.Item label="路径长度" name="path_len" style={{ flex: 1 }}
+              extra="-1 表示不限制；0 表示只能签发终端证书">
+              <InputNumber min={-1} max={10} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item label="存储区域" name="storage_zone_uuid" style={{ flex: 1 }} extra="私钥保存位置">
               <StorageZoneSelect />
@@ -460,25 +506,18 @@ const CAPage: React.FC = () => {
       {/* 签发证书 */}
       <Modal title={`签发证书 — ${selectedCA?.name || ''}`} open={issueOpen} onCancel={() => setIssueOpen(false)} footer={null} width={640}>
         <Form form={issueForm} layout="vertical" onFinish={handleIssue} style={{ marginTop: 16 }}>
-          <Form.Item label="密钥算法" name="key_type" rules={[{ required: true, message: '请选择密钥算法' }]}>
-            <AlgorithmSelect allowed={selectedCA?.key_type?.startsWith('sm2') ? ['sm2'] : undefined} />
+          <Form.Item label="颁发模板" name="issuance_tmpl_uuid" rules={[{ required: true, message: '请选择颁发模板' }]}
+            extra={issueTemplates.length === 0 ? '没有允许此 CA 使用的证书颁发模板' : undefined}>
+            <Select placeholder="选择证书颁发模板"
+              options={issueTemplates.map((template) => ({ value: template.uuid, label: template.name }))} />
           </Form.Item>
-          <Form.Item label="CommonName" name="common_name" rules={[{ required: true, message: '请填写 CommonName' }]}>
-            <Input placeholder="example.com" />
-          </Form.Item>
-          <Space style={{ width: '100%' }} size={12}>
-            <Form.Item label="组织" name="organization" style={{ flex: 1 }}><Input /></Form.Item>
-            <Form.Item label="国家代码" name="country" style={{ width: 140 }}><Input maxLength={2} placeholder="CN" /></Form.Item>
-          </Space>
-          <Form.Item label="生效 / 失效时间" name="validity" extra="不填按 365 天签发，且不超过 CA 有效期">
-            <RangePicker showTime style={{ width: '100%' }} />
-          </Form.Item>
-          <Space style={{ width: '100%' }} size={12}>
-            <Form.Item label="是否为 CA 证书" name="is_ca" initialValue={false} style={{ flex: 1 }}>
-              <Select options={[{ value: false, label: '否' }, { value: true, label: '是' }]} />
-            </Form.Item>
-            <Form.Item label="路径长度" name="path_len" style={{ flex: 1 }}><InputNumber min={0} max={10} style={{ width: '100%' }} /></Form.Item>
-          </Space>
+          <IssueForm
+            allowedKeyTypes={issueAllowedKeyTypes}
+            signatureAlgorithms={issueAllowedSigAlgs}
+            signatureAlgorithmRequired={!!issueTmpl?.allowed_sig_algs?.length}
+            validityHint="不填按颁发模板默认有效期签发，且不超过 CA 有效期"
+            commonNamePlaceholder="example.com"
+          />
           <Form.Item label="SAN DNS（逗号分隔）" name="san_dns"><Input placeholder="example.com, www.example.com" /></Form.Item>
           <Form.Item label="SAN IP（逗号分隔）" name="san_ip"><Input placeholder="192.168.1.1" /></Form.Item>
           <Form.Item label="SAN 邮箱（逗号分隔）" name="san_email"><Input placeholder="admin@example.com" /></Form.Item>

@@ -102,6 +102,10 @@ const Cards: React.FC = () => {
   const [keygenForm] = Form.useForm();
   const [keygening, setKeygening] = useState(false);
 
+  const keyTypeOptions = selectedCard?.slot_type === 'tpm2' || selectedCard?.slot_type === 'tpmsc'
+    ? KEY_TYPE_OPTIONS.filter((option) => option.value !== 'sm2')
+    : KEY_TYPE_OPTIONS;
+
   // 删除卡片弹窗
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteCard2, setDeleteCard2] = useState<CardType | null>(null);
@@ -938,7 +942,7 @@ const Cards: React.FC = () => {
       >
         <Form form={keygenForm} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="key_type" label="密钥类型" initialValue="ec256" rules={[{ required: true }]}>
-            <Select options={KEY_TYPE_OPTIONS} />
+            <Select options={keyTypeOptions} />
           </Form.Item>
           <Form.Item name="card_password" label="卡片密码" rules={[{ required: true, message: '请输入卡片密码' }]}>
             <Input.Password placeholder="验证卡片身份" />

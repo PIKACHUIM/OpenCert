@@ -159,6 +159,9 @@ func (s *Service) ResolvePolicy(ctx context.Context, applyTmplUUID, issuanceTmpl
 	if err != nil {
 		return nil, err
 	}
+	if !it.Enabled {
+		return nil, fmt.Errorf("颁发模板已停用: %s", it.UUID)
+	}
 	p.IssuanceTmpl = it
 
 	p.CAUUIDs = parseJSONStrArr(it.AllowedCAUUIDs)
@@ -214,8 +217,8 @@ func (p *EffectivePolicy) ValidateNarrowing(n *Narrowing) error {
 	if n == nil {
 		return nil
 	}
-	if n.ValidDays < 0 || n.ValidDays > 3650 {
-		return fmt.Errorf("证书有效期需在 1-3650 天之间")
+	if n.ValidDays < 0 || (n.ValidDays > 3650 && !containsInt(p.ValidDays, n.ValidDays)) {
+		return fmt.Errorf("证书有效期需在 1-3650 天之间，或为模板明确允许的更长期限")
 	}
 	if n.ValidDays > 0 && len(p.ValidDays) > 0 && !containsInt(p.ValidDays, n.ValidDays) {
 		return fmt.Errorf("证书有效期 %d 天不在颁发模板允许的范围内 %v", n.ValidDays, p.ValidDays)
@@ -283,8 +286,8 @@ func (p *EffectivePolicy) ValidateSelectionWithCA(caUUID, caKeyType, keyType, si
 		}
 	}
 	if validDays > 0 {
-		if validDays > 3650 {
-			return fmt.Errorf("证书有效期不能超过 3650 天")
+		if validDays > 3650 && !containsInt(p.ValidDays, validDays) {
+			return fmt.Errorf("证书有效期不能超过 3650 天，除非颁发模板明确允许更长期限")
 		}
 		if len(p.ValidDays) > 0 && !containsInt(p.ValidDays, validDays) {
 			return fmt.Errorf("证书有效期 %d 天不在允许的范围内 %v", validDays, p.ValidDays)

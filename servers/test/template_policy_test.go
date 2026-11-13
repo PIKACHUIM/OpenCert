@@ -125,7 +125,36 @@ func TestResolvePolicy_ValidateSelection(t *testing.T) {
 		t.Error("SM2 CA 只能签发 SM2 证书")
 	}
 	if err := p.ValidateSelection("", "ec256", "", 4000); err == nil {
-		t.Error("超过 3650 天应被拒绝")
+		t.Error("未被模板明确允许的超过 3650 天有效期应被拒绝")
+	}
+}
+
+func TestPolicy_AllowsLongValidityOnlyWhenTemplateExplicitlyAllowsIt(t *testing.T) {
+	t.Parallel()
+	svc, tmpl, applyUUID := newPolicyFixture(t)
+	ctx := context.Background()
+	p, err := svc.ResolvePolicy(ctx, applyUUID, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ValidateSelection("", "ec256", "", 7300); err == nil {
+		t.Fatal("模板未允许时，7300 天有效期应被拒绝")
+	}
+
+	tmpl.ValidDays = `[3650,7300]`
+	tmpl.DefaultValidDays = 7300
+	if err := svc.UpdateIssuanceTemplate(ctx, tmpl); err != nil {
+		t.Fatalf("更新允许有效期失败: %v", err)
+	}
+	p, err = svc.ResolvePolicy(ctx, applyUUID, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ValidateSelection("", "ec256", "", 7300); err != nil {
+		t.Fatalf("模板明确允许的 7300 天有效期应通过: %v", err)
+	}
+	if err := p.ValidateNarrowing(&issuance.Narrowing{ValidDays: 7300}); err != nil {
+		t.Fatalf("模板明确允许的 7300 天有效期应可用于商品规格: %v", err)
 	}
 }
 
@@ -156,14 +185,14 @@ func TestIssuanceTemplate_SM2CANotMixed(t *testing.T) {
 
 	bad := &storage.IssuanceTemplate{
 		Name: "混用", ValidDays: `[365]`, AllowedKeyTypes: `["sm2","ec256"]`,
-		AllowedCAUUIDs: `["sm2-ca"]`, Category: "ssl",
+		AllowedCAUUIDs: `["sm2-ca"]`, Category: "ssl", Enabled: true,
 	}
 	if err := svc.CreateIssuanceTemplate(ctx, bad); err == nil {
 		t.Error("SM2 CA 与 ec256 混用应被拒绝")
 	}
 	good := &storage.IssuanceTemplate{
 		Name: "纯国密", ValidDays: `[365]`, AllowedKeyTypes: `["sm2"]`,
-		AllowedSigAlgs: `["SM2WithSM3"]`, AllowedCAUUIDs: `["sm2-ca"]`, DefaultCAUUID: "sm2-ca", Category: "ssl",
+		AllowedSigAlgs: `["SM2WithSM3"]`, AllowedCAUUIDs: `["sm2-ca"]`, DefaultCAUUID: "sm2-ca", Category: "ssl", Enabled: true,
 	}
 	if err := svc.CreateIssuanceTemplate(ctx, good); err != nil {
 		t.Errorf("纯国密模板应可创建: %v", err)

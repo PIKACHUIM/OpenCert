@@ -680,43 +680,62 @@ func (s *Service) FinalizeOrder(ctx context.Context, orderUUID string, csrDER []
 	// 有效期与允许范围由颁发模板决定（ACME 默认 90 天，模板不允许 90 天时退回模板默认值）；
 	// 同时校验 CSR 公钥算法与模板、CA 是否匹配（例如 SM2 CA 只能签 SM2 证书）。
 	validDays := 90
-	csrKeyType := ""
-	if s.issuanceS != nil {
-		if policy, err := s.issuanceS.ResolvePolicy(issuance.WithPolicyCache(ctx), "", issuanceTmplUUID, nil); err == nil {
-			if len(policy.ValidDays) > 0 && !containsIntSlice(policy.ValidDays, validDays) {
-				validDays = policy.DefaultValidDays
-				if validDays <= 0 {
-					validDays = policy.ValidDays[0]
-				}
-			}
-			if caUUID == "" {
-				caUUID = policy.DefaultCA
-			}
-			csrKeyType = keyTypeOfPublicKey(csr.PublicKey)
-			if err := policy.ValidateSelection(caUUID, csrKeyType, "", validDays); err != nil {
-				_, _ = s.db.ExecContext(ctx,
-					`UPDATE acme_orders SET status = 'invalid' WHERE uuid = ?`, orderUUID)
-				return nil, err
+	csrKeyType := keyTypeOfPublicKey(csr.PublicKey)
+	sigAlg := ""
+	var policy *issuance.EffectivePolicy
+	if issuanceTmplUUID != "" {
+		if s.issuanceS == nil {
+			return nil, fmt.Errorf("颁发策略服务不可用，无法校验 ACME 证书模板")
+		}
+		var err error
+		policy, err = s.issuanceS.ResolvePolicy(issuance.WithPolicyCache(ctx), "", issuanceTmplUUID, nil)
+		if err != nil {
+			_, _ = s.db.ExecContext(ctx,
+				`UPDATE acme_orders SET status = 'invalid' WHERE uuid = ?`, orderUUID)
+			return nil, fmt.Errorf("解析 ACME 颁发策略失败: %w", err)
+		}
+		if len(policy.ValidDays) > 0 && !containsIntSlice(policy.ValidDays, validDays) {
+			validDays = policy.DefaultValidDays
+			if validDays <= 0 {
+				validDays = policy.ValidDays[0]
 			}
 		}
-	} else {
-		csrKeyType = keyTypeOfPublicKey(csr.PublicKey)
+		if caUUID == "" {
+			caUUID = policy.DefaultCA
+		}
+		caRecord, err := s.caSvc.GetByUUID(ctx, caUUID)
+		if err != nil {
+			return nil, fmt.Errorf("读取 ACME 签发 CA 失败: %w", err)
+		}
+		if policy.IssuanceTmpl.AllowedSigAlgs != "" {
+			allowedSigAlgs := policy.SigAlgsForCA(caRecord.KeyType)
+			if len(allowedSigAlgs) == 0 {
+				return nil, fmt.Errorf("颁发模板没有适用于当前 CA 的签名算法")
+			}
+			sigAlg = allowedSigAlgs[0]
+		}
+		if err := policy.ValidateSelectionWithCA(caUUID, caRecord.KeyType, csrKeyType, sigAlg, validDays); err != nil {
+			_, _ = s.db.ExecContext(ctx,
+				`UPDATE acme_orders SET status = 'invalid' WHERE uuid = ?`, orderUUID)
+			return nil, err
+		}
 	}
 	if caUUID == "" {
 		return nil, fmt.Errorf("ACME 配置未指定 CA")
 	}
 
 	issueReq := &ca.IssueRequest{
-		CAUUID:           caUUID,
-		Subject:          subject,
-		KeyType:          csrKeyType, // 与 CSR 公钥保持一致；带了 CSRPublicKey 时不会重新生成
-		ValidDays:        validDays,
-		IsCA:             false,
-		DNSNames:         csr.DNSNames,
-		IPAddresses:      csr.IPAddresses,
-		EmailAddrs:       csr.EmailAddresses,
-		IssuanceTmplUUID: issuanceTmplUUID,
-		CSRPublicKey:     csr.PublicKey, // 使用 CSR 中的公钥，不生成新密钥
+		CAUUID:             caUUID,
+		Subject:            subject,
+		KeyType:            csrKeyType, // 与 CSR 公钥保持一致；带了 CSRPublicKey 时不会重新生成
+		SignatureAlgorithm: sigAlg,
+		ValidDays:          validDays,
+		IsCA:               false,
+		DNSNames:           csr.DNSNames,
+		IPAddresses:        csr.IPAddresses,
+		EmailAddrs:         csr.EmailAddresses,
+		IssuanceTmplUUID:   issuanceTmplUUID,
+		CSRPublicKey:       csr.PublicKey, // 使用 CSR 中的公钥，不生成新密钥
 	}
 
 	resp, err := s.caSvc.IssueCert(ctx, issueReq)

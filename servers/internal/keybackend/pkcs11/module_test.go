@@ -177,6 +177,15 @@ func testMechanismMapping(t *testing.T, l layout) {
 		t.Errorf("ECDSA 映射异常: mech=0x%X 摘要长度=%d", uint64(ec.mech.mechanism()), len(ec.input))
 	}
 
+	// SM2 将原文传给 CKM_SM2，由令牌按 GM/T 32918 计算 Z 与 SM3。
+	gm, err := buildSignRequest(l, "SM2_SM3", "sm2", []byte("hello"))
+	if err != nil {
+		t.Fatalf("映射 SM2_SM3 失败: %v", err)
+	}
+	if gm.mech.mechanism() != ckmSM2 || string(gm.input) != "hello" {
+		t.Errorf("SM2 映射异常: mech=0x%X input=%q", uint64(gm.mech.mechanism()), gm.input)
+	}
+
 	// 密钥类型与机制不匹配时必须报错
 	if _, err := buildSignRequest(l, "ECDSA_SHA256", "rsa2048", []byte("x")); err == nil {
 		t.Error("RSA 密钥 + ECDSA 机制应返回错误")

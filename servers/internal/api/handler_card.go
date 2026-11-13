@@ -508,8 +508,7 @@ func (s *Server) handleRenewCert(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleExportCert(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
 	certUUID := r.PathValue("uuid")
-	format := r.URL.Query().Get("format") // pem/der/pkcs12
-	password := r.URL.Query().Get("password")
+	format := r.URL.Query().Get("format") // pem/der
 
 	if format == "" {
 		format = "pem"
@@ -522,10 +521,7 @@ func (s *Server) handleExportCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 权限检查：只有证书所有者或管理员可以导出
-	cardRepo := storage.NewCardRepo(s.db)
-	card, err := cardRepo.GetByUUID(r.Context(), cert.CardUUID)
-	if err != nil || (card.UserUUID != claims.UserUUID && !auth.IsAdmin(claims.Role)) {
+	if !s.canAccessCert(r, cert, claims) {
 		writeError(w, http.StatusForbidden, "无权导出此证书")
 		return
 	}
@@ -550,34 +546,10 @@ func (s *Server) handleExportCert(w http.ResponseWriter, r *http.Request) {
 		w.Write(cert.CertContent) //nolint:errcheck
 
 	case "pkcs12":
-		// 检查存储策略是否允许文件下载
-		if cert.StoragePolicy != "" && cert.StoragePolicy != "download" {
-			writeError(w, http.StatusForbidden, "该证书的存储策略不允许导出私钥")
-			return
-		}
-		if len(cert.PrivateData) == 0 {
-			writeError(w, http.StatusBadRequest, "证书没有关联的私钥")
-			return
-		}
-		// 私钥导出必须提供保护口令，避免生成无口令的 PFX
-		if len(password) < 8 {
-			writeError(w, http.StatusBadRequest, "导出 PKCS#12 需通过 password 参数提供至少 8 位保护口令")
-			return
-		}
-
-		// 解密私钥并打包为真正的 PKCS#12
-		pfxData, err := s.cardSvc.ExportAsPKCS12(r.Context(), cert, password)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "导出 PKCS#12 失败: "+err.Error())
-			return
-		}
-		w.Header().Set("Content-Type", "application/x-pkcs12")
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.p12\"", certUUID))
-		w.WriteHeader(http.StatusOK)
-		w.Write(pfxData) //nolint:errcheck
+		writeError(w, http.StatusBadRequest, "私钥材料必须通过 POST /api/certificates/{uuid}/download 受控下发；GET 导出不接受口令参数")
 
 	default:
-		writeError(w, http.StatusBadRequest, "不支持的导出格式，支持 pem/der/pkcs12")
+		writeError(w, http.StatusBadRequest, "不支持的导出格式，支持 pem/der")
 	}
 }
 

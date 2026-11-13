@@ -358,7 +358,7 @@ const CertsPage: React.FC = () => {
           </Tooltip>
           <Tooltip title="导出">
             <Button type="text" size="small" icon={<DownloadOutlined />}
-              onClick={() => { setExportRecord(record); setExportOpen(true); }} />
+              onClick={() => { setExportRecord(record); exportForm.setFieldsValue({ format: 'pem' }); setExportOpen(true); }} />
           </Tooltip>
           <Tooltip title="导入到智能卡">
             <Button type="text" size="small" icon={<ExportOutlined />}
@@ -625,7 +625,9 @@ const CertsPage: React.FC = () => {
             <Select options={[
               { label: 'PEM 证书', value: 'pem' },
               { label: 'DER 证书', value: 'der' },
-              { label: 'PKCS#12（含私钥）', value: 'pkcs12', disabled: !exportRecord?.has_private_key },
+              ...(exportRecord?.key_type?.toLowerCase().startsWith('sm2') ? [] : [
+                { label: 'PKCS#12（含私钥）', value: 'pkcs12', disabled: !exportRecord?.has_private_key },
+              ]),
               { label: '私钥 PEM', value: 'key_pem', disabled: !exportRecord?.has_private_key },
             ]} />
           </Form.Item>

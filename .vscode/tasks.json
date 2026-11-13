@@ -1,0 +1,51 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "dev: 安装前端依赖（clients）",
+      "type": "shell",
+      "command": "npm install --no-audit --no-fund",
+      "options": { "cwd": "${workspaceFolder}/clients/front" },
+      "problemMatcher": []
+    },
+    {
+      "label": "dev: 安装前端依赖（servers）",
+      "type": "shell",
+      "command": "npm install --no-audit --no-fund",
+      "options": { "cwd": "${workspaceFolder}/servers/front" },
+      "problemMatcher": []
+    },
+    {
+      "label": "dev: 同步前端产物到 clients/ui/dist",
+      "detail": "clients 后端通过 go:embed 嵌入前端，单跑后端前需要该目录存在",
+      "type": "shell",
+      "command": "npm run build && node -e \"const fs=require('fs');fs.rmSync('../ui/dist',{recursive:true,force:true});fs.cpSync('dist','../ui/dist',{recursive:true})\"",
+      "options": { "cwd": "${workspaceFolder}/clients/front" },
+      "dependsOn": ["dev: 安装前端依赖（clients）"],
+      "problemMatcher": []
+    },
+    {
+      "label": "build: clients 后端",
+      "type": "shell",
+      "command": "go build -o ${workspaceFolder}/bin/client-card.exe ./cmd/client-card",
+      "options": { "cwd": "${workspaceFolder}/clients" },
+      "problemMatcher": ["$go"],
+      "group": "build"
+    },
+    {
+      "label": "build: servers 后端",
+      "type": "shell",
+      "command": "go build -o ${workspaceFolder}/bin/server-card.exe ./cmd/server-card",
+      "options": { "cwd": "${workspaceFolder}/servers" },
+      "problemMatcher": ["$go"],
+      "group": "build"
+    },
+    {
+      "label": "build: 全部",
+      "dependsOrder": "parallel",
+      "dependsOn": ["build: clients 后端", "build: servers 后端"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    }
+  ]
+}

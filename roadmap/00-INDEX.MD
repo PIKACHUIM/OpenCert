@@ -1,8 +1,8 @@
 # OpenCert Manager — 文档目录与项目结构
 
-> 项目名称：OpenCert Manager  
-> 文档版本：v2.1.0  
-> 最后更新：2026-09-22
+> 项目名称：OpenCert Manager<br>
+> 文档版本：v2.2.0<br>
+> 最后更新：2026-11-13
 
 ---
 
@@ -26,8 +26,11 @@
 | 13 | **修复路线图** | `13-FIX-ROADMAP.MD` | 修复计划与优先级排序 |
 | 14 | **审计报告** | `14-AUDIT-REPORT.md` | 安全审计报告 |
 | 15 | **变更日志 R4** | `15-CHANGELOG-ROUND4.md` | 第四轮开发变更记录 |
-| 17 | **客户端与服务端对齐报告** | [`17-CLIENT-SERVER-ALIGNMENT.md`](17-CLIENT-SERVER-ALIGNMENT.md) | 跨端契约、PIN/TOTP、凭据下发与功能边界 |
-| 18 | **门户与交易交付方案** | [`18-PORTAL-COMMERCE-DELIVERY-PLAN.md`](18-PORTAL-COMMERCE-DELIVERY-PLAN.md) | 待确认：官网、商品支付、证书申请、云卡交付、后台与客户端协同 |
+| 16 | **变更日志 R5** | [`16-CHANGELOG-ROUND5.md`](16-CHANGELOG-ROUND5.md) | FIDO2/WebAuthn 第五轮开发记录 |
+| 17 | **客户端与服务端对齐报告** | [`17-CLIENT-SERVER-ALIGNMENT.md`](17-CLIENT-SERVER-ALIGNMENT.md) | 跨端契约、PIN/TOTP、凭据下发与功能边界（历史静态分析） |
+| 18 | **门户与交易交付方案** | [`18-PORTAL-COMMERCE-DELIVERY-PLAN.md`](18-PORTAL-COMMERCE-DELIVERY-PLAN.md) | 门户、商品支付、证书申请、云卡交付与客户端协同方案（含历史实施记录） |
+| 19 | **私钥存储后端** | [`19-KEY-STORAGE-BACKENDS.md`](19-KEY-STORAGE-BACKENDS.md) | 本地数据库、TPM、PKCS#11/HSM 后端设计与验收要点 |
+| 20 | **当前状态与需求基线** | [`20-CURRENT-STATUS-AND-REQUIREMENTS.md`](20-CURRENT-STATUS-AND-REQUIREMENTS.md) | 源码现状、需求差距、证据等级与后续路线 |
 
 ### 附录
 

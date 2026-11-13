@@ -301,9 +301,20 @@ func (s *Service) IssueCert(ctx context.Context, req *IssueRequest) (*IssueRespo
 		}
 	}
 
-	// 显式指定签名摘要算法（可选，为空时由 Go 自动选择）
+	// 显式指定签名算法；未知名称不能静默回退为默认算法。
 	if req.SignatureAlgorithm != "" {
-		if algo, ok := parseSignatureAlgorithm(req.SignatureAlgorithm); ok {
+		if strings.EqualFold(strings.ReplaceAll(req.SignatureAlgorithm, "_", ""), "SM2WithSM3") {
+			if !needsSM2Signing(caKey, pubKey) {
+				return nil, fmt.Errorf("SM2WithSM3 仅适用于 SM2 证书")
+			}
+		} else {
+			algo, ok := parseSignatureAlgorithm(req.SignatureAlgorithm)
+			if !ok {
+				return nil, fmt.Errorf("不支持的签名算法: %s", req.SignatureAlgorithm)
+			}
+			if needsSM2Signing(caKey, pubKey) {
+				return nil, fmt.Errorf("SM2 证书固定使用 SM2WithSM3")
+			}
 			template.SignatureAlgorithm = algo
 		}
 	}
@@ -358,18 +369,19 @@ func (s *Service) IssueCert(ctx context.Context, req *IssueRequest) (*IssueRespo
 
 // CACreateParams 是创建 CA（根 CA 或中间 CA）的参数。
 type CACreateParams struct {
-	Name        string            // CA 显示名称
-	Subject     pkix.Name         // 主体
-	KeyType     string            // 密钥算法（rsa2048/ec256/.../sm2）
-	NotBefore   *time.Time        // 生效时间（为空取当前时间）
-	NotAfter    *time.Time        // 失效时间（为空时按 ValidDays 计算）
-	ValidDays   int               // 有效期（天），NotAfter 为空时使用
-	PathLen     int               // 路径长度限制
-	PathLenZero bool              // 路径长度是否固定为 0（签发的中间 CA 不能再签发下级）
-	KeyUsage    x509.KeyUsage     // 密钥用途（为空时默认 CertSign|CRLSign）
-	ParentUUID  string            // 上级 CA UUID（为空表示自签根 CA）
-	ParentCert  *x509.Certificate // 上级 CA 证书（自签时为空）
-	ParentKey   crypto.Signer     // 上级 CA 私钥（自签时为空）
+	Name               string            // CA 显示名称
+	Subject            pkix.Name         // 主体
+	KeyType            string            // 密钥算法（rsa2048/ec256/.../sm2）
+	SignatureAlgorithm string            // CA 证书的签名算法（为空时由签发者密钥类型决定）
+	NotBefore          *time.Time        // 生效时间（为空取当前时间）
+	NotAfter           *time.Time        // 失效时间（为空时按 ValidDays 计算）
+	ValidDays          int               // 有效期（天），NotAfter 为空时使用
+	PathLen            int               // 路径长度限制
+	PathLenZero        bool              // 路径长度是否固定为 0（签发的中间 CA 不能再签发下级）
+	KeyUsage           x509.KeyUsage     // 密钥用途（为空时默认 CertSign|CRLSign）
+	ParentUUID         string            // 上级 CA UUID（为空表示自签根 CA）
+	ParentCert         *x509.Certificate // 上级 CA 证书（自签时为空）
+	ParentKey          crypto.Signer     // 上级 CA 私钥（自签时为空）
 
 	IssuanceTmplUUID string // 创建时使用的颁发模板（记录来源，便于审计）
 	StorageZoneUUID  string // 私钥所在存储区域（当前为本地加密库）
@@ -502,6 +514,19 @@ func (s *Service) CreateCA(ctx context.Context, p *CACreateParams) (*storage.CA,
 	}
 	if !notAfter.After(notBefore) {
 		return nil, fmt.Errorf("失效时间必须晚于生效时间")
+	}
+	if p.SignatureAlgorithm != "" {
+		if isSM2PublicKey(signerKey.Public()) {
+			if !strings.EqualFold(strings.ReplaceAll(p.SignatureAlgorithm, "_", ""), "SM2WithSM3") {
+				return nil, fmt.Errorf("SM2 签名固定使用 SM2WithSM3")
+			}
+		} else {
+			algorithm, ok := parseSignatureAlgorithm(p.SignatureAlgorithm)
+			if !ok {
+				return nil, fmt.Errorf("不支持的签名算法: %s", p.SignatureAlgorithm)
+			}
+			template.SignatureAlgorithm = algorithm
+		}
 	}
 
 	certDER, err := createCertificate(rand.Reader, template, parentCert, pubKey, signerKey)
@@ -759,37 +784,69 @@ func parseOID(s string) (asn1.ObjectIdentifier, error) {
 //   - CAUUID 是否在 tmpl.AllowedCAUUIDs 列表中（若列表非空）
 //   - IsCA 是否与 tmpl.IsCA 一致（若模板明确要求）
 //
-// 模板不存在或字段为空（表示无限制）时均放行。
+// 模板不存在或查询失败时拒绝签发；模板字段为空（表示无限制）时放行。
 func (s *Service) validateAgainstTemplate(ctx context.Context, req *IssueRequest) error {
-	var validDaysJSON, allowedKeyTypesJSON, allowedCAsJSON string
+	var validDaysJSON, allowedKeyTypesJSON, allowedCAsJSON, allowedSigAlgsJSON string
 	var isCA int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT valid_days, allowed_key_types, allowed_ca_uuids, is_ca
+		`SELECT valid_days, allowed_key_types, allowed_ca_uuids, allowed_sig_algs, is_ca
 		 FROM issuance_templates WHERE uuid = ?`, req.IssuanceTmplUUID,
-	).Scan(&validDaysJSON, &allowedKeyTypesJSON, &allowedCAsJSON, &isCA)
+	).Scan(&validDaysJSON, &allowedKeyTypesJSON, &allowedCAsJSON, &allowedSigAlgsJSON, &isCA)
 	if err != nil {
-		// 模板不存在时静默跳过
-		return nil
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("颁发模板不存在: %s", req.IssuanceTmplUUID)
+		}
+		return fmt.Errorf("读取颁发模板失败: %w", err)
+	}
+
+	var allowedDays []int
+	if validDaysJSON != "" {
+		if err := json.Unmarshal([]byte(validDaysJSON), &allowedDays); err != nil {
+			return fmt.Errorf("颁发模板有效期配置无效: %w", err)
+		}
+	}
+	var allowedKeyTypes []string
+	if allowedKeyTypesJSON != "" {
+		if err := json.Unmarshal([]byte(allowedKeyTypesJSON), &allowedKeyTypes); err != nil {
+			return fmt.Errorf("颁发模板密钥算法配置无效: %w", err)
+		}
+	}
+	var allowedCAs []string
+	if allowedCAsJSON != "" {
+		if err := json.Unmarshal([]byte(allowedCAsJSON), &allowedCAs); err != nil {
+			return fmt.Errorf("颁发模板 CA 配置无效: %w", err)
+		}
+	}
+	var allowedSigAlgs []string
+	if allowedSigAlgsJSON != "" {
+		if err := json.Unmarshal([]byte(allowedSigAlgsJSON), &allowedSigAlgs); err != nil {
+			return fmt.Errorf("颁发模板签名算法配置无效: %w", err)
+		}
 	}
 
 	// 1. 有效期白名单
-	if allowed := parseJSONIntArray(validDaysJSON); len(allowed) > 0 {
+	if allowed := allowedDays; len(allowed) > 0 {
 		if !containsInt(allowed, req.ValidDays) {
 			return fmt.Errorf("有效期 %d 天不在模板允许列表 %v 中", req.ValidDays, allowed)
 		}
 	}
 
 	// 2. 密钥类型白名单
-	if allowed := parseJSONStringArray(allowedKeyTypesJSON); len(allowed) > 0 {
-		if !containsString(allowed, req.KeyType) {
-			return fmt.Errorf("密钥类型 %s 不在模板允许列表 %v 中", req.KeyType, allowed)
-		}
+	if len(allowedKeyTypes) > 0 && !containsString(allowedKeyTypes, req.KeyType) {
+		return fmt.Errorf("密钥类型 %s 不在模板允许列表 %v 中", req.KeyType, allowedKeyTypes)
 	}
 
 	// 3. CA 白名单
-	if allowed := parseJSONStringArray(allowedCAsJSON); len(allowed) > 0 {
-		if !containsString(allowed, req.CAUUID) {
-			return fmt.Errorf("CA %s 不在模板允许列表中", req.CAUUID)
+	if len(allowedCAs) > 0 && !containsString(allowedCAs, req.CAUUID) {
+		return fmt.Errorf("CA %s 不在模板允许列表中", req.CAUUID)
+	}
+	if len(allowedSigAlgs) > 0 {
+		if req.SignatureAlgorithm == "" {
+			if !strings.HasPrefix(strings.ToLower(req.KeyType), "sm2") || !signatureAlgorithmAllowed(allowedSigAlgs, "SM2WithSM3") {
+				return fmt.Errorf("颁发模板限制了签名算法，签发请求必须明确选择")
+			}
+		} else if !signatureAlgorithmAllowed(allowedSigAlgs, req.SignatureAlgorithm) {
+			return fmt.Errorf("签名算法 %s 不在模板允许列表 %v 中", req.SignatureAlgorithm, allowedSigAlgs)
 		}
 	}
 
@@ -829,6 +886,26 @@ func containsInt(arr []int, v int) bool {
 func containsString(arr []string, v string) bool {
 	for _, x := range arr {
 		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func signatureAlgorithmAllowed(allowed []string, requested string) bool {
+	normalize := func(s string) string {
+		s = strings.ToUpper(strings.TrimSpace(s))
+		s = strings.ReplaceAll(s, "_", "")
+		return strings.ReplaceAll(s, "-", "")
+	}
+	requestedName := normalize(requested)
+	for _, candidate := range allowed {
+		if normalize(candidate) == requestedName {
+			return true
+		}
+		candidateAlg, candidateOK := parseSignatureAlgorithm(candidate)
+		requestedAlg, requestedOK := parseSignatureAlgorithm(requested)
+		if candidateOK && requestedOK && candidateAlg == requestedAlg {
 			return true
 		}
 	}

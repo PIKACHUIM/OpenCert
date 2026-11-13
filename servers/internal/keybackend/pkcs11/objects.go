@@ -11,6 +11,9 @@ import (
 	"math/big"
 	"runtime"
 	"unsafe"
+
+	"github.com/emmansun/gmsm/sm2"
+	"github.com/emmansun/gmsm/smx509"
 )
 
 // 属性读取时的内部错误。
@@ -266,6 +269,15 @@ func (s *Session) GenerateKeyPair(req KeyGenRequest) (*GeneratedKey, error) {
 		pub.addULong(ckaKeyType, ckkEC).add(ckaEcParams, oid).
 			addBool(ckaVerify, true).addBool(ckaDerive, true)
 		priv.addULong(ckaKeyType, ckkEC).addBool(ckaSign, true).addBool(ckaDerive, true)
+	case kt == "sm2":
+		curveOID, err := asn1.Marshal(asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 301})
+		if err != nil {
+			return nil, fmt.Errorf("编码 SM2 曲线 OID 失败: %w", err)
+		}
+		mech = ckmSM2KeyPairGen
+		pub.addULong(ckaKeyType, ckkSM2).add(ckaEcParams, curveOID).
+			addBool(ckaVerify, true)
+		priv.addULong(ckaKeyType, ckkSM2).addBool(ckaSign, true)
 	default:
 		return nil, fmt.Errorf("令牌不支持生成 %s 密钥", req.KeyType)
 	}
@@ -327,6 +339,22 @@ func (s *Session) readPublicKey(hPub ckULong, keyType string) ([]byte, any, erro
 		}
 		pub := &ecdsa.PublicKey{Curve: curve, X: x, Y: y}
 		der, err := x509.MarshalPKIXPublicKey(pub)
+		return der, pub, err
+	case "sm2":
+		raw, err := s.Attribute(hPub, ckaEcPoint)
+		if err != nil {
+			return nil, nil, fmt.Errorf("读取 SM2 公钥点失败: %w", err)
+		}
+		pt, err := parseECPoint(raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		x, y := elliptic.Unmarshal(sm2.P256(), pt)
+		if x == nil {
+			return nil, nil, fmt.Errorf("SM2 公钥点无法解析（长度 %d）", len(pt))
+		}
+		pub := &ecdsa.PublicKey{Curve: sm2.P256(), X: x, Y: y}
+		der, err := smx509.MarshalPKIXPublicKey(pub)
 		return der, pub, err
 	default:
 		return nil, nil, fmt.Errorf("不支持的密钥类型: %s", keyType)

@@ -180,6 +180,14 @@ func newAPIEnv(t *testing.T) *apiEnv {
 	return env
 }
 
+func TestIssueCertEndpointRequiresIssuanceTemplate(t *testing.T) {
+	t.Parallel()
+	env := newAPIEnv(t)
+	env.mustFail(http.MethodPost, "/api/cas/missing-ca/issue", env.tokens["admin"], map[string]string{
+		"common_name": "example.test",
+	})
+}
+
 func TestAPIBusinessFlow(t *testing.T) {
 	env := newAPIEnv(t)
 	admin, buyer := env.tokens["admin"], env.tokens["buyer"]

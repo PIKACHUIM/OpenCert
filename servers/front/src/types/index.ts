@@ -597,6 +597,7 @@ export interface RevokeCertRequest {
 
 export interface IssueCertRequest {
   key_type: string;
+  sig_alg?: string;
   validity_days: number;
   /** 显式生效 / 失效时间（RFC3339），优先于 validity_days */
   not_before?: string;

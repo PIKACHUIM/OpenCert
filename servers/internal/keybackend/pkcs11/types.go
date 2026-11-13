@@ -221,6 +221,7 @@ const (
 	ckkRSA       ckULong = 0x0000
 	ckkEC        ckULong = 0x0003
 	ckkECEdwards ckULong = 0x0040
+	ckkSM2       ckULong = 0x80000002
 )
 
 // ---- 用户类型 CKU_* ----

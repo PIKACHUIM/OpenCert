@@ -45,11 +45,11 @@ func init() {
 			Decrypt:    true,
 			Exportable: false,
 			Persistent: true,
-			KeyTypes:   []string{"rsa1024", "rsa2048", "rsa3072", "rsa4096", "ec256", "ec384", "ec521"},
+			KeyTypes:   []string{"rsa1024", "rsa2048", "rsa3072", "rsa4096", "ec256", "ec384", "ec521", "sm2"},
 			SignSchemes: []string{
 				"MD5_RSA_PKCS", "SHA1_RSA_PKCS", "SHA256_RSA_PKCS", "SHA384_RSA_PKCS", "SHA512_RSA_PKCS",
 				"SHA256_RSA_PSS", "SHA384_RSA_PSS", "SHA512_RSA_PSS",
-				"ECDSA", "ECDSA_SHA1", "ECDSA_SHA256", "ECDSA_SHA384", "ECDSA_SHA512",
+				"ECDSA", "ECDSA_SHA1", "ECDSA_SHA256", "ECDSA_SHA384", "ECDSA_SHA512", "SM2_SM3",
 			},
 			Note: "实际可用的算法与机制取决于所选设备；Ed25519 通常不被支持",
 		},
@@ -125,11 +125,11 @@ func (p *provider) Capabilities() keybackend.Capabilities {
 		Decrypt:    true,
 		Exportable: false,
 		Persistent: true,
-		KeyTypes:   []string{"rsa1024", "rsa2048", "rsa3072", "rsa4096", "ec256", "ec384", "ec521"},
+		KeyTypes:   []string{"rsa1024", "rsa2048", "rsa3072", "rsa4096", "ec256", "ec384", "ec521", "sm2"},
 		SignSchemes: []string{
 			"MD5_RSA_PKCS", "SHA1_RSA_PKCS", "SHA256_RSA_PKCS", "SHA384_RSA_PKCS", "SHA512_RSA_PKCS",
 			"SHA256_RSA_PSS", "SHA384_RSA_PSS", "SHA512_RSA_PSS",
-			"ECDSA", "ECDSA_SHA1", "ECDSA_SHA256", "ECDSA_SHA384", "ECDSA_SHA512",
+			"ECDSA", "ECDSA_SHA1", "ECDSA_SHA256", "ECDSA_SHA384", "ECDSA_SHA512", "SM2_SM3",
 		},
 		Note: "算法可用性取决于所选设备；私钥不可导出",
 	}

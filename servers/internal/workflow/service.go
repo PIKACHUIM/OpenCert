@@ -378,7 +378,7 @@ func (s *Service) validateApplication(ctx context.Context, app *storage.CertAppl
 		return fmt.Errorf("该订单可申请 %d 张证书，已全部提交", qty)
 	}
 
-	// 模板约束：启用状态 + 颁发模板允许的密钥算法（经 ResolvePolicy 统一解析）
+	// 模板约束：启用状态、商品收窄和密钥算法都通过 ResolvePolicy 统一校验。
 	if applyTmplUUID != "" {
 		tmpl, err := s.loadApplyTemplate(ctx, applyTmplUUID)
 		if err != nil {
@@ -387,21 +387,31 @@ func (s *Service) validateApplication(ctx context.Context, app *storage.CertAppl
 		if !tmpl.Enabled {
 			return fmt.Errorf("所选商品已下架，无法提交申请")
 		}
-		if app.KeyType != "" && s.issuanceSvc != nil && tmpl.IssuanceTmplUUID != "" {
-			if it, err := s.issuanceSvc.GetIssuanceTemplate(ctx, tmpl.IssuanceTmplUUID); err == nil {
-				var allowed []string
-				if err := json.Unmarshal([]byte(it.AllowedKeyTypes), &allowed); err == nil && len(allowed) > 0 {
-					ok := false
-					for _, k := range allowed {
-						if k == app.KeyType {
-							ok = true
-							break
-						}
-					}
-					if !ok {
-						return fmt.Errorf("该商品不支持所选密钥算法: %s", app.KeyType)
-					}
-				}
+		if s.issuanceSvc == nil {
+			return fmt.Errorf("颁发策略服务不可用，无法验证申请模板")
+		}
+		var orderSpec struct {
+			ValidDays    int      `json:"valid_days"`
+			KeyTypes     []string `json:"key_types"`
+			DeliveryMode string   `json:"delivery_mode"`
+		}
+		if strings.TrimSpace(specJSON) != "" {
+			if err := json.Unmarshal([]byte(specJSON), &orderSpec); err != nil {
+				return fmt.Errorf("订单规格快照无效: %w", err)
+			}
+		}
+		narrow := &issuance.Narrowing{
+			ValidDays:    orderSpec.ValidDays,
+			KeyTypes:     orderSpec.KeyTypes,
+			DeliveryMode: orderSpec.DeliveryMode,
+		}
+		policy, err := s.issuanceSvc.ResolvePolicy(issuance.WithPolicyCache(ctx), applyTmplUUID, "", narrow)
+		if err != nil {
+			return fmt.Errorf("解析证书申请策略失败: %w", err)
+		}
+		if app.KeyType != "" {
+			if err := policy.ValidateSelection("", app.KeyType, "", 0); err != nil {
+				return fmt.Errorf("该商品不支持所选密钥算法: %w", err)
 			}
 		}
 	}

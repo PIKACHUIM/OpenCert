@@ -67,7 +67,7 @@ const PortalDownloads: React.FC = () => {
                 下载客户端
               </Button>
             ) : (
-              <Text type="secondary" style={{ fontSize: 13 }}>下载地址待管理员配置</Text>
+              <Text type="secondary" style={{ fontSize: 13 }}>暂未提供下载</Text>
             )}
           </Card>
         </Col>
@@ -87,7 +87,7 @@ const PortalDownloads: React.FC = () => {
                 下载驱动
               </Button>
             ) : (
-              <Text type="secondary" style={{ fontSize: 13 }}>下载地址待管理员配置</Text>
+              <Text type="secondary" style={{ fontSize: 13 }}>暂未提供下载</Text>
             )}
           </Card>
         </Col>

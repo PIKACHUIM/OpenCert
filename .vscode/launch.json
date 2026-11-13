@@ -1,0 +1,82 @@
+{
+  // 说明：
+  //   clients 后端 :1026（Go，内嵌 clients/ui/dist 占位前端）
+  //   clients 前端 :5175（Vite，/api 代理到 :1026）
+  //   servers 后端 :1027（Go，环境变量配置）
+  //   servers 前端 :5174（Vite，/api /crl /ocsp /acme 代理到 :1027）
+  // 一键启动：在「运行和调试」下拉框中选择带 ▶ 的组合配置后按 F5。
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "clients · 后端 :1026",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/clients/cmd/client-card",
+      "cwd": "${workspaceFolder}/clients",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "clients · 前端 Vite :5175",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:5175",
+      "webRoot": "${workspaceFolder}/clients/front",
+      "server": {
+        "command": "npm run dev",
+        "cwd": "${workspaceFolder}/clients/front",
+        "timeout": 30000
+      }
+    },
+    {
+      "name": "servers · 后端 :1027",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/servers/cmd/server-card",
+      "cwd": "${workspaceFolder}/servers",
+      "env": {
+        "SERVER_CARD_LOG_LEVEL": "debug",
+        "SERVER_CARD_DB_PATH": "${workspaceFolder}/servers/data/server.db",
+        "SERVER_CARD_WEB_ROOT": "${workspaceFolder}/servers/web"
+      },
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "servers · 前端 Vite :5174",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:5174",
+      "webRoot": "${workspaceFolder}/servers/front",
+      "server": {
+        "command": "npm run dev",
+        "cwd": "${workspaceFolder}/servers/front",
+        "timeout": 30000
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "▶ 一键启动：clients 全栈",
+      "configurations": ["clients · 后端 :1026", "clients · 前端 Vite :5175"],
+      "stopAll": true
+    },
+    {
+      "name": "▶ 一键启动：servers 全栈",
+      "configurations": ["servers · 后端 :1027", "servers · 前端 Vite :5174"],
+      "stopAll": true
+    },
+    {
+      "name": "▶ 一键启动：全部（clients + servers）",
+      "configurations": [
+        "clients · 后端 :1026",
+        "clients · 前端 Vite :5175",
+        "servers · 后端 :1027",
+        "servers · 前端 Vite :5174"
+      ],
+      "stopAll": true
+    }
+  ]
+}

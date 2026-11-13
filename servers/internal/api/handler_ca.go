@@ -39,6 +39,7 @@ type CreateCARequest struct {
 	IssuanceTmplUUID string `json:"issuance_tmpl_uuid"` // CA 类颁发模板（可选，用于约束算法/路径长度）
 	ParentUUID       string `json:"parent_uuid"`        // 上级 CA（为空表示自签根 CA）
 	KeyType          string `json:"key_type"`           // rsa2048/rsa4096/ec256/ec384/ec521/sm2
+	SigAlg           string `json:"sig_alg"`
 	CommonName       string `json:"common_name"`
 	Org              string `json:"organization"`
 	Country          string `json:"country"`
@@ -76,21 +77,26 @@ func (s *Server) handleCreateCA(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := &ca.CACreateParams{
-		Name:             req.Name,
-		Subject:          pkixName(req.CommonName, req.Org, req.Country),
-		KeyType:          req.KeyType,
-		NotBefore:        notBefore,
-		NotAfter:         notAfter,
-		ValidDays:        req.ValidDays,
-		PathLen:          req.PathLen,
-		PathLenZero:      req.PathLenZero,
-		ParentUUID:       req.ParentUUID,
-		IssuanceTmplUUID: req.IssuanceTmplUUID,
-		StorageZoneUUID:  req.StorageZoneUUID,
+		Name:               req.Name,
+		Subject:            pkixName(req.CommonName, req.Org, req.Country),
+		KeyType:            req.KeyType,
+		SignatureAlgorithm: req.SigAlg,
+		NotBefore:          notBefore,
+		NotAfter:           notAfter,
+		ValidDays:          req.ValidDays,
+		PathLen:            req.PathLen,
+		PathLenZero:        req.PathLenZero,
+		ParentUUID:         req.ParentUUID,
+		IssuanceTmplUUID:   req.IssuanceTmplUUID,
+		StorageZoneUUID:    req.StorageZoneUUID,
 	}
 
-	// 指定了 CA 类颁发模板时，用统一策略校验算法、有效期、上级 CA 是否在模板允许范围内。
-	if req.IssuanceTmplUUID != "" && s.issuanceSvc != nil {
+	// 指定 CA 颁发模板时，必须用统一策略验证算法、签名算法、有效期和路径长度。
+	if req.IssuanceTmplUUID != "" {
+		if s.issuanceSvc == nil {
+			writeError(w, http.StatusInternalServerError, "颁发策略服务不可用")
+			return
+		}
 		policy, err := s.issuanceSvc.ResolvePolicy(r.Context(), "", req.IssuanceTmplUUID, nil)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -100,6 +106,17 @@ func (s *Server) handleCreateCA(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "所选模板不是 CA 类颁发模板")
 			return
 		}
+		if err := validateTemplateValidityWindow(policy.ValidDays, notBefore, notAfter); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !req.PathLenZero && req.PathLen != 0 && req.PathLen != policy.PathLen {
+			writeError(w, http.StatusBadRequest, "路径长度不符合所选颁发模板")
+			return
+		}
+		params.PathLen = policy.PathLen
+		params.PathLenZero = policy.PathLen == 0
+
 		days := req.ValidDays
 		if notAfter != nil {
 			from := time.Now()
@@ -107,31 +124,42 @@ func (s *Server) handleCreateCA(w http.ResponseWriter, r *http.Request) {
 				from = *notBefore
 			}
 			days = int(notAfter.Sub(from).Hours() / 24)
-		}
-		if days == 0 {
+		} else if days <= 0 {
 			days = policy.DefaultValidDays
+			if days <= 0 && len(policy.ValidDays) > 0 {
+				days = policy.ValidDays[0]
+			}
+			if days <= 0 {
+				days = 3650
+			}
+			params.ValidDays = days
 		}
-		// 显式指定失效时间时有效期天数不是整数选项，只校验上限；按天数选择时需落在模板选项内。
 		selDays := days
 		if notAfter != nil {
 			selDays = 0
 		}
-		// 创建 CA 时模板的"候选 CA"约束的是之后用该模板签发的 CA，与上级 CA 无关，
-		// 所以这里只校验密钥算法与有效期。
-		if err := policy.ValidateSelection("", req.KeyType, "", selDays); err != nil {
+
+		signingKeyType := req.KeyType
+		if req.ParentUUID != "" {
+			parent, err := s.caSvc.GetByUUID(r.Context(), req.ParentUUID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "上级 CA 不存在")
+				return
+			}
+			signingKeyType = parent.KeyType
+		}
+		if req.SigAlg == "" && policy.IssuanceTmpl.AllowedSigAlgs != "" {
+			allowedSigAlgs := policy.SigAlgsForCA(signingKeyType)
+			if len(allowedSigAlgs) == 0 {
+				writeError(w, http.StatusBadRequest, "颁发模板没有适用于当前签发者的签名算法")
+				return
+			}
+			req.SigAlg = allowedSigAlgs[0]
+			params.SignatureAlgorithm = req.SigAlg
+		}
+		if err := policy.ValidateSelectionWithCA("", signingKeyType, req.KeyType, req.SigAlg, selDays); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
-		}
-		if days > 3650 {
-			writeError(w, http.StatusBadRequest, "CA 有效期不能超过 3650 天")
-			return
-		}
-		if params.ValidDays == 0 && notAfter == nil {
-			params.ValidDays = policy.DefaultValidDays
-		}
-		if params.PathLen == 0 && !params.PathLenZero {
-			params.PathLen = policy.PathLen
-			params.PathLenZero = policy.PathLen == 0
 		}
 	}
 
@@ -163,6 +191,30 @@ func parseTimePtr(s string) (*time.Time, error) {
 		return nil, err
 	}
 	return &t, nil
+}
+
+func validateTemplateValidityWindow(allowedDays []int, notBefore, notAfter *time.Time) error {
+	if notAfter == nil {
+		return nil
+	}
+	start := time.Now()
+	if notBefore != nil {
+		start = *notBefore
+	}
+	days := notAfter.Sub(start).Hours() / 24
+	if days <= 0 {
+		return fmt.Errorf("失效时间必须晚于生效时间")
+	}
+	maxDays := 3650
+	for _, allowed := range allowedDays {
+		if allowed > maxDays {
+			maxDays = allowed
+		}
+	}
+	if days > float64(maxDays) {
+		return fmt.Errorf("证书有效期不能超过模板允许的最长有效期 %d 天", maxDays)
+	}
+	return nil
 }
 
 // parseJSONStringArrayLocal / containsStringLocal：避免跨包导出内部小工具，
@@ -505,9 +557,11 @@ func (s *Server) handleGetCRL(w http.ResponseWriter, r *http.Request) {
 // IssueCertRequest 是签发证书请求体。
 type IssueCertRequest struct {
 	KeyType          string   `json:"key_type"`
+	SigAlg           string   `json:"sig_alg"`
 	ValidDays        int      `json:"valid_days"`
-	NotBefore        string   `json:"not_before"` // RFC3339，可选：显式生效时间
-	NotAfter         string   `json:"not_after"`  // RFC3339，可选：显式失效时间（优先于 valid_days）
+	ValidityDays     int      `json:"validity_days"` // 兼容门户字段名
+	NotBefore        string   `json:"not_before"`    // RFC3339，可选：显式生效时间
+	NotAfter         string   `json:"not_after"`     // RFC3339，可选：显式失效时间（优先于 valid_days）
 	CommonName       string   `json:"common_name"`
 	Org              string   `json:"organization"`
 	Country          string   `json:"country"`
@@ -519,7 +573,7 @@ type IssueCertRequest struct {
 	URIs             []string `json:"uris"`                 // SAN URI 列表
 	PolicyOIDs       []string `json:"certificate_policies"` // 证书策略 OID 列表
 	CardUUID         string   `json:"card_uuid"`            // 签发后存入的卡片 UUID（可选）
-	IssuanceTmplUUID string   `json:"issuance_tmpl_uuid"`   // 颁发模板 UUID（可选）
+	IssuanceTmplUUID string   `json:"issuance_tmpl_uuid"`   // 颁发模板 UUID（必填）
 }
 
 func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
@@ -533,6 +587,15 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "CommonName 不能为空")
 		return
 	}
+	if req.IssuanceTmplUUID == "" {
+		writeError(w, http.StatusBadRequest, "签发证书必须选择颁发模板")
+		return
+	}
+	if req.ValidDays <= 0 && req.ValidityDays > 0 {
+		req.ValidDays = req.ValidityDays
+	}
+	requestedKeyType := req.KeyType
+	requestedValidDays := req.ValidDays
 	if req.KeyType == "" {
 		req.KeyType = "ec256"
 	}
@@ -565,20 +628,21 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	issueReq := &ca.IssueRequest{
-		CAUUID:           caUUID,
-		Subject:          subject,
-		KeyType:          req.KeyType,
-		ValidDays:        req.ValidDays,
-		IsCA:             req.IsCA,
-		PathLen:          req.PathLen,
-		KeyUsage:         defaultKeyUsage,
-		ExtKeyUsage:      defaultExtKeyUsage,
-		DNSNames:         req.DNSNames,
-		IPAddresses:      ips,
-		EmailAddrs:       req.EmailAddrs,
-		URIs:             req.URIs,
-		PolicyOIDs:       req.PolicyOIDs,
-		IssuanceTmplUUID: req.IssuanceTmplUUID,
+		CAUUID:             caUUID,
+		Subject:            subject,
+		KeyType:            req.KeyType,
+		SignatureAlgorithm: req.SigAlg,
+		ValidDays:          req.ValidDays,
+		IsCA:               req.IsCA,
+		PathLen:            req.PathLen,
+		KeyUsage:           defaultKeyUsage,
+		ExtKeyUsage:        defaultExtKeyUsage,
+		DNSNames:           req.DNSNames,
+		IPAddresses:        ips,
+		EmailAddrs:         req.EmailAddrs,
+		URIs:               req.URIs,
+		PolicyOIDs:         req.PolicyOIDs,
+		IssuanceTmplUUID:   req.IssuanceTmplUUID,
 	}
 	if t, err := parseTimePtr(req.NotBefore); err != nil {
 		writeError(w, http.StatusBadRequest, "生效时间格式错误: "+err.Error())
@@ -591,6 +655,61 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 		return
 	} else {
 		issueReq.NotAfter = t
+	}
+
+	if req.IssuanceTmplUUID != "" {
+		if s.issuanceSvc == nil {
+			writeError(w, http.StatusInternalServerError, "颁发策略服务不可用")
+			return
+		}
+		policy, err := s.issuanceSvc.ResolvePolicy(r.Context(), "", req.IssuanceTmplUUID, nil)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if policy.IsCA != req.IsCA {
+			writeError(w, http.StatusBadRequest, "证书类型与颁发模板不匹配")
+			return
+		}
+		if err := validateTemplateValidityWindow(policy.ValidDays, issueReq.NotBefore, issueReq.NotAfter); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if requestedKeyType == "" && len(policy.KeyTypes) > 0 {
+			req.KeyType = policy.KeyTypes[0]
+			issueReq.KeyType = req.KeyType
+		}
+		if requestedValidDays <= 0 {
+			if policy.DefaultValidDays > 0 {
+				req.ValidDays = policy.DefaultValidDays
+			} else if len(policy.ValidDays) > 0 {
+				req.ValidDays = policy.ValidDays[0]
+			}
+			issueReq.ValidDays = req.ValidDays
+		}
+		caRecord, err := s.caSvc.GetByUUID(r.Context(), caUUID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "签发 CA 不存在")
+			return
+		}
+		if req.SigAlg == "" && policy.IssuanceTmpl.AllowedSigAlgs != "" {
+			allowedSigAlgs := policy.SigAlgsForCA(caRecord.KeyType)
+			if len(allowedSigAlgs) > 0 {
+				req.SigAlg = allowedSigAlgs[0]
+				issueReq.SignatureAlgorithm = req.SigAlg
+			}
+		}
+		validDays := req.ValidDays
+		if issueReq.NotAfter != nil {
+			validDays = 0
+		}
+		if err := policy.ValidateSelectionWithCA(caUUID, caRecord.KeyType, req.KeyType, req.SigAlg, validDays); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.IsCA {
+			issueReq.PathLen = policy.PathLen
+		}
 	}
 
 	resp, err := s.caSvc.IssueCert(r.Context(), issueReq)

@@ -21,10 +21,9 @@ import (
 //   - 这里把 (公钥类型, SignerOpts) 映射为 Provider.Sign 认识的 mechanism
 //     字符串（与 /api/cards/{uuid}/sign 接口一致），并把已计算好的摘要
 //     传给 Provider；
-//   - ECDSA 的 Provider.Sign 返回 r‖s 定长拼接（历史约定），而
+//   - ECDSA 与 PKCS#11 SM2 的 Provider.Sign 返回 r‖s 定长拼接，而
 //     crypto.Signer 要求返回 ASN.1 DER，这里负责转换。
-//   - 仅支持 RSA / ECDSA（SM2 不经过此路径，由 ca 包的国密分派层直接
-//     使用 sm2.PrivateKey.Sign，因为标准库完全不认识 SM2 算法标识）。
+//   - SM2 只接受 gmsm 的直接签名选项，原文交给后端计算 SM3(Z‖M)。
 type Signer struct {
 	ctx      context.Context
 	provider Provider
@@ -55,6 +54,9 @@ func (s *Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byt
 	if err != nil {
 		return nil, fmt.Errorf("存储区域签名失败: %w", err)
 	}
+	if isSM2(s.pub) {
+		return normalizeSM2Signature(sig)
+	}
 	if pub, ok := s.pub.(*ecdsa.PublicKey); ok {
 		// r‖s 必须是曲线坐标宽度两倍；长度不符说明后端返回了 DER 或截断数据，
 		// 直接报错比悄悄编码出错误签名更安全
@@ -73,6 +75,15 @@ func (s *Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byt
 // 使用 "_DIGEST" 变体（不再二次哈希）；ECDSA 的裸 "ECDSA" 机制本身就是
 // "按已摘要处理"，不需要额外变体。
 func mechanismFor(pub crypto.PublicKey, opts crypto.SignerOpts) (string, error) {
+	if isSM2(pub) {
+		if opts == nil || opts.HashFunc() != 0 {
+			return "", fmt.Errorf("SM2 签名必须使用直接签名选项传入原文")
+		}
+		return "SM2_SM3", nil
+	}
+	if opts == nil {
+		return "", fmt.Errorf("签名选项不能为空")
+	}
 	switch pub.(type) {
 	case *rsa.PublicKey:
 		name, err := hashMechanismName(opts.HashFunc())
@@ -84,13 +95,6 @@ func mechanismFor(pub crypto.PublicKey, opts crypto.SignerOpts) (string, error) 
 		}
 		return name + "_RSA_PKCS_DIGEST", nil
 	case *ecdsa.PublicKey:
-		if isSM2(pub) {
-			// SM2 的签名语义（SM3(Z‖原文) 预处理）与此处"digest 已经是
-			// 调用方算好的摘要"的约定不兼容，且按设计 SM2 CA 私钥只落在
-			// 本地数据库（不托管到 HSM/TPM），因此这里直接拒绝，避免
-			// 产出不符合 GM/T 0015 的签名。
-			return "", fmt.Errorf("SM2 私钥不支持通过该适配器签名，请使用本地加密存储")
-		}
 		return "ECDSA", nil
 	default:
 		return "", fmt.Errorf("不支持的公钥类型: %T", pub)
@@ -139,6 +143,21 @@ func ecdsaRawToASN1(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("编码 ECDSA 签名失败: %w", err)
 	}
 	return der, nil
+}
+
+func normalizeSM2Signature(sig []byte) ([]byte, error) {
+	var parsed ecdsaSig
+	rest, err := asn1.Unmarshal(sig, &parsed)
+	if err == nil && len(rest) == 0 && parsed.R != nil && parsed.S != nil {
+		return sig, nil
+	}
+	if len(sig) == 64 {
+		return ecdsaRawToASN1(sig)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("SM2 签名格式无效: %w", err)
+	}
+	return nil, fmt.Errorf("SM2 签名包含多余数据或缺少签名值")
 }
 
 // ParseMechanism 从机制名解析出哈希名与是否为 PSS（供上层展示/日志复用）。

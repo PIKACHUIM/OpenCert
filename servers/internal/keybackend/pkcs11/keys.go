@@ -24,16 +24,18 @@ var (
 
 // CKM_SHA* 系列机制（用于 PSS 参数中的哈希标识）。
 const (
-	ckmSHA1     ckULong = 0x00000220
-	ckmSHA256   ckULong = 0x00000250
-	ckmSHA384   ckULong = 0x00000251
-	ckmSHA512   ckULong = 0x00000252
-	ckmSHA3_256 ckULong = 0x000002B0
-	ckmSHA3_384 ckULong = 0x000002C0
-	ckmSHA3_512 ckULong = 0x000002D0
+	ckmSHA1          ckULong = 0x00000220
+	ckmSHA256        ckULong = 0x00000250
+	ckmSHA384        ckULong = 0x00000251
+	ckmSHA512        ckULong = 0x00000252
+	ckmSHA3_256      ckULong = 0x000002B0
+	ckmSHA3_384      ckULong = 0x000002C0
+	ckmSHA3_512      ckULong = 0x000002D0
+	ckmSM2KeyPairGen ckULong = 0x80000201
+	ckmSM2           ckULong = 0x80000202
 )
 
-// normalKeyType 把上层 keyType 归一为 rsa/ec/ed25519。
+// normalKeyType 把上层 keyType 归一为 rsa/ec/ed25519/sm2。
 func normalKeyType(keyType string) string {
 	kt := strings.ToLower(strings.TrimSpace(keyType))
 	switch {
@@ -132,6 +134,13 @@ func buildSignRequest(l layout, mechanism string, keyType string, data []byte) (
 		m = "SHA256_RSA_PKCS"
 	}
 	kt := normalKeyType(keyType)
+
+	if kt == "sm2" {
+		if m != "SM2_SM3" && m != "SM2" {
+			return nil, fmt.Errorf("SM2 密钥只支持 SM2/SM3 签名机制")
+		}
+		return &signRequest{mech: newMechBuffer(l, ckmSM2, nil), input: data}, nil
+	}
 
 	if strings.HasPrefix(m, "ECDSA") {
 		if kt != "ec" {

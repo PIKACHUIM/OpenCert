@@ -350,8 +350,10 @@ func ensureDefaultStorageZone(ctx context.Context, repo *storage.StorageZoneRepo
 	if err != nil {
 		return err
 	}
-	if len(zones) > 0 {
-		return nil
+	for _, zone := range zones {
+		if zone.StorageType == string(keybackend.KindDatabase) {
+			return nil
+		}
 	}
 	zone := &storage.StorageZone{
 		Name:        "本地加密存储",

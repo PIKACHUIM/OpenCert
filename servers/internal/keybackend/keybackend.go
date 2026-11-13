@@ -64,7 +64,7 @@ func (h KeyHandle) IsHardware() bool {
 
 // KeySpec 是生成/导入密钥时的规格。
 type KeySpec struct {
-	// KeyType 取值：rsa1024/rsa2048/rsa3072/rsa4096/ec256/ec384/ec521/ed25519
+	// KeyType 取值：rsa1024/rsa2048/rsa3072/rsa4096/ec256/ec384/ec521/ed25519/sm2
 	KeyType string
 	// Label 写入设备的对象标签（HSM/TPM 的可读标识），可为空。
 	Label string
