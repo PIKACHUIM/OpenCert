@@ -241,6 +241,22 @@ func TestFlowCloudCardProductOrderAndStock(t *testing.T) {
 	ctx := context.Background()
 	svc := portal.NewService(storage.NewPortalRepo(db), workflow.NewService(db, nil, nil))
 	userUUID := createTestUser(t, db, "cardbuyer@test.com")
+	zone := &storage.StorageZone{
+		UUID: "cloudcard-test-zone", Name: "Cloud card test storage",
+		StorageType: "database", HSMDriver: storage.DriverDatabase,
+		ParamsEnc: storage.Base64Bytes{}, Capabilities: "{}", Status: "active",
+	}
+	if err := storage.NewStorageZoneRepo(db).Create(ctx, zone); err != nil {
+		t.Fatalf("创建云卡存储区域失败: %v", err)
+	}
+	cloudTemplate := &storage.CloudCardTemplate{
+		Name: "标准云卡开通模板", StorageZoneUUID: zone.UUID,
+		CertificateLimit: 5, PINMinLength: 8, ReminderEnabled: true,
+		ReminderDays: []int{7, 0}, Enabled: true,
+	}
+	if err := svc.CreateCloudCardTemplate(ctx, cloudTemplate); err != nil {
+		t.Fatalf("创建云卡开通模板失败: %v", err)
+	}
 
 	p := &storage.PortalProduct{
 		Code: "cloudcard-std", Name: "云端智能卡", Category: storage.ProductCategoryCloudCard,
@@ -251,7 +267,8 @@ func TestFlowCloudCardProductOrderAndStock(t *testing.T) {
 	}
 	sku := &storage.PortalProductSKU{
 		ProductUUID: p.UUID, Code: "cloudcard-1y", Name: "标准版", PriceCents: 0,
-		Stock: 2, MinQty: 1, MaxQty: 2, DeliveryMode: storage.DeliveryCloudCard, Enabled: true,
+		Stock: 2, MinQty: 1, MaxQty: 2, DurationMonths: 12,
+		CloudCardTmplUUID: cloudTemplate.UUID, DeliveryMode: storage.DeliveryCloudCard, Enabled: true,
 	}
 	if err := svc.CreateSKU(ctx, sku); err != nil {
 		t.Fatalf("创建规格失败: %v", err)
@@ -264,6 +281,10 @@ func TestFlowCloudCardProductOrderAndStock(t *testing.T) {
 	}
 	if workflow.SpecKind(order.SpecJSON) != storage.OrderKindCard {
 		t.Errorf("订单类型应为 card，实际 %s", workflow.SpecKind(order.SpecJSON))
+	}
+	if !strings.Contains(order.SpecJSON, cloudTemplate.UUID) || !strings.Contains(order.SpecJSON, `"duration_months":12`) ||
+		!strings.Contains(order.SpecJSON, `"cloud_card_operation":"activation"`) {
+		t.Errorf("云卡订单未保存开通模板和服务期快照: %s", order.SpecJSON)
 	}
 	if order.AmountCents != 0 {
 		t.Errorf("免费规格金额应为 0，实际 %d", order.AmountCents)

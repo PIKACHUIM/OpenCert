@@ -111,10 +111,19 @@ func (r *StorageZoneRepo) Delete(ctx context.Context, zoneUUID string) error {
 	return err
 }
 
-// CountCards 统计引用该存储区域的卡片数量（删除前安全检查）。
+// CountCards 统计引用该存储区域的云卡数量。
 func (r *StorageZoneRepo) CountCards(ctx context.Context, zoneUUID string) (int, error) {
 	var n int
 	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cards WHERE storage_zone_uuid = ?`, zoneUUID).Scan(&n)
+	return n, err
+}
+
+// CountReferences counts the cards and activation templates that reference a storage zone.
+func (r *StorageZoneRepo) CountReferences(ctx context.Context, zoneUUID string) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT (SELECT COUNT(*) FROM cards WHERE storage_zone_uuid = ?) +
+		        (SELECT COUNT(*) FROM cloud_card_templates WHERE storage_zone_uuid = ?)`, zoneUUID, zoneUUID).Scan(&n)
 	return n, err
 }
 

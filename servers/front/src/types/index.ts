@@ -118,6 +118,7 @@ export interface PortalProductSKU {
   san_included: number;
   cert_apply_tmpl_uuid: string;
   cloud_card_tmpl_uuid: string;
+  cloud_card_operation?: 'activation' | 'renewal' | '';
   /** 单张证书的 SAN 数量与格式限制（JSON 字符串） */
   san_policy?: string;
   enabled: boolean;
@@ -127,6 +128,20 @@ export interface PortalProductSKU {
 }
 
 /** 商品 + 规格聚合视图 */
+export interface CloudCardTemplate {
+  uuid: string;
+  name: string;
+  description: string;
+  storage_zone_uuid: string;
+  certificate_limit: number;
+  pin_min_length: number;
+  reminder_enabled: boolean;
+  reminder_days: number[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ProductView {
   product: PortalProduct;
   skus: PortalProductSKU[];
@@ -156,6 +171,8 @@ export interface PortalQuote {
   san_included: number;
   san_policy?: string;
   cert_apply_tmpl_uuid: string;
+  cloud_card_tmpl_uuid: string;
+  cloud_card_operation?: 'activation' | 'renewal' | '';
   stock: number;
   in_stock: boolean;
   discount_cents?: number;
@@ -449,6 +466,9 @@ export interface OrderQuota {
   remaining: number;
   delivery_mode?: DeliveryMode;
   key_types?: string[];
+  cloud_card_tmpl_uuid?: string;
+  cloud_card_operation?: 'activation' | 'renewal' | '';
+  duration_months?: number;
   status: string;
 }
 
@@ -1144,6 +1164,13 @@ export interface Card {
   kind?: 'user' | 'hosting';
   /** 销售模式下开卡所凭的订单号 */
   order_no?: string;
+  cloud_card_tmpl_uuid?: string;
+  service_status?: 'active' | 'suspended' | 'expired' | 'terminated';
+  service_expires_at?: string;
+  certificate_limit?: number;
+  certificate_count?: number;
+  reminder_enabled?: boolean;
+  reminder_days?: number[];
   created_at: string;
   updated_at: string;
 }

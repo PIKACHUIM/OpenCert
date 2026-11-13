@@ -144,6 +144,37 @@ func (db *DB) alterTables() error {
 	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN pin_retries INTEGER NOT NULL DEFAULT 3`)
 	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN pin_failed_count INTEGER NOT NULL DEFAULT 0`)
 	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN pin_locked INTEGER NOT NULL DEFAULT 0`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN cloud_card_tmpl_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN service_status TEXT NOT NULL DEFAULT 'active'`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN service_expires_at DATETIME`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN certificate_limit INTEGER NOT NULL DEFAULT -1`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN certificate_count INTEGER NOT NULL DEFAULT 0`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN service_version INTEGER NOT NULL DEFAULT 0`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN reminder_enabled INTEGER NOT NULL DEFAULT 0`)
+	db.execIgnoreError(`ALTER TABLE cards ADD COLUMN reminder_days TEXT NOT NULL DEFAULT '[7,0]'`)
+	db.execIgnoreError(`CREATE INDEX IF NOT EXISTS idx_cards_service_expires ON cards(service_status, service_expires_at)`)
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS cloud_card_templates (
+		uuid TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+		storage_zone_uuid TEXT NOT NULL, certificate_limit INTEGER NOT NULL DEFAULT -1,
+		pin_min_length INTEGER NOT NULL DEFAULT 6, reminder_enabled INTEGER NOT NULL DEFAULT 1,
+		reminder_days TEXT NOT NULL DEFAULT '[7,0]', enabled INTEGER NOT NULL DEFAULT 1,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS card_reminders (
+		uuid TEXT PRIMARY KEY, card_uuid TEXT NOT NULL, expires_at DATETIME NOT NULL,
+		days_before INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'sending', last_error TEXT NOT NULL DEFAULT '',
+		sent_at DATETIME, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(card_uuid, expires_at, days_before)
+	)`)
+	db.execIgnoreError(`CREATE TABLE IF NOT EXISTS card_order_fulfillments (
+		uuid TEXT PRIMARY KEY, order_no TEXT NOT NULL, slot_no INTEGER NOT NULL, card_uuid TEXT NOT NULL,
+		template_uuid TEXT NOT NULL DEFAULT '', fulfillment_type TEXT NOT NULL DEFAULT 'activation',
+		service_expires_at DATETIME, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(order_no, slot_no)
+	)`)
+	db.execIgnoreError(`CREATE INDEX IF NOT EXISTS idx_card_order_fulfillments_card ON card_order_fulfillments(card_uuid)`)
+	db.execIgnoreError(`UPDATE cards SET certificate_count = (SELECT COUNT(*) FROM certificates WHERE certificates.card_uuid = cards.uuid)`)
 
 	// certificates 表：增加完整元数据字段
 	db.execIgnoreError(`ALTER TABLE certificates ADD COLUMN subject_dn TEXT NOT NULL DEFAULT ''`)
@@ -312,6 +343,7 @@ func (db *DB) alterTablesV2() {
 	db.execIgnoreError(`ALTER TABLE cert_apply_templates ADD COLUMN subject_tmpl_uuid TEXT NOT NULL DEFAULT ''`)
 	db.execIgnoreError(`ALTER TABLE cert_apply_templates ADD COLUMN extension_tmpl_uuid TEXT NOT NULL DEFAULT ''`)
 	db.execIgnoreError(`ALTER TABLE portal_product_skus ADD COLUMN san_policy TEXT NOT NULL DEFAULT '{}'`)
+	db.execIgnoreError(`ALTER TABLE portal_product_skus ADD COLUMN cloud_card_operation TEXT NOT NULL DEFAULT 'activation'`)
 
 	// ---- 优惠码、兑换码与订阅 ----
 	db.execIgnoreError(`ALTER TABLE cert_orders ADD COLUMN subscription_uuid TEXT NOT NULL DEFAULT ''`)
@@ -507,9 +539,58 @@ CREATE TABLE IF NOT EXISTS cards (
     pin_retries         INTEGER NOT NULL DEFAULT 3,
     pin_failed_count    INTEGER NOT NULL DEFAULT 0,
     pin_locked          INTEGER NOT NULL DEFAULT 0,
+    cloud_card_tmpl_uuid TEXT NOT NULL DEFAULT '',
+    service_status      TEXT NOT NULL DEFAULT 'active',
+    service_expires_at  DATETIME,
+    certificate_limit   INTEGER NOT NULL DEFAULT -1,
+    certificate_count   INTEGER NOT NULL DEFAULT 0,
+    service_version     INTEGER NOT NULL DEFAULT 0,
+    reminder_enabled    INTEGER NOT NULL DEFAULT 0,
+    reminder_days       TEXT NOT NULL DEFAULT '[7,0]',
     created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 云卡开通策略与到期提醒记录
+CREATE TABLE IF NOT EXISTS cloud_card_templates (
+    uuid                TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    description         TEXT NOT NULL DEFAULT '',
+    storage_zone_uuid   TEXT NOT NULL,
+    certificate_limit   INTEGER NOT NULL DEFAULT -1,
+    pin_min_length      INTEGER NOT NULL DEFAULT 6,
+    reminder_enabled    INTEGER NOT NULL DEFAULT 1,
+    reminder_days       TEXT NOT NULL DEFAULT '[7,0]',
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS card_reminders (
+    uuid         TEXT PRIMARY KEY,
+    card_uuid    TEXT NOT NULL,
+    expires_at   DATETIME NOT NULL,
+    days_before  INTEGER NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'sending',
+    last_error   TEXT NOT NULL DEFAULT '',
+    sent_at      DATETIME,
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(card_uuid, expires_at, days_before)
+);
+
+CREATE TABLE IF NOT EXISTS card_order_fulfillments (
+    uuid              TEXT PRIMARY KEY,
+    order_no          TEXT NOT NULL,
+    slot_no           INTEGER NOT NULL,
+    card_uuid         TEXT NOT NULL,
+    template_uuid     TEXT NOT NULL DEFAULT '',
+    fulfillment_type  TEXT NOT NULL DEFAULT 'activation',
+    service_expires_at DATETIME,
+    created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(order_no, slot_no)
+);
+CREATE INDEX IF NOT EXISTS idx_card_order_fulfillments_card ON card_order_fulfillments(card_uuid);
 
 -- 云端证书表（私钥加密存储，不离开服务器）
 CREATE TABLE IF NOT EXISTS certificates (
@@ -1061,6 +1142,7 @@ CREATE TABLE IF NOT EXISTS portal_product_skus (
     san_included         INTEGER NOT NULL DEFAULT 1,
     cert_apply_tmpl_uuid TEXT NOT NULL DEFAULT '',
     cloud_card_tmpl_uuid TEXT NOT NULL DEFAULT '',
+    cloud_card_operation TEXT NOT NULL DEFAULT 'activation',
     enabled              INTEGER NOT NULL DEFAULT 1,
     sort_weight          INTEGER NOT NULL DEFAULT 0,
     created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

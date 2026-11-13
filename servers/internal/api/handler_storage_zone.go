@@ -189,9 +189,12 @@ func (s *Server) handleDeleteStorageZone(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	zoneUUID := r.PathValue("uuid")
-	if n, err := repo.CountCards(r.Context(), zoneUUID); err == nil && n > 0 {
+	if n, err := repo.CountReferences(r.Context(), zoneUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "检查存储区域引用失败")
+		return
+	} else if n > 0 {
 		writeError(w, http.StatusConflict,
-			fmt.Sprintf("该存储区域仍被 %d 张卡片使用，请先迁移或删除这些卡片", n))
+			fmt.Sprintf("该存储区域仍被 %d 张云卡或开通模板使用，请先迁移引用", n))
 		return
 	}
 	if err := repo.Delete(r.Context(), zoneUUID); err != nil {

@@ -4,6 +4,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -149,14 +150,14 @@ func (r *PortalRepo) DeleteProduct(ctx context.Context, productUUID string) erro
 
 const portalSKUColumns = `uuid, product_uuid, code, name, price_cents, currency, stock, min_qty, max_qty,
 	duration_months, delivery_mode, key_types, san_included, cert_apply_tmpl_uuid, cloud_card_tmpl_uuid,
-	san_policy, enabled, sort_weight, created_at, updated_at, valid_days`
+	cloud_card_operation, san_policy, enabled, sort_weight, created_at, updated_at, valid_days`
 
 func scanPortalSKU(scan func(dest ...interface{}) error) (*PortalProductSKU, error) {
 	s := &PortalProductSKU{}
 	var enabled int
 	if err := scan(&s.UUID, &s.ProductUUID, &s.Code, &s.Name, &s.PriceCents, &s.Currency, &s.Stock,
 		&s.MinQty, &s.MaxQty, &s.DurationMonths, &s.DeliveryMode, &s.KeyTypes, &s.SANIncluded,
-		&s.CertApplyTmplUUID, &s.CloudCardTmplUUID, &s.SANPolicy, &enabled, &s.SortWeight,
+		&s.CertApplyTmplUUID, &s.CloudCardTmplUUID, &s.CloudCardOperation, &s.SANPolicy, &enabled, &s.SortWeight,
 		&s.CreatedAt, &s.UpdatedAt, &s.ValidDays); err != nil {
 		return nil, err
 	}
@@ -282,11 +283,11 @@ func (r *PortalRepo) CreateSKU(ctx context.Context, s *PortalProductSKU) error {
 		`INSERT INTO portal_product_skus
 		 (uuid, product_uuid, code, name, price_cents, currency, stock, min_qty, max_qty,
 		  duration_months, delivery_mode, key_types, san_included, cert_apply_tmpl_uuid,
-		  cloud_card_tmpl_uuid, san_policy, enabled, sort_weight, created_at, updated_at, valid_days)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  cloud_card_tmpl_uuid, cloud_card_operation, san_policy, enabled, sort_weight, created_at, updated_at, valid_days)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.UUID, s.ProductUUID, s.Code, s.Name, s.PriceCents, s.Currency, s.Stock, s.MinQty, s.MaxQty,
 		s.DurationMonths, s.DeliveryMode, s.KeyTypes, s.SANIncluded, s.CertApplyTmplUUID,
-		s.CloudCardTmplUUID, normalizeJSONObject(s.SANPolicy), boolToInt(s.Enabled), s.SortWeight, s.CreatedAt, s.UpdatedAt,
+		s.CloudCardTmplUUID, s.CloudCardOperation, normalizeJSONObject(s.SANPolicy), boolToInt(s.Enabled), s.SortWeight, s.CreatedAt, s.UpdatedAt,
 		s.ValidDays,
 	)
 	return err
@@ -306,11 +307,11 @@ func (r *PortalRepo) UpdateSKU(ctx context.Context, s *PortalProductSKU) error {
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE portal_product_skus SET code = ?, name = ?, price_cents = ?, currency = ?, stock = ?,
 		 min_qty = ?, max_qty = ?, duration_months = ?, delivery_mode = ?, key_types = ?,
-		 san_included = ?, cert_apply_tmpl_uuid = ?, cloud_card_tmpl_uuid = ?, san_policy = ?, enabled = ?,
+		 san_included = ?, cert_apply_tmpl_uuid = ?, cloud_card_tmpl_uuid = ?, cloud_card_operation = ?, san_policy = ?, enabled = ?,
 		 sort_weight = ?, updated_at = ?, valid_days = ?
 		 WHERE uuid = ?`,
 		s.Code, s.Name, s.PriceCents, s.Currency, s.Stock, s.MinQty, s.MaxQty, s.DurationMonths,
-		s.DeliveryMode, s.KeyTypes, s.SANIncluded, s.CertApplyTmplUUID, s.CloudCardTmplUUID,
+		s.DeliveryMode, s.KeyTypes, s.SANIncluded, s.CertApplyTmplUUID, s.CloudCardTmplUUID, s.CloudCardOperation,
 		normalizeJSONObject(s.SANPolicy), boolToInt(s.Enabled), s.SortWeight, s.UpdatedAt, s.ValidDays, s.UUID,
 	)
 	return err
@@ -371,4 +372,125 @@ func (r *PortalRepo) SetSiteSettings(ctx context.Context, settings map[string]st
 		}
 	}
 	return tx.Commit()
+}
+
+// ---- 云卡开通模板 ----
+
+// IsActiveStorageZone reports whether a configured storage zone exists and is active.
+func (r *PortalRepo) IsActiveStorageZone(ctx context.Context, zoneUUID string) (bool, error) {
+	var status string
+	if err := r.db.QueryRowContext(ctx, `SELECT status FROM storage_zones WHERE uuid = ?`, zoneUUID).Scan(&status); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return status == "active", nil
+}
+
+const cloudCardTemplateColumns = `uuid, name, description, storage_zone_uuid, certificate_limit,
+	pin_min_length, reminder_enabled, reminder_days, enabled, created_at, updated_at`
+
+func scanCloudCardTemplate(scan func(dest ...interface{}) error) (*CloudCardTemplate, error) {
+	t := &CloudCardTemplate{}
+	var reminderEnabled, enabled int
+	var reminderDays string
+	if err := scan(&t.UUID, &t.Name, &t.Description, &t.StorageZoneUUID, &t.CertificateLimit,
+		&t.PINMinLength, &reminderEnabled, &reminderDays, &enabled, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(reminderDays), &t.ReminderDays); err != nil {
+		return nil, fmt.Errorf("解析云卡提醒日期失败: %w", err)
+	}
+	t.ReminderEnabled = reminderEnabled == 1
+	t.Enabled = enabled == 1
+	return t, nil
+}
+
+// ListCloudCardTemplates 查询云卡开通模板。
+func (r *PortalRepo) ListCloudCardTemplates(ctx context.Context) ([]*CloudCardTemplate, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+cloudCardTemplateColumns+` FROM cloud_card_templates ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*CloudCardTemplate{}
+	for rows.Next() {
+		item, err := scanCloudCardTemplate(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// GetCloudCardTemplate 按 UUID 查询云卡开通模板。
+func (r *PortalRepo) GetCloudCardTemplate(ctx context.Context, uuid string) (*CloudCardTemplate, error) {
+	item, err := scanCloudCardTemplate(r.db.QueryRowContext(ctx,
+		`SELECT `+cloudCardTemplateColumns+` FROM cloud_card_templates WHERE uuid = ?`, uuid).Scan)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("云卡开通模板不存在: %s", uuid)
+	}
+	return item, err
+}
+
+// CreateCloudCardTemplate 创建云卡开通模板。
+func (r *PortalRepo) CreateCloudCardTemplate(ctx context.Context, item *CloudCardTemplate) error {
+	if item.UUID == "" {
+		item.UUID = uuid.New().String()
+	}
+	now := time.Now()
+	item.CreatedAt, item.UpdatedAt = now, now
+	reminders, err := json.Marshal(item.ReminderDays)
+	if err != nil {
+		return fmt.Errorf("序列化云卡提醒日期失败: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx,
+		`INSERT INTO cloud_card_templates (`+cloudCardTemplateColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.UUID, item.Name, item.Description, item.StorageZoneUUID, item.CertificateLimit,
+		item.PINMinLength, boolToInt(item.ReminderEnabled), string(reminders), boolToInt(item.Enabled), item.CreatedAt, item.UpdatedAt)
+	return err
+}
+
+// UpdateCloudCardTemplate 更新云卡开通模板。
+func (r *PortalRepo) UpdateCloudCardTemplate(ctx context.Context, item *CloudCardTemplate) error {
+	item.UpdatedAt = time.Now()
+	reminders, err := json.Marshal(item.ReminderDays)
+	if err != nil {
+		return fmt.Errorf("序列化云卡提醒日期失败: %w", err)
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE cloud_card_templates SET name = ?, description = ?, storage_zone_uuid = ?, certificate_limit = ?,
+		 pin_min_length = ?, reminder_enabled = ?, reminder_days = ?, enabled = ?, updated_at = ? WHERE uuid = ?`,
+		item.Name, item.Description, item.StorageZoneUUID, item.CertificateLimit, item.PINMinLength,
+		boolToInt(item.ReminderEnabled), string(reminders), boolToInt(item.Enabled), item.UpdatedAt, item.UUID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("云卡开通模板不存在: %s", item.UUID)
+	}
+	return nil
+}
+
+// DeleteCloudCardTemplate 删除未被 SKU 或卡片使用的云卡开通模板。
+func (r *PortalRepo) DeleteCloudCardTemplate(ctx context.Context, uuid string) error {
+	var refs int
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT (SELECT COUNT(*) FROM portal_product_skus WHERE cloud_card_tmpl_uuid = ?) +
+		        (SELECT COUNT(*) FROM cards WHERE cloud_card_tmpl_uuid = ?)`, uuid, uuid).Scan(&refs); err != nil {
+		return err
+	}
+	if refs > 0 {
+		return fmt.Errorf("云卡开通模板仍被 %d 个规格或卡片使用", refs)
+	}
+	res, err := r.db.ExecContext(ctx, `DELETE FROM cloud_card_templates WHERE uuid = ?`, uuid)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("云卡开通模板不存在: %s", uuid)
+	}
+	return nil
 }

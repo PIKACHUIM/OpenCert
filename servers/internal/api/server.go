@@ -4,6 +4,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -81,6 +82,81 @@ func (s *Server) SetMailer(m mailer.Mailer) {
 	s.mailer = m
 }
 
+// StartCloudCardReminderLoop starts hourly expiration reminders and service-state updates until ctx is canceled.
+func (s *Server) StartCloudCardReminderLoop(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		if err := s.ProcessCloudCardReminders(ctx, time.Now()); err != nil {
+			slog.Warn("云卡到期提醒处理失败", "error", err)
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if err := s.ProcessCloudCardReminders(ctx, now); err != nil {
+					slog.Warn("云卡到期提醒处理失败", "error", err)
+				}
+			}
+		}
+	}()
+}
+
+// ProcessCloudCardReminders sends configured, idempotent cloud-card reminders and marks elapsed cards expired.
+func (s *Server) ProcessCloudCardReminders(ctx context.Context, now time.Time) error {
+	repo := storage.NewCardRepo(s.db)
+	candidates, err := repo.ListCloudCardReminderCandidates(ctx)
+	if err != nil {
+		return fmt.Errorf("查询云卡到期提醒失败: %w", err)
+	}
+	var firstErr error
+	for _, candidate := range candidates {
+		if candidate.Email == "" {
+			continue
+		}
+		for _, days := range candidate.ReminderDays {
+			reminderAt := candidate.ExpiresAt.AddDate(0, 0, -days)
+			if now.Before(reminderAt) || !now.Before(reminderAt.Add(24*time.Hour)) {
+				continue
+			}
+			claimed, err := repo.ClaimCloudCardReminder(ctx, candidate.CardUUID, candidate.ExpiresAt, days, now)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			if !claimed {
+				continue
+			}
+			subject := "云端智能卡服务到期提醒"
+			body := fmt.Sprintf("您好，您的云端智能卡“%s”服务将于 %s 到期。到期后卡片将暂停使用，卡片与证书记录会保留；如需继续使用，请在到期前续费。",
+				candidate.CardName, candidate.ExpiresAt.Format(time.RFC3339))
+			if days == 0 {
+				body = fmt.Sprintf("您好，您的云端智能卡“%s”服务已于 %s 到期，卡片敏感操作已暂停。卡片与证书记录会保留；续费后可恢复使用。",
+					candidate.CardName, candidate.ExpiresAt.Format(time.RFC3339))
+			}
+			var sendErr error
+			if s.mailer == nil {
+				sendErr = fmt.Errorf("邮件发送器未配置")
+			} else {
+				sendErr = s.mailer.Send(candidate.Email, subject, body)
+			}
+			if err := repo.CompleteCloudCardReminder(ctx, candidate.CardUUID, candidate.ExpiresAt, days, sendErr, now); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			if sendErr != nil {
+				slog.Warn("云卡到期提醒邮件发送失败", "card_uuid", candidate.CardUUID, "error", sendErr)
+			}
+		}
+	}
+	if err := repo.ExpireCloudCards(ctx, now); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("更新到期云卡状态失败: %w", err)
+	}
+	return firstErr
+}
+
 // NewServer 创建 API 服务器。
 func NewServer(cfg *configs.Config, db *storage.DB, jwtMgr *auth.Manager, svcs *Services, userRepo *storage.UserRepo, logRepo *storage.LogRepo) *Server {
 	s := &Server{
@@ -135,8 +211,8 @@ func corsMiddleware(cfg *configs.Config, next http.Handler) http.Handler {
 		if origin != "" && cfg.IsAllowedOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, X-Token-Refresh")
-			w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, X-Token-Refresh")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, X-Token-Refresh, X-PIN-Session")
+			w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, X-Token-Refresh, X-PIN-Required")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
@@ -191,6 +267,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/cards", s.authMiddleware(s.handleListCards))
 	mux.HandleFunc("POST /api/cards", s.writeOnly(s.handleCreateCard))
 	mux.HandleFunc("GET /api/cards/{uuid}", s.authMiddleware(s.handleGetCard))
+	mux.HandleFunc("POST /api/cards/{uuid}/renew", s.writeOnly(s.handleRenewCloudCard))
 	mux.HandleFunc("DELETE /api/cards/{uuid}", s.writeOnly(s.handleDeleteCard))
 
 	// 证书管理（读取需认证，写入需 user 以上角色）
@@ -503,6 +580,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// 运营后台：用户智能卡
 	mux.HandleFunc("GET /api/admin/cards", s.adminOnly(s.handleAdminListCards))
 	mux.HandleFunc("POST /api/admin/cards/{uuid}/unlock", s.adminOnly(s.handleAdminUnlockCard))
+	mux.HandleFunc("PUT /api/admin/cards/{uuid}/status", s.adminOnly(s.handleAdminSetCardStatus))
 	mux.HandleFunc("DELETE /api/admin/cards/{uuid}", s.adminOnly(s.handleAdminDeleteCard))
 
 	// 帮助中心：用户文档公开；管理员文档仅对登录管理员开放
@@ -518,6 +596,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/portal/admin/skus", s.adminOnly(s.handleAdminCreateSKU))
 	mux.HandleFunc("PUT /api/portal/admin/skus/{uuid}", s.adminOnly(s.handleAdminUpdateSKU))
 	mux.HandleFunc("DELETE /api/portal/admin/skus/{uuid}", s.adminOnly(s.handleAdminDeleteSKU))
+	mux.HandleFunc("GET /api/portal/admin/cloud-card-templates", s.adminOnly(s.handleAdminListCloudCardTemplates))
+	mux.HandleFunc("POST /api/portal/admin/cloud-card-templates", s.adminOnly(s.handleAdminCreateCloudCardTemplate))
+	mux.HandleFunc("PUT /api/portal/admin/cloud-card-templates/{uuid}", s.adminOnly(s.handleAdminUpdateCloudCardTemplate))
+	mux.HandleFunc("DELETE /api/portal/admin/cloud-card-templates/{uuid}", s.adminOnly(s.handleAdminDeleteCloudCardTemplate))
 
 	// 站点配置（读取需登录，写入需管理员）
 	mux.HandleFunc("GET /api/site-settings", s.authMiddleware(s.handleGetSiteSettings))
@@ -621,16 +703,36 @@ func (s *Server) writeOnly(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+// requireActiveCard 在敏感卡片操作前统一校验归属、暂停、到期和终止状态。
+func (s *Server) requireActiveCard(w http.ResponseWriter, r *http.Request, cardUUID string) (*storage.Card, bool) {
+	claims := claimsFromCtx(r.Context())
+	c, err := s.cardSvc.GetCard(r.Context(), cardUUID, claims.UserUUID)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return nil, false
+	}
+	switch state := c.ServiceState(time.Now()); state {
+	case "active":
+		return c, true
+	case "expired":
+		writeError(w, http.StatusForbidden, "云端智能卡服务已到期，请续费后恢复使用；卡片内证书与审计记录已保留")
+	case "suspended":
+		writeError(w, http.StatusForbidden, "云端智能卡已暂停，请联系运营处理")
+	default:
+		writeError(w, http.StatusForbidden, "云端智能卡已终止，不能继续使用")
+	}
+	return nil, false
+}
+
 // checkPINSession 校验 X-PIN-Session 令牌与当前卡片 UUID 和用户 UUID 是否匹配。
 // 校验失败时写回 401，并返回 false；若卡片未设置 PIN（即未启用 PIN 保护）则直接放行。
 // 注意：需在 authMiddleware 之后调用，ctx 中必须已有 claims。
 func (s *Server) checkPINSession(w http.ResponseWriter, r *http.Request, cardUUID string) bool {
 	claims := claimsFromCtx(r.Context())
 
-	// 若卡片未设置 PIN，跳过校验（兼容历史卡片）
-	c, err := s.cardSvc.GetCard(r.Context(), cardUUID, claims.UserUUID)
-	if err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
+	// 先校验卡片服务期状态，再检查 PIN 会话；到期/暂停不允许继续运算或写入。
+	c, ok := s.requireActiveCard(w, r, cardUUID)
+	if !ok {
 		return false
 	}
 	// 系统托管容器没有 PIN 保护，只用于存放下载型证书，禁止任何密钥运算与写入

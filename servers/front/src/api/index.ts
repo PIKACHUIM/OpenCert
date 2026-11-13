@@ -13,7 +13,7 @@ import type {
   KeyBackendDriver, DiscoveredKeyModule, KeyBackendProbeResult,
   CTEntry, CloudTOTPEntry, TOTPCodeResponse, Log,
   Card, CreateCardRequest, VerifyPINRequest, UnlockPUKRequest, ResetAdminKeyRequest,
-  PortalProduct, PortalProductSKU, PortalCategory, ProductView, PortalQuote, SiteSettings,
+  PortalProduct, PortalProductSKU, CloudCardTemplate, PortalCategory, ProductView, PortalQuote, SiteSettings,
   TotpChallenge, PaymentChannel, CheckoutResult, PaymentAttempt, PortalRefund,
   PkiEndpoint, Capabilities, SubmitApplicationResult, HelpDoc,
   OcspResponder, CertPolicy, VerifyProvider, VerifyProviderDriver,
@@ -782,6 +782,11 @@ export const getCard = (uuid: string) =>
 export const deleteCard = (uuid: string) =>
   http.delete(`/api/cards/${uuid}`).then((r) => r.data);
 
+export const renewCloudCard = (uuid: string, orderNo: string) =>
+  http.post<{ card_uuid: string; service_status: string; service_expires_at: string }>(
+    `/api/cards/${uuid}/renew`, { order_no: orderNo },
+  ).then((r) => r.data);
+
 export const listCardCerts = (cardUUID: string) =>
   http.get<{ certs: Certificate[]; total: number }>(`/api/cards/${cardUUID}/certs`)
     .then((r) => r.data.certs ?? []);
@@ -915,6 +920,9 @@ export const listAdminCards = (params?: { user_uuid?: string; page?: number; pag
 export const adminUnlockCard = (uuid: string) =>
   http.post(`/api/admin/cards/${uuid}/unlock`).then((r) => r.data);
 
+export const adminSetCardStatus = (uuid: string, status: 'active' | 'suspended') =>
+  http.put(`/api/admin/cards/${uuid}/status`, { status }).then((r) => r.data);
+
 export const adminDeleteCard = (uuid: string) =>
   http.delete(`/api/admin/cards/${uuid}`).then((r) => r.data);
 
@@ -961,6 +969,18 @@ export const updateAdminSKU = (uuid: string, data: Partial<PortalProductSKU>) =>
 
 export const deleteAdminSKU = (uuid: string) =>
   http.delete(`/api/portal/admin/skus/${uuid}`).then((r) => r.data);
+
+export const listAdminCloudCardTemplates = () =>
+  http.get<{ items: CloudCardTemplate[] }>('/api/portal/admin/cloud-card-templates').then((r) => r.data.items ?? []);
+
+export const createAdminCloudCardTemplate = (data: Partial<CloudCardTemplate>) =>
+  http.post<CloudCardTemplate>('/api/portal/admin/cloud-card-templates', data).then((r) => r.data);
+
+export const updateAdminCloudCardTemplate = (uuid: string, data: Partial<CloudCardTemplate>) =>
+  http.put<CloudCardTemplate>(`/api/portal/admin/cloud-card-templates/${uuid}`, data).then((r) => r.data);
+
+export const deleteAdminCloudCardTemplate = (uuid: string) =>
+  http.delete(`/api/portal/admin/cloud-card-templates/${uuid}`).then((r) => r.data);
 
 // ---- 站点配置（读取需登录，写入需管理员） ----
 

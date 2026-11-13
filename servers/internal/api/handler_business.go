@@ -34,15 +34,18 @@ func (s *Server) businessModes(r *http.Request) portal.BusinessModes {
 
 // orderQuota 是一笔订单的可履约额度。
 type orderQuota struct {
-	OrderNo      string   `json:"order_no"`
-	ProductName  string   `json:"product_name"`
-	SKUName      string   `json:"sku_name"`
-	Quantity     int      `json:"quantity"`
-	Used         int      `json:"used"`
-	Remaining    int      `json:"remaining"`
-	DeliveryMode string   `json:"delivery_mode,omitempty"`
-	KeyTypes     []string `json:"key_types,omitempty"`
-	Status       string   `json:"status"`
+	OrderNo            string   `json:"order_no"`
+	ProductName        string   `json:"product_name"`
+	SKUName            string   `json:"sku_name"`
+	Quantity           int      `json:"quantity"`
+	Used               int      `json:"used"`
+	Remaining          int      `json:"remaining"`
+	DeliveryMode       string   `json:"delivery_mode,omitempty"`
+	KeyTypes           []string `json:"key_types,omitempty"`
+	CloudCardTmplUUID  string   `json:"cloud_card_tmpl_uuid,omitempty"`
+	CloudCardOperation string   `json:"cloud_card_operation,omitempty"`
+	DurationMonths     int      `json:"duration_months,omitempty"`
+	Status             string   `json:"status"`
 }
 
 // listOrderQuotas 列出用户可履约的订单额度（kind=card 开卡，kind=cert 申请证书）。
@@ -72,18 +75,24 @@ func (s *Server) listOrderQuotas(r *http.Request, userUUID, kind string) ([]orde
 			continue
 		}
 		var spec struct {
-			ProductName  string   `json:"product_name"`
-			SKUName      string   `json:"sku_name"`
-			DeliveryMode string   `json:"delivery_mode"`
-			KeyTypes     []string `json:"key_types"`
+			ProductName        string   `json:"product_name"`
+			SKUName            string   `json:"sku_name"`
+			DeliveryMode       string   `json:"delivery_mode"`
+			KeyTypes           []string `json:"key_types"`
+			CloudCardTmplUUID  string   `json:"cloud_card_tmpl_uuid"`
+			CloudCardOperation string   `json:"cloud_card_operation"`
+			DurationMonths     int      `json:"duration_months"`
 		}
 		json.Unmarshal([]byte(x.spec), &spec) //nolint:errcheck
 
 		qty := workflow.SpecQuantity(x.spec)
 		var used int
 		if kind == storage.OrderKindCard {
-			s.db.QueryRowContext(r.Context(), //nolint:errcheck
-				`SELECT COUNT(*) FROM cards WHERE order_no = ?`, x.no).Scan(&used)
+			var countErr error
+			used, countErr = storage.NewCardRepo(s.db).CountByOrderNo(r.Context(), x.no)
+			if countErr != nil {
+				return nil, fmt.Errorf("查询云卡订单履约情况失败: %w", countErr)
+			}
 		} else {
 			s.db.QueryRowContext(r.Context(), //nolint:errcheck
 				`SELECT COUNT(*) FROM cert_applications WHERE order_uuid = ? AND status <> 'rejected'`, x.uuid).Scan(&used)
@@ -94,16 +103,24 @@ func (s *Server) listOrderQuotas(r *http.Request, userUUID, kind string) ([]orde
 		quotas = append(quotas, orderQuota{
 			OrderNo: x.no, ProductName: spec.ProductName, SKUName: spec.SKUName,
 			Quantity: qty, Used: used, Remaining: qty - used,
-			DeliveryMode: spec.DeliveryMode, KeyTypes: spec.KeyTypes, Status: x.status,
+			DeliveryMode: spec.DeliveryMode, KeyTypes: spec.KeyTypes,
+			CloudCardTmplUUID: spec.CloudCardTmplUUID, CloudCardOperation: spec.CloudCardOperation,
+			DurationMonths: spec.DurationMonths, Status: x.status,
 		})
 	}
 	return quotas, nil
 }
 
-// authorizeCardCreation 按业务模式校验开卡权限，返回需要绑定的订单号（自助模式为空）。
-func (s *Server) authorizeCardCreation(r *http.Request, claims *auth.Claims, orderNo string) (string, error) {
+type cardCreationGrant struct {
+	OrderNo        string
+	Template       *storage.CloudCardTemplate
+	DurationMonths int
+}
+
+// authorizeCardCreation 按业务模式校验开卡权限，并从已支付订单快照解析权益。
+func (s *Server) authorizeCardCreation(r *http.Request, claims *auth.Claims, orderNo string) (*cardCreationGrant, error) {
 	if auth.IsAdmin(claims.Role) {
-		return "", nil
+		return nil, nil
 	}
 	modes := s.businessModes(r)
 	repo := storage.NewCardRepo(s.db)
@@ -111,34 +128,49 @@ func (s *Server) authorizeCardCreation(r *http.Request, claims *auth.Claims, ord
 	if modes.CardApplyMode == storage.ModeSelfService && strings.TrimSpace(orderNo) == "" {
 		n, err := repo.CountUserCards(r.Context(), claims.UserUUID)
 		if err != nil {
-			return "", fmt.Errorf("查询卡片数量失败")
+			return nil, fmt.Errorf("查询卡片数量失败: %w", err)
 		}
 		if n >= modes.CardSelfLimit {
-			return "", fmt.Errorf("已达到可自助开通的智能卡数量上限（%d 张），如需更多请购买", modes.CardSelfLimit)
+			return nil, fmt.Errorf("已达到可自助开通的智能卡数量上限（%d 张），如需更多请购买", modes.CardSelfLimit)
 		}
-		return "", nil
+		return &cardCreationGrant{}, nil
 	}
 
-	// 销售模式（或自助模式下主动使用订单）：必须是本人的、已支付的智能卡订单且仍有余量
+	// 销售模式：已支付订单的商品快照是开卡区域、服务期和容量策略的唯一来源。
 	orderNo = strings.TrimSpace(orderNo)
 	if orderNo == "" {
-		return "", fmt.Errorf("当前需要购买云端智能卡后才能开通，请先在产品中心选购")
+		return nil, fmt.Errorf("当前需要购买云端智能卡后才能开通，请先在产品中心选购")
 	}
 	order, err := s.workflowSvc.GetOrderByNo(r.Context(), orderNo)
 	if err != nil || order.UserUUID != claims.UserUUID {
-		return "", fmt.Errorf("订单不存在")
+		return nil, fmt.Errorf("订单不存在")
 	}
 	if workflow.SpecKind(order.SpecJSON) != storage.OrderKindCard {
-		return "", fmt.Errorf("该订单不是云端智能卡订单")
+		return nil, fmt.Errorf("该订单不是云端智能卡订单")
 	}
 	if order.Status != storage.CertOrderPaid {
-		return "", fmt.Errorf("订单尚未支付或已完成（当前状态: %s）", order.Status)
+		return nil, fmt.Errorf("订单尚未支付或已完成（当前状态: %s）", order.Status)
 	}
-	used, _ := repo.CountByOrderNo(r.Context(), orderNo)
+	used, err := repo.CountByOrderNo(r.Context(), orderNo)
+	if err != nil {
+		return nil, fmt.Errorf("查询订单开卡数量失败: %w", err)
+	}
 	if used >= workflow.SpecQuantity(order.SpecJSON) {
-		return "", fmt.Errorf("该订单可开卡数量已用完")
+		return nil, fmt.Errorf("该订单可开卡数量已用完")
 	}
-	return orderNo, nil
+	var spec struct {
+		CloudCardTmplUUID  string `json:"cloud_card_tmpl_uuid"`
+		CloudCardOperation string `json:"cloud_card_operation"`
+		DurationMonths     int    `json:"duration_months"`
+	}
+	if err := json.Unmarshal([]byte(order.SpecJSON), &spec); err != nil || spec.CloudCardTmplUUID == "" || spec.DurationMonths <= 0 || spec.CloudCardOperation != "activation" {
+		return nil, fmt.Errorf("该订单不是有效的云卡开通权益")
+	}
+	tmpl, err := s.portalSvc.ResolveActiveCloudCardTemplate(r.Context(), spec.CloudCardTmplUUID)
+	if err != nil {
+		return nil, fmt.Errorf("订单关联的云卡开通模板不可用: %w", err)
+	}
+	return &cardCreationGrant{OrderNo: orderNo, Template: tmpl, DurationMonths: spec.DurationMonths}, nil
 }
 
 // cardOrderLimit 返回订单可开卡数量。
@@ -399,8 +431,30 @@ func (s *Server) handleAdminUnlockCard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "已解除锁定"})
 }
 
-// handleAdminDeleteCard DELETE /api/admin/cards/{uuid}
-// 删除卡片会连带删除其中证书，仅管理员可执行并记录审计。
+// handleAdminSetCardStatus PUT /api/admin/cards/{uuid}/status
+func (s *Server) handleAdminSetCardStatus(w http.ResponseWriter, r *http.Request) {
+	claims := claimsFromCtx(r.Context())
+	cardUUID := r.PathValue("uuid")
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := storage.NewCardRepo(s.db).UpdateServiceStatus(r.Context(), cardUUID, req.Status); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.auditLogRepo.Create(r.Context(), &storage.AuditLog{ //nolint:errcheck
+		UserUUID: claims.UserUUID, Action: "admin_update_cloud_card_status",
+		ResourceType: "card", ResourceUUID: cardUUID,
+		Detail: fmt.Sprintf(`{"status":%q}`, req.Status), IPAddress: r.RemoteAddr,
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "云卡状态已更新"})
+}
+
+// handleAdminDeleteCard DELETE /api/admin/cards/{uuid}; 已售卡只终止服务并保留证书与订单历史。
 func (s *Server) handleAdminDeleteCard(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
 	cardUUID := r.PathValue("uuid")
@@ -414,12 +468,16 @@ func (s *Server) handleAdminDeleteCard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	action, message := "admin_delete_card", "卡片及关联证书已删除"
+	if c.OrderNo != "" {
+		action, message = "admin_terminate_card", "已终止已售云卡，证书与订单历史已保留"
+	}
 	s.auditLogRepo.Create(r.Context(), &storage.AuditLog{ //nolint:errcheck
-		UserUUID: claims.UserUUID, Action: "admin_delete_card",
+		UserUUID: claims.UserUUID, Action: action,
 		ResourceType: "card", ResourceUUID: cardUUID,
 		Detail: fmt.Sprintf(`{"owner":%q,"name":%q}`, c.UserUUID, c.CardName), IPAddress: r.RemoteAddr,
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"message": "卡片已删除"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": message})
 }
 
 // ---- 兼容旧接口 ----

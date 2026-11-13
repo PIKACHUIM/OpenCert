@@ -44,27 +44,29 @@ type ProductView struct {
 
 // Quote 是服务端权威报价。
 type Quote struct {
-	ProductCode       string    `json:"product_code"`
-	ProductName       string    `json:"product_name"`
-	SKUCode           string    `json:"sku_code"`
-	SKUName           string    `json:"sku_name"`
-	Quantity          int       `json:"quantity"`
-	UnitPriceCents    int64     `json:"unit_price_cents"`
-	TotalCents        int64     `json:"total_cents"`
-	Currency          string    `json:"currency"`
-	DurationMonths    int       `json:"duration_months"`
-	ValidDays         int       `json:"valid_days"` // 证书有效期（天，0=按颁发模板默认值）
-	DeliveryMode      string    `json:"delivery_mode"`
-	KeyTypes          []string  `json:"key_types"`
-	SANIncluded       int       `json:"san_included"`
-	CertApplyTmplUUID string    `json:"cert_apply_tmpl_uuid"`
-	SANPolicy         string    `json:"san_policy"`
-	Stock             int       `json:"stock"`
-	InStock           bool      `json:"in_stock"`
-	DiscountCents     int64     `json:"discount_cents"`
-	PayableCents      int64     `json:"payable_cents"`
-	CouponError       string    `json:"coupon_error,omitempty"`
-	QuotedAt          time.Time `json:"quoted_at"`
+	ProductCode        string    `json:"product_code"`
+	ProductName        string    `json:"product_name"`
+	SKUCode            string    `json:"sku_code"`
+	SKUName            string    `json:"sku_name"`
+	Quantity           int       `json:"quantity"`
+	UnitPriceCents     int64     `json:"unit_price_cents"`
+	TotalCents         int64     `json:"total_cents"`
+	Currency           string    `json:"currency"`
+	DurationMonths     int       `json:"duration_months"`
+	ValidDays          int       `json:"valid_days"` // 证书有效期（天，0=按颁发模板默认值）
+	DeliveryMode       string    `json:"delivery_mode"`
+	KeyTypes           []string  `json:"key_types"`
+	SANIncluded        int       `json:"san_included"`
+	CertApplyTmplUUID  string    `json:"cert_apply_tmpl_uuid"`
+	CloudCardTmplUUID  string    `json:"cloud_card_tmpl_uuid"`
+	CloudCardOperation string    `json:"cloud_card_operation"`
+	SANPolicy          string    `json:"san_policy"`
+	Stock              int       `json:"stock"`
+	InStock            bool      `json:"in_stock"`
+	DiscountCents      int64     `json:"discount_cents"`
+	PayableCents       int64     `json:"payable_cents"`
+	CouponError        string    `json:"coupon_error,omitempty"`
+	QuotedAt           time.Time `json:"quoted_at"`
 }
 
 // ---- 目录查询 ----
@@ -136,6 +138,9 @@ func (s *Service) Quote(ctx context.Context, skuCode string, quantity int) (*Quo
 	if !product.Visible || !product.Enabled {
 		return nil, fmt.Errorf("该商品暂不可购买")
 	}
+	if err := s.validateCloudCardSKU(ctx, product, sku); err != nil {
+		return nil, err
+	}
 
 	if quantity <= 0 {
 		quantity = sku.MinQty
@@ -155,25 +160,27 @@ func (s *Service) Quote(ctx context.Context, skuCode string, quantity int) (*Quo
 	}
 
 	return &Quote{
-		ProductCode:       product.Code,
-		ProductName:       product.Name,
-		SKUCode:           sku.Code,
-		SKUName:           sku.Name,
-		Quantity:          quantity,
-		UnitPriceCents:    sku.PriceCents,
-		TotalCents:        sku.PriceCents * int64(quantity),
-		Currency:          sku.Currency,
-		DurationMonths:    sku.DurationMonths,
-		ValidDays:         sku.ValidDays,
-		DeliveryMode:      string(sku.DeliveryMode),
-		KeyTypes:          keyTypes,
-		SANIncluded:       sku.SANIncluded,
-		CertApplyTmplUUID: sku.CertApplyTmplUUID,
-		SANPolicy:         sku.SANPolicy,
-		Stock:             sku.Stock,
-		InStock:           sku.InStock(quantity),
-		PayableCents:      sku.PriceCents * int64(quantity),
-		QuotedAt:          time.Now(),
+		ProductCode:        product.Code,
+		ProductName:        product.Name,
+		SKUCode:            sku.Code,
+		SKUName:            sku.Name,
+		Quantity:           quantity,
+		UnitPriceCents:     sku.PriceCents,
+		TotalCents:         sku.PriceCents * int64(quantity),
+		Currency:           sku.Currency,
+		DurationMonths:     sku.DurationMonths,
+		ValidDays:          sku.ValidDays,
+		DeliveryMode:       string(sku.DeliveryMode),
+		KeyTypes:           keyTypes,
+		SANIncluded:        sku.SANIncluded,
+		CertApplyTmplUUID:  sku.CertApplyTmplUUID,
+		CloudCardTmplUUID:  sku.CloudCardTmplUUID,
+		CloudCardOperation: sku.CloudCardOperation,
+		SANPolicy:          sku.SANPolicy,
+		Stock:              sku.Stock,
+		InStock:            sku.InStock(quantity),
+		PayableCents:       sku.PriceCents * int64(quantity),
+		QuotedAt:           time.Now(),
 	}, nil
 }
 
@@ -239,21 +246,23 @@ func (s *Service) CreateOrder(ctx context.Context, userUUID string, in CreateOrd
 	}
 
 	spec, err := json.Marshal(map[string]interface{}{
-		"kind":             kind,
-		"category":         product.Category,
-		"product_code":     quote.ProductCode,
-		"product_name":     quote.ProductName,
-		"sku_code":         quote.SKUCode,
-		"sku_name":         quote.SKUName,
-		"quantity":         quote.Quantity,
-		"unit_price_cents": quote.UnitPriceCents,
-		"currency":         quote.Currency,
-		"duration_months":  quote.DurationMonths,
-		"valid_days":       quote.ValidDays, // 签发时按此有效期收窄（颁发模板范围内的快照）
-		"delivery_mode":    quote.DeliveryMode,
-		"key_types":        quote.KeyTypes,
-		"san_included":     quote.SANIncluded,
-		"san_policy":       json.RawMessage(normalizeObject(quote.SANPolicy)),
+		"kind":                 kind,
+		"category":             product.Category,
+		"product_code":         quote.ProductCode,
+		"product_name":         quote.ProductName,
+		"sku_code":             quote.SKUCode,
+		"sku_name":             quote.SKUName,
+		"quantity":             quote.Quantity,
+		"unit_price_cents":     quote.UnitPriceCents,
+		"currency":             quote.Currency,
+		"duration_months":      quote.DurationMonths,
+		"cloud_card_tmpl_uuid": quote.CloudCardTmplUUID,
+		"cloud_card_operation": quote.CloudCardOperation,
+		"valid_days":           quote.ValidDays, // 签发时按此有效期收窄（颁发模板范围内的快照）
+		"delivery_mode":        quote.DeliveryMode,
+		"key_types":            quote.KeyTypes,
+		"san_included":         quote.SANIncluded,
+		"san_policy":           json.RawMessage(normalizeObject(quote.SANPolicy)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("生成规格快照失败: %w", err)
@@ -556,7 +565,11 @@ func (s *Service) CreateSKU(ctx context.Context, sku *storage.PortalProductSKU) 
 	if err := validateSKU(sku); err != nil {
 		return err
 	}
-	if _, err := s.repo.GetProductByUUID(ctx, sku.ProductUUID); err != nil {
+	product, err := s.repo.GetProductByUUID(ctx, sku.ProductUUID)
+	if err != nil {
+		return err
+	}
+	if err := s.validateCloudCardSKU(ctx, product, sku); err != nil {
 		return err
 	}
 	return s.repo.CreateSKU(ctx, sku)
@@ -570,12 +583,145 @@ func (s *Service) UpdateSKU(ctx context.Context, sku *storage.PortalProductSKU) 
 	if sku.UUID == "" {
 		return fmt.Errorf("缺少规格 UUID")
 	}
+	product, err := s.repo.GetProductByUUID(ctx, sku.ProductUUID)
+	if err != nil {
+		return err
+	}
+	if err := s.validateCloudCardSKU(ctx, product, sku); err != nil {
+		return err
+	}
 	return s.repo.UpdateSKU(ctx, sku)
 }
 
 // DeleteSKU 删除规格。
 func (s *Service) DeleteSKU(ctx context.Context, skuUUID string) error {
 	return s.repo.DeleteSKU(ctx, skuUUID)
+}
+
+// ListCloudCardTemplates 查询云卡开通模板。
+func (s *Service) ListCloudCardTemplates(ctx context.Context) ([]*storage.CloudCardTemplate, error) {
+	return s.repo.ListCloudCardTemplates(ctx)
+}
+
+// GetCloudCardTemplate 按 UUID 查询云卡开通模板。
+func (s *Service) GetCloudCardTemplate(ctx context.Context, uuid string) (*storage.CloudCardTemplate, error) {
+	return s.repo.GetCloudCardTemplate(ctx, uuid)
+}
+
+// ResolveActiveCloudCardTemplate returns an enabled template backed by an active key-storage zone.
+func (s *Service) ResolveActiveCloudCardTemplate(ctx context.Context, uuid string) (*storage.CloudCardTemplate, error) {
+	tmpl, err := s.repo.GetCloudCardTemplate(ctx, uuid)
+	if err != nil {
+		return nil, err
+	}
+	if !tmpl.Enabled {
+		return nil, fmt.Errorf("云卡开通模板已停用")
+	}
+	active, err := s.repo.IsActiveStorageZone(ctx, tmpl.StorageZoneUUID)
+	if err != nil {
+		return nil, fmt.Errorf("检查云卡存储区域失败: %w", err)
+	}
+	if !active {
+		return nil, fmt.Errorf("云卡开通模板的存储区域已停用")
+	}
+	return tmpl, nil
+}
+
+// CreateCloudCardTemplate 创建并校验云卡开通模板。
+func (s *Service) CreateCloudCardTemplate(ctx context.Context, tmpl *storage.CloudCardTemplate) error {
+	if err := s.validateCloudCardTemplate(ctx, tmpl); err != nil {
+		return err
+	}
+	return s.repo.CreateCloudCardTemplate(ctx, tmpl)
+}
+
+// UpdateCloudCardTemplate 更新并校验云卡开通模板。
+func (s *Service) UpdateCloudCardTemplate(ctx context.Context, tmpl *storage.CloudCardTemplate) error {
+	if tmpl.UUID == "" {
+		return fmt.Errorf("缺少云卡开通模板 UUID")
+	}
+	if err := s.validateCloudCardTemplate(ctx, tmpl); err != nil {
+		return err
+	}
+	return s.repo.UpdateCloudCardTemplate(ctx, tmpl)
+}
+
+// DeleteCloudCardTemplate 删除未被销售规格或卡片引用的云卡开通模板。
+func (s *Service) DeleteCloudCardTemplate(ctx context.Context, uuid string) error {
+	return s.repo.DeleteCloudCardTemplate(ctx, uuid)
+}
+
+func (s *Service) validateCloudCardTemplate(ctx context.Context, tmpl *storage.CloudCardTemplate) error {
+	tmpl.Name = strings.TrimSpace(tmpl.Name)
+	if tmpl.Name == "" || tmpl.StorageZoneUUID == "" {
+		return fmt.Errorf("模板名称与存储区域不能为空")
+	}
+	if tmpl.CertificateLimit == 0 || tmpl.CertificateLimit < -1 {
+		return fmt.Errorf("证书容量必须为正数，或使用 -1 表示不限量")
+	}
+	if tmpl.PINMinLength == 0 {
+		tmpl.PINMinLength = 6
+	}
+	if tmpl.PINMinLength < 6 || tmpl.PINMinLength > 64 {
+		return fmt.Errorf("PIN 最小长度需在 6 到 64 位之间")
+	}
+	active, err := s.repo.IsActiveStorageZone(ctx, tmpl.StorageZoneUUID)
+	if err != nil {
+		return fmt.Errorf("检查存储区域失败: %w", err)
+	}
+	if !active {
+		return fmt.Errorf("存储区域不存在或未启用")
+	}
+	if len(tmpl.ReminderDays) == 0 {
+		tmpl.ReminderDays = []int{7, 0}
+	}
+	if len(tmpl.ReminderDays) > 8 {
+		return fmt.Errorf("最多配置 8 个到期提醒时间点")
+	}
+	seen := make(map[int]struct{}, len(tmpl.ReminderDays))
+	for _, day := range tmpl.ReminderDays {
+		if day < 0 || day > 365 {
+			return fmt.Errorf("到期提醒天数必须在 0 到 365 之间")
+		}
+		if _, ok := seen[day]; ok {
+			return fmt.Errorf("到期提醒天数不能重复")
+		}
+		seen[day] = struct{}{}
+	}
+	return nil
+}
+
+func (s *Service) validateCloudCardSKU(ctx context.Context, product *storage.PortalProduct, sku *storage.PortalProductSKU) error {
+	if product.Category != storage.ProductCategoryCloudCard {
+		if sku.CloudCardTmplUUID != "" {
+			return fmt.Errorf("非云卡商品不能关联云卡开通模板")
+		}
+		return nil
+	}
+	if sku.CloudCardTmplUUID == "" {
+		return fmt.Errorf("云卡商品规格必须关联云卡开通模板")
+	}
+	if sku.DurationMonths <= 0 || sku.DurationMonths > 120 {
+		return fmt.Errorf("云卡服务期需配置在 1 到 120 个月之间")
+	}
+	if sku.CloudCardOperation == "" {
+		sku.CloudCardOperation = "activation"
+	}
+	if sku.CloudCardOperation != "activation" && sku.CloudCardOperation != "renewal" {
+		return fmt.Errorf("云卡商品用途只能是 activation 或 renewal")
+	}
+	tmpl, err := s.repo.GetCloudCardTemplate(ctx, sku.CloudCardTmplUUID)
+	if err != nil || !tmpl.Enabled {
+		return fmt.Errorf("云卡商品规格关联的开通模板不存在或已停用")
+	}
+	active, err := s.repo.IsActiveStorageZone(ctx, tmpl.StorageZoneUUID)
+	if err != nil {
+		return fmt.Errorf("检查云卡存储区域失败: %w", err)
+	}
+	if !active {
+		return fmt.Errorf("云卡开通模板的存储区域不存在或未启用")
+	}
+	return nil
 }
 
 // ---- 校验 ----

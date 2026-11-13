@@ -9,8 +9,8 @@ import {
 } from '@ant-design/icons';
 import {
   listCards, createCard, deleteCard, getCard, listCardCerts,
-  verifyCardPIN, logoutCardPINSession, unlockCardWithPUK, resetCardWithAdminKey,
-  listStorageZones, getCapabilities, listAdminCards, adminUnlockCard, adminDeleteCard,
+  verifyCardPIN, logoutCardPINSession, unlockCardWithPUK, resetCardWithAdminKey, renewCloudCard,
+  listStorageZones, getCapabilities, listAdminCards, adminUnlockCard, adminSetCardStatus, adminDeleteCard,
 } from '../../api';
 import type { Card as CardModel, Capabilities, Certificate, StorageZone } from '../../types';
 import HelpLink from '../../components/HelpLink';
@@ -18,6 +18,20 @@ import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../store/auth';
 
 const { Title, Text } = Typography;
+
+const cardServiceStatus = (card: CardModel): NonNullable<CardModel['service_status']> => {
+  if (card.service_status === 'terminated' || card.service_status === 'suspended') return card.service_status;
+  if (card.service_status === 'expired' || (card.service_expires_at && Date.parse(card.service_expires_at) <= Date.now())) return 'expired';
+  return 'active';
+};
+
+const cardServiceLabel = (status: NonNullable<CardModel['service_status']>) => ({
+  active: '服务中', suspended: '已暂停', expired: '已到期', terminated: '已终止',
+}[status]);
+
+const cardServiceColor = (status: NonNullable<CardModel['service_status']>) => ({
+  active: 'green', suspended: 'orange', expired: 'red', terminated: 'default',
+}[status]);
 
 /**
  * Cards 页面：云端智能卡管理。
@@ -39,10 +53,13 @@ const CardsPage: React.FC = () => {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [form] = Form.useForm();
+  const [renewOpen, setRenewOpen] = useState(false);
+  const [renewOrderNo, setRenewOrderNo] = useState<string>();
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [currentCard, setCurrentCard] = useState<CardModel | null>(null);
   const [cardCerts, setCardCerts] = useState<Certificate[]>([]);
+  const currentCardActive = currentCard ? cardServiceStatus(currentCard) === 'active' : false;
 
   // PIN/PUK/Admin 弹窗
   const [pinOpen, setPinOpen] = useState(false);
@@ -96,10 +113,21 @@ const CardsPage: React.FC = () => {
     setPinSession('');
     try {
       const [card, certs] = await Promise.all([getCard(c.uuid), listCardCerts(c.uuid)]);
-      setCurrentCard(card);
+      setCurrentCard({ ...card, certificate_count: card.certificate_count ?? certs.length });
       setCardCerts(certs);
     } catch (e: any) {
       message.error(e.message || '加载详情失败');
+    }
+  };
+
+  const handleToggleCardService = async (cardUUID: string, status: 'active' | 'suspended') => {
+    try {
+      await adminSetCardStatus(cardUUID, status);
+      message.success(status === 'suspended' ? '云卡已暂停' : '云卡已恢复');
+      await fetchAllCards(allPage);
+      await fetchCards();
+    } catch (e: any) {
+      message.error(e.message || '更新云卡状态失败');
     }
   };
 
@@ -125,6 +153,21 @@ const CardsPage: React.FC = () => {
     }
   };
 
+  const handleRenew = async () => {
+    if (!currentCard?.uuid || !renewOrderNo) return;
+    try {
+      const result = await renewCloudCard(currentCard.uuid, renewOrderNo);
+      message.success(`云卡服务已续至 ${new Date(result.service_expires_at).toLocaleString('zh-CN')}`);
+      setRenewOpen(false);
+      setRenewOrderNo(undefined);
+      await fetchCards();
+      if (drawerOpen) await openDetail({ ...currentCard, service_expires_at: result.service_expires_at, service_status: 'active' });
+      getCapabilities().then(setCaps).catch(() => undefined);
+    } catch (e: any) {
+      message.error(e.message || '续费失败');
+    }
+  };
+
   const handleDelete = async (uuid: string) => {
     try {
       await deleteCard(uuid);
@@ -141,6 +184,13 @@ const CardsPage: React.FC = () => {
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
     { title: '存储区域', dataIndex: 'storage_zone_uuid', key: 'storage_zone_uuid',
       render: (v: string) => zones.find((z) => z.uuid === v)?.name || <Text type="secondary">-</Text> },
+    { title: '服务权益', key: 'service', render: (_: unknown, r: CardModel) => (
+      <Space direction="vertical" size={0}>
+        <Tag color={cardServiceColor(cardServiceStatus(r))}>{cardServiceLabel(cardServiceStatus(r))}</Tag>
+        {r.service_expires_at && <Text type="secondary" style={{ fontSize: 11 }}>到期 {new Date(r.service_expires_at).toLocaleDateString('zh-CN')}</Text>}
+        {r.certificate_limit !== undefined && <Text type="secondary" style={{ fontSize: 11 }}>证书 {r.certificate_count ?? 0}/{r.certificate_limit < 0 ? '不限' : r.certificate_limit}</Text>}
+      </Space>
+    )},
     { title: 'PIN 状态', key: 'pin_status',
       render: (_: any, r: CardModel) => r.pin_locked
         ? <Tag icon={<LockOutlined />} color="error">已锁定</Tag>
@@ -148,12 +198,15 @@ const CardsPage: React.FC = () => {
     { title: '创建时间', dataIndex: 'created_at', key: 'created_at',
       render: (v: string) => new Date(v).toLocaleString('zh-CN') },
     {
-      title: '操作', key: 'actions', width: 260,
+      title: '操作', key: 'actions', width: 340,
       render: (_: any, r: CardModel) => (
         <Space>
           <Button type="link" onClick={() => openDetail(r)}>详情</Button>
-          <Popconfirm title="确认删除此卡片？" onConfirm={() => handleDelete(r.uuid)}>
-            <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
+          {r.service_expires_at && r.service_status !== 'terminated' && (
+            <Button type="link" onClick={() => { setCurrentCard(r); setRenewOpen(true); }}>续费</Button>
+          )}
+          <Popconfirm title={r.order_no ? '已售云卡将终止服务并保留证书历史，确认？' : '确认删除此卡片及关联证书？'} onConfirm={() => handleDelete(r.uuid)}>
+            <Button type="link" danger icon={<DeleteOutlined />}>{r.order_no ? '终止' : '删除'}</Button>
           </Popconfirm>
         </Space>
       ),
@@ -206,8 +259,8 @@ const CardsPage: React.FC = () => {
                 children: (
                   <>
                     <Alert type="info" showIcon style={{ marginBottom: 12 }}
-                      message="管理员视图：可解除 PIN 锁定、删除卡片"
-                      description="删除卡片会连带删除其中的证书，请先确认证书是否需要保留；用户自助吊销与续期由其本人操作。" />
+                      message="管理员可管理云卡服务状态、解除 PIN 锁定并终止滥用卡片"
+                      description="暂停/恢复控制卡片的密钥操作；终止已售卡会保留证书与订单审计历史，不返还已履约的开卡额度。" />
                     <Table
                       rowKey="uuid" loading={allLoading} dataSource={allCards}
                       pagination={{
@@ -220,6 +273,12 @@ const CardsPage: React.FC = () => {
                         { title: '类型', dataIndex: 'kind', width: 120,
                           render: (v: string) => v === 'hosting' ? <Tag>托管容器</Tag> : <Tag color="blue">用户智能卡</Tag> },
                         { title: '来源订单', dataIndex: 'order_no', render: (v: string) => v || '—' },
+                        { title: '服务权益', key: 'service', render: (_: unknown, r: CardModel) => (
+                          <Space direction="vertical" size={0}>
+                            <Tag color={cardServiceColor(cardServiceStatus(r))}>{cardServiceLabel(cardServiceStatus(r))}</Tag>
+                            {r.service_expires_at && <Text type="secondary" style={{ fontSize: 11 }}>{new Date(r.service_expires_at).toLocaleDateString('zh-CN')}</Text>}
+                          </Space>
+                        )},
                         { title: '证书数', dataIndex: 'cert_count', width: 80 },
                         { title: 'PIN 状态', key: 'pin', width: 130,
                           render: (_: any, r: any) => r.pin_locked
@@ -228,8 +287,8 @@ const CardsPage: React.FC = () => {
                         { title: '创建时间', dataIndex: 'created_at', width: 165,
                           render: (v: string) => (v ? new Date(v).toLocaleString('zh-CN') : '—') },
                         {
-                          title: '操作', key: 'actions', width: 190,
-                          render: (_: any, r: any) => (
+                          title: '操作', key: 'actions', width: 260,
+                          render: (_: any, r: CardModel) => (
                             <Space size={4}>
                               <Button size="small" type="link" icon={<UnlockOutlined />}
                                 onClick={async () => {
@@ -239,14 +298,23 @@ const CardsPage: React.FC = () => {
                                     fetchAllCards(allPage);
                                   } catch (e: any) { message.error(e.message || '操作失败'); }
                                 }}>解锁</Button>
-                              <Popconfirm title="删除卡片会连带删除其中证书，确认？" onConfirm={async () => {
-                                try {
-                                  await adminDeleteCard(r.uuid);
-                                  message.success('已删除');
-                                  fetchAllCards(allPage);
-                                } catch (e: any) { message.error(e.message || '删除失败'); }
-                              }}>
-                                <Button size="small" danger type="link" icon={<DeleteOutlined />}>删除</Button>
+                              {r.order_no && ['active', 'suspended'].includes(cardServiceStatus(r)) && (
+                                <Button size="small" type="link" danger={cardServiceStatus(r) === 'active'}
+                                  onClick={() => handleToggleCardService(r.uuid, cardServiceStatus(r) === 'active' ? 'suspended' : 'active')}>
+                                  {cardServiceStatus(r) === 'active' ? '暂停' : '恢复'}
+                                </Button>
+                              )}
+                              <Popconfirm
+                                title={r.order_no ? '终止云卡后会保留证书与审计历史，确认？' : '删除卡片会连带删除其中证书，确认？'}
+                                onConfirm={async () => {
+                                  try {
+                                    await adminDeleteCard(r.uuid);
+                                    message.success(r.order_no ? '已终止云卡，证书记录已保留' : '卡片及关联证书已删除');
+                                    fetchAllCards(allPage);
+                                  } catch (e: any) { message.error(e.message || '操作失败'); }
+                                }}
+                              >
+                                <Button size="small" danger type="link" icon={<DeleteOutlined />}>{r.order_no ? '终止' : '删除'}</Button>
                               </Popconfirm>
                             </Space>
                           ),
@@ -271,15 +339,15 @@ const CardsPage: React.FC = () => {
         destroyOnClose
       >
         <Form form={form} layout="vertical" onFinish={handleCreate}>
-          {(caps?.card_entitlements?.length ?? 0) > 0 && (
-            <Form.Item name="order_no" label="使用订单额度"
-              extra="销售模式下凭已支付的云智能卡订单开通，一张订单可开通的卡片数量有限">
+          {(caps?.card_entitlements?.filter((q) => q.cloud_card_operation !== 'renewal').length ?? 0) > 0 && (
+            <Form.Item name="order_no" label="开卡订单额度"
+              extra="只能使用已支付的 activation 开卡权益">
               <Select
                 allowClear
-                placeholder="选择要使用的已支付订单"
-                options={(caps?.card_entitlements ?? []).map((q) => ({
+                placeholder="选择要使用的已支付开卡订单"
+                options={(caps?.card_entitlements ?? []).filter((q) => q.cloud_card_operation !== 'renewal').map((q) => ({
                   value: q.order_no,
-                  label: `${q.product_name || '云智能卡'} · 剩余 ${q.remaining}/${q.quantity} 张`,
+                  label: `${q.product_name || '云智能卡'} · ${q.sku_name || '服务'} · 剩余 ${q.remaining}/${q.quantity} 张`,
                 }))}
               />
             </Form.Item>
@@ -290,16 +358,10 @@ const CardsPage: React.FC = () => {
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} maxLength={200} />
           </Form.Item>
-          <Form.Item name="storage_zone_uuid" label="存储区域"
-            tooltip="决定卡内私钥存放在哪里：本地加密存储可导出备份；TPM/HSM 由硬件保护、私钥不可导出。可在「服务配置 → 私钥存储区域」中新增。">
-            <Select allowClear placeholder="选择存储区域（可选，默认本地加密存储）"
-              options={zones.filter((z) => z.status !== 'disabled').map((z) => ({
-                value: z.uuid,
-                label: `${z.name}${z.kind === 'hsm' ? '（HSM 硬件）' : z.kind === 'tpm' ? '（TPM）' : z.storage_type === 'hsm' ? '（HSM 硬件）' : '（本地加密）'}`,
-              }))} />
-          </Form.Item>
-          <Form.Item name="pin" label="PIN 码" rules={[{ min: 4, max: 32 }]}>
-            <Input.Password placeholder="4-32 位字符；签名/解密/导入证书时需要" />
+          <Alert type="info" showIcon style={{ marginBottom: 16 }}
+            message="服务端会按照已购套餐指定的存储区域、证书容量和服务期创建云卡，不允许在客户端覆盖这些技术权益。" />
+          <Form.Item name="pin" label="PIN 码" rules={[{ required: true, min: 6, max: 32, message: 'PIN 至少 6 位，最大 32 位' }]}>
+            <Input.Password placeholder="至少 6 位；签名、解密和证书操作需要验证" />
           </Form.Item>
           <Form.Item name="puk" label="PUK 码" rules={[{ min: 8, max: 32 }]}>
             <Input.Password placeholder="8-32 位字符；PIN 锁定后用于解锁" />
@@ -309,6 +371,33 @@ const CardsPage: React.FC = () => {
           </Form.Item>
           <Form.Item name="pin_retries" label="PIN 错误重试次数" initialValue={3}>
             <InputNumber min={1} max={10} style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={renewOpen}
+        title={currentCard ? `续费云卡：${currentCard.card_name}` : '续费云卡'}
+        onCancel={() => { setRenewOpen(false); setRenewOrderNo(undefined); }}
+        onOk={handleRenew}
+        okText="确认续费"
+        okButtonProps={{ disabled: !renewOrderNo }}
+      >
+        <Alert type="info" showIcon style={{ marginBottom: 16 }}
+          message="续费需要单独购买 renewal 类型云卡 SKU；新服务期从当前到期日或付款后时间开始顺延。" />
+        <Form layout="vertical">
+          <Form.Item label="续费订单" required>
+            <Select
+              value={renewOrderNo}
+              onChange={setRenewOrderNo}
+              placeholder="选择已支付的云卡续费订单"
+              options={(caps?.card_entitlements ?? []).filter((quota) =>
+                quota.cloud_card_operation === 'renewal' && quota.cloud_card_tmpl_uuid === currentCard?.cloud_card_tmpl_uuid,
+              ).map((quota) => ({
+                value: quota.order_no,
+                label: `${quota.sku_name || '续费服务'} · ${quota.duration_months} 个月 · 余 ${quota.remaining}/${quota.quantity} 份`,
+              }))}
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -327,6 +416,11 @@ const CardsPage: React.FC = () => {
               <Descriptions.Item label="存储区域">
                 {zones.find((z) => z.uuid === currentCard.storage_zone_uuid)?.name || '默认'}
               </Descriptions.Item>
+              <Descriptions.Item label="云卡状态">
+                <Tag color={cardServiceColor(cardServiceStatus(currentCard))}>{cardServiceLabel(cardServiceStatus(currentCard))}</Tag>
+              </Descriptions.Item>
+              {currentCard.service_expires_at && <Descriptions.Item label="服务到期">{new Date(currentCard.service_expires_at).toLocaleString('zh-CN')}</Descriptions.Item>}
+              {currentCard.certificate_limit !== undefined && <Descriptions.Item label="证书容量">{currentCard.certificate_count ?? cardCerts.length} / {currentCard.certificate_limit < 0 ? '不限' : currentCard.certificate_limit}</Descriptions.Item>}
               <Descriptions.Item label="PIN 状态">
                 {currentCard.pin_locked
                   ? <Tag color="error" icon={<LockOutlined />}>已锁定</Tag>
@@ -349,9 +443,12 @@ const CardsPage: React.FC = () => {
             </Descriptions>
 
             <Space style={{ marginTop: 16 }} wrap>
-              <Button icon={<SafetyOutlined />} onClick={() => setPinOpen(true)}>验证 PIN</Button>
-              <Button icon={<UnlockOutlined />} onClick={() => setPukOpen(true)}>PUK 解锁</Button>
-              <Button icon={<KeyOutlined />} onClick={() => setAdminOpen(true)}>Admin Key 重置</Button>
+              <Button icon={<SafetyOutlined />} disabled={!currentCardActive} onClick={() => setPinOpen(true)}>验证 PIN</Button>
+              <Button icon={<UnlockOutlined />} disabled={!currentCardActive} onClick={() => setPukOpen(true)}>PUK 解锁</Button>
+              <Button icon={<KeyOutlined />} disabled={!currentCardActive} onClick={() => setAdminOpen(true)}>Admin Key 重置</Button>
+              {currentCard.order_no && cardServiceStatus(currentCard) !== 'terminated' && (
+                <Button type="primary" onClick={() => { setRenewOrderNo(undefined); setRenewOpen(true); }}>续费云卡</Button>
+              )}
             </Space>
 
             <Tabs

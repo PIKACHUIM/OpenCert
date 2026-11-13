@@ -3,9 +3,12 @@ package api
 import (
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/globaltrusts/server-card/internal/auth"
 	"github.com/globaltrusts/server-card/internal/card"
@@ -13,6 +16,16 @@ import (
 )
 
 // ---- 卡片处理器 ----
+
+func writeCardServiceError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	if errors.Is(err, storage.ErrCardCertificateLimit) {
+		status = http.StatusConflict
+	} else if errors.Is(err, storage.ErrCardServiceUnavailable) {
+		status = http.StatusForbidden
+	}
+	writeError(w, status, err.Error())
+}
 
 func (s *Server) handleListCards(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
@@ -60,14 +73,14 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 业务模式鉴权：管理员不受限；普通用户按「自助/销售」模式校验
-	orderNo, err := s.authorizeCardCreation(r, claims, req.OrderNo)
+	// 业务模式鉴权：管理员不受限；普通用户的销售权益从已支付订单快照读取。
+	grant, err := s.authorizeCardCreation(r, claims, req.OrderNo)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
-
-	c, err := s.cardSvc.CreateCard(r.Context(), &card.CreateCardRequest{
+	orderNo := ""
+	cardRequest := &card.CreateCardRequest{
 		UserUUID:         claims.UserUUID,
 		CardName:         req.CardName,
 		Remark:           req.Remark,
@@ -80,7 +93,29 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		SecurityLevel:    card.SecurityLevel(req.SecurityLevel),
 		Attestation:      req.Attestation,
 		AttestationNonce: req.AttestationNonce,
-	})
+	}
+	if grant != nil {
+		orderNo = grant.OrderNo
+	}
+	if grant != nil && grant.Template != nil {
+		if req.StorageZoneUUID != "" && req.StorageZoneUUID != grant.Template.StorageZoneUUID {
+			writeError(w, http.StatusBadRequest, "当前云卡套餐不允许选择其他存储区域")
+			return
+		}
+		if len(req.PIN) < grant.Template.PINMinLength {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("请设置至少 %d 位的 PIN", grant.Template.PINMinLength))
+			return
+		}
+		expiresAt := time.Now().AddDate(0, grant.DurationMonths, 0)
+		cardRequest.StorageZoneUUID = grant.Template.StorageZoneUUID
+		cardRequest.CloudCardTmplUUID = grant.Template.UUID
+		cardRequest.ServiceExpiresAt = &expiresAt
+		cardRequest.CertificateLimit = grant.Template.CertificateLimit
+		cardRequest.ReminderEnabled = grant.Template.ReminderEnabled
+		cardRequest.ReminderDays = grant.Template.ReminderDays
+	}
+
+	c, err := s.cardSvc.CreateCard(r.Context(), cardRequest)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -107,6 +142,72 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, c)
 }
 
+type renewCloudCardRequest struct {
+	OrderNo string `json:"order_no"`
+}
+
+// handleRenewCloudCard 用新的已支付云卡订单延长同一张卡的服务期。
+func (s *Server) handleRenewCloudCard(w http.ResponseWriter, r *http.Request) {
+	claims := claimsFromCtx(r.Context())
+	cardUUID := r.PathValue("uuid")
+	var req renewCloudCardRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	cardRecord, err := s.cardSvc.GetCard(r.Context(), cardUUID, claims.UserUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "云卡不存在")
+		return
+	}
+	orderNo := strings.TrimSpace(req.OrderNo)
+	order, err := s.workflowSvc.GetOrderByNo(r.Context(), orderNo)
+	if err != nil || order.UserUUID != claims.UserUUID {
+		writeError(w, http.StatusNotFound, "续费订单不存在")
+		return
+	}
+	if order.Status != storage.CertOrderPaid {
+		writeError(w, http.StatusConflict, "续费订单尚未支付或已履约")
+		return
+	}
+	var spec struct {
+		Kind               string `json:"kind"`
+		Quantity           int    `json:"quantity"`
+		DurationMonths     int    `json:"duration_months"`
+		CloudCardTmplUUID  string `json:"cloud_card_tmpl_uuid"`
+		CloudCardOperation string `json:"cloud_card_operation"`
+	}
+	if err := json.Unmarshal([]byte(order.SpecJSON), &spec); err != nil ||
+		spec.Kind != storage.OrderKindCard || spec.Quantity <= 0 || spec.DurationMonths <= 0 ||
+		spec.CloudCardOperation != "renewal" || spec.CloudCardTmplUUID == "" || spec.CloudCardTmplUUID != cardRecord.CloudCardTmplUUID {
+		writeError(w, http.StatusBadRequest, "续费订单必须是 renewal 类型，并匹配该云卡的开通模板和服务期")
+		return
+	}
+	tmpl, err := s.portalSvc.ResolveActiveCloudCardTemplate(r.Context(), spec.CloudCardTmplUUID)
+	if err != nil {
+		writeError(w, http.StatusConflict, "云卡开通模板或存储区域不可用，当前不能续费")
+		return
+	}
+	expiresAt, renewed, err := storage.NewCardRepo(s.db).RenewCloudCardService(
+		r.Context(), cardUUID, orderNo, tmpl.UUID, spec.DurationMonths, spec.Quantity)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if !renewed {
+		writeError(w, http.StatusConflict, "该订单续费额度已用完")
+		return
+	}
+	s.markCardOrderFulfilled(r, orderNo, spec.Quantity)
+	s.logRepo.Create(r.Context(), &storage.Log{ //nolint:errcheck
+		UserUUID: claims.UserUUID, CardUUID: cardUUID,
+		Action: fmt.Sprintf("renew_cloud_card:%s", orderNo), IPAddr: r.RemoteAddr,
+	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"card_uuid": cardUUID, "service_status": "active", "service_expires_at": expiresAt,
+	})
+}
+
 func (s *Server) handleGetCard(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
 	cardUUID := r.PathValue("uuid")
@@ -123,17 +224,25 @@ func (s *Server) handleDeleteCard(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
 	cardUUID := r.PathValue("uuid")
 
-	// 托管容器保存着用户已签发的下载型证书，删除会连带删除证书，禁止用户自行删除
-	if c, err := s.cardSvc.GetCard(r.Context(), cardUUID, claims.UserUUID); err == nil && c.IsHosting() {
+	// 托管容器保存着用户已签发的下载型证书，禁止用户自行删除。
+	c, err := s.cardSvc.GetCard(r.Context(), cardUUID, claims.UserUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if c.IsHosting() {
 		writeError(w, http.StatusForbidden, "证书托管容器由系统维护，不能删除")
 		return
 	}
-
 	if err := s.cardSvc.DeleteCard(r.Context(), cardUUID, claims.UserUUID); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "卡片已删除"})
+	if c.OrderNo != "" {
+		writeJSON(w, http.StatusOK, map[string]string{"message": "云卡已终止服务，证书与订单历史已保留"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "卡片及关联证书已删除"})
 }
 
 // ---- 证书处理器 ----
@@ -175,7 +284,7 @@ func (s *Server) handleImportCert(w http.ResponseWriter, r *http.Request) {
 
 	cert, err := s.cardSvc.ImportCert(r.Context(), cardUUID, claims.UserUUID, req.CertType, req.KeyType, req.Remark, req.CertContent)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeCardServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, cert)
@@ -224,7 +333,7 @@ func (s *Server) handleKeyGen(w http.ResponseWriter, r *http.Request) {
 
 	cert, err := s.cardSvc.GenerateKeyPair(r.Context(), cardUUID, claims.UserUUID, req.KeyType, req.Remark)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeCardServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, cert)
@@ -570,9 +679,8 @@ func (s *Server) handleVerifyPIN(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 验证卡片归属
-	if _, err := s.cardSvc.GetCard(r.Context(), cardUUID, claims.UserUUID); err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
+	// 验证归属并拒绝已暂停、到期或终止的云卡。
+	if _, ok := s.requireActiveCard(w, r, cardUUID); !ok {
 		return
 	}
 
@@ -602,7 +710,6 @@ func (s *Server) handleVerifyPIN(w http.ResponseWriter, r *http.Request) {
 
 // handleUnlockWithPUK 使用 PUK 解锁并重置 PIN。
 func (s *Server) handleUnlockWithPUK(w http.ResponseWriter, r *http.Request) {
-	claims := claimsFromCtx(r.Context())
 	cardUUID := r.PathValue("uuid")
 
 	var req struct {
@@ -614,8 +721,7 @@ func (s *Server) handleUnlockWithPUK(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.cardSvc.GetCard(r.Context(), cardUUID, claims.UserUUID); err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
+	if _, ok := s.requireActiveCard(w, r, cardUUID); !ok {
 		return
 	}
 
@@ -630,7 +736,6 @@ func (s *Server) handleUnlockWithPUK(w http.ResponseWriter, r *http.Request) {
 
 // handleResetWithAdminKey 使用 Admin Key 重置 PIN 和 PUK。
 func (s *Server) handleResetWithAdminKey(w http.ResponseWriter, r *http.Request) {
-	claims := claimsFromCtx(r.Context())
 	cardUUID := r.PathValue("uuid")
 
 	var req struct {
@@ -643,8 +748,7 @@ func (s *Server) handleResetWithAdminKey(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if _, err := s.cardSvc.GetCard(r.Context(), cardUUID, claims.UserUUID); err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
+	if _, ok := s.requireActiveCard(w, r, cardUUID); !ok {
 		return
 	}
 

@@ -531,6 +531,111 @@ func (s *Server) handleAdminDeleteSKU(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "规格已删除"})
 }
 
+type cloudCardTemplateRequest struct {
+	Name             *string `json:"name"`
+	Description      *string `json:"description"`
+	StorageZoneUUID  *string `json:"storage_zone_uuid"`
+	CertificateLimit *int    `json:"certificate_limit"`
+	PINMinLength     *int    `json:"pin_min_length"`
+	ReminderEnabled  *bool   `json:"reminder_enabled"`
+	ReminderDays     []int   `json:"reminder_days"`
+	Enabled          *bool   `json:"enabled"`
+}
+
+func (s *Server) handleAdminListCloudCardTemplates(w http.ResponseWriter, r *http.Request) {
+	if s.portalSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "门户服务未启用")
+		return
+	}
+	items, err := s.portalSvc.ListCloudCardTemplates(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"items": items, "total": len(items)})
+}
+
+func (s *Server) handleAdminCreateCloudCardTemplate(w http.ResponseWriter, r *http.Request) {
+	if s.portalSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "门户服务未启用")
+		return
+	}
+	var req cloudCardTemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	tmpl := &storage.CloudCardTemplate{ReminderEnabled: true, ReminderDays: []int{7, 0}, Enabled: true, PINMinLength: 6}
+	applyCloudCardTemplateRequest(tmpl, req)
+	if err := s.portalSvc.CreateCloudCardTemplate(r.Context(), tmpl); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, tmpl)
+}
+
+func (s *Server) handleAdminUpdateCloudCardTemplate(w http.ResponseWriter, r *http.Request) {
+	if s.portalSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "门户服务未启用")
+		return
+	}
+	tmpl, err := s.portalSvc.GetCloudCardTemplate(r.Context(), r.PathValue("uuid"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var req cloudCardTemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	applyCloudCardTemplateRequest(tmpl, req)
+	if err := s.portalSvc.UpdateCloudCardTemplate(r.Context(), tmpl); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, tmpl)
+}
+
+func applyCloudCardTemplateRequest(tmpl *storage.CloudCardTemplate, req cloudCardTemplateRequest) {
+	if req.Name != nil {
+		tmpl.Name = *req.Name
+	}
+	if req.Description != nil {
+		tmpl.Description = *req.Description
+	}
+	if req.StorageZoneUUID != nil {
+		tmpl.StorageZoneUUID = *req.StorageZoneUUID
+	}
+	if req.CertificateLimit != nil {
+		tmpl.CertificateLimit = *req.CertificateLimit
+	}
+	if req.PINMinLength != nil {
+		tmpl.PINMinLength = *req.PINMinLength
+	}
+	if req.ReminderEnabled != nil {
+		tmpl.ReminderEnabled = *req.ReminderEnabled
+	}
+	if req.ReminderDays != nil {
+		tmpl.ReminderDays = req.ReminderDays
+	}
+	if req.Enabled != nil {
+		tmpl.Enabled = *req.Enabled
+	}
+}
+
+func (s *Server) handleAdminDeleteCloudCardTemplate(w http.ResponseWriter, r *http.Request) {
+	if s.portalSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "门户服务未启用")
+		return
+	}
+	if err := s.portalSvc.DeleteCloudCardTemplate(r.Context(), r.PathValue("uuid")); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "云卡开通模板已删除"})
+}
+
 // applicantEmailFromClaims 尽力确定下单联系邮箱：优先 JWT 中的用户，其次查询用户资料。
 // JWT 载荷不包含邮箱，因此通过用户仓储回查；查询失败时返回空串，由上层提示用户填写。
 func (s *Server) applicantEmailFromClaims(r *http.Request) string {

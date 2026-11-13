@@ -18,6 +18,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -51,11 +52,21 @@ import (
 
 // apiEnv 是集成测试环境：内存文件库 + 真实 HTTP 处理器。
 type apiEnv struct {
-	t      *testing.T
-	srv    *httptest.Server
-	client *http.Client
-	db     *storage.DB
-	tokens map[string]string
+	t         *testing.T
+	srv       *httptest.Server
+	client    *http.Client
+	db        *storage.DB
+	apiServer *api.Server
+	tokens    map[string]string
+}
+
+type recordingMailer struct {
+	messages []struct{ to, subject, body string }
+}
+
+func (m *recordingMailer) Send(to, subject, body string) error {
+	m.messages = append(m.messages, struct{ to, subject, body string }{to, subject, body})
+	return nil
 }
 
 // call 发起请求并解析响应（非 2xx 返回错误）。
@@ -180,7 +191,7 @@ func newAPIEnv(t *testing.T) *apiEnv {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
-	env := &apiEnv{t: t, srv: ts, client: ts.Client(), db: db, tokens: map[string]string{}}
+	env := &apiEnv{t: t, srv: ts, client: ts.Client(), db: db, apiServer: srv, tokens: map[string]string{}}
 	for _, u := range []struct{ name, pass string }{
 		{"admin", "AdminPass123"}, {"buyer", "BuyerPass123"}, {"operator", "OperatorPass123"},
 	} {
@@ -321,6 +332,149 @@ func TestParseAndVerifySM2CSR(t *testing.T) {
 	tampered[len(tampered)-1] ^= 1
 	if _, err := ca.ParseCSRDER(tampered); err == nil {
 		t.Fatal("被篡改的 SM2 CSR 应因签名无效而被拒绝")
+	}
+}
+
+func TestCloudCardSalesEntitlementsExpiryAndRenewal(t *testing.T) {
+	env := newAPIEnv(t)
+	admin, buyer := env.tokens["admin"], env.tokens["buyer"]
+	env.mustCall(http.MethodPut, "/api/site-settings", admin, map[string]string{
+		"card_apply_mode": "sales",
+	}, nil)
+
+	zone := &storage.StorageZone{
+		UUID: "api-cloudcard-zone", Name: "API 云卡存储区域", StorageType: "database",
+		HSMDriver: storage.DriverDatabase, ParamsEnc: storage.Base64Bytes{}, Capabilities: "{}", Status: "active",
+	}
+	if err := storage.NewStorageZoneRepo(env.db).Create(context.Background(), zone); err != nil {
+		t.Fatalf("创建存储区域失败: %v", err)
+	}
+	var template struct {
+		UUID string `json:"uuid"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/admin/cloud-card-templates", admin, map[string]interface{}{
+		"name": "API 测试云卡模板", "storage_zone_uuid": zone.UUID,
+		"certificate_limit": 1, "pin_min_length": 8, "reminder_enabled": true,
+		"reminder_days": []int{7, 0}, "enabled": true,
+	}, &template)
+
+	var product struct {
+		UUID string `json:"uuid"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/admin/products", admin, map[string]interface{}{
+		"code": "api-cloudcard", "name": "API 云卡商品", "category": "cloudcard", "visible": true, "enabled": true,
+	}, &product)
+	var sku struct {
+		UUID string `json:"uuid"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/admin/skus", admin, map[string]interface{}{
+		"product_uuid": product.UUID, "code": "api-cloudcard-month", "name": "月度云卡",
+		"price_cents": 1500, "currency": "CNY", "stock": -1, "min_qty": 1, "max_qty": 1,
+		"duration_months": 1, "cloud_card_tmpl_uuid": template.UUID, "cloud_card_operation": "activation",
+		"delivery_mode": "cloud_card", "enabled": true,
+	}, &sku)
+	env.mustCall(http.MethodPost, "/api/portal/admin/skus", admin, map[string]interface{}{
+		"product_uuid": product.UUID, "code": "api-cloudcard-renew-month", "name": "云卡续费月",
+		"price_cents": 1200, "currency": "CNY", "stock": -1, "min_qty": 1, "max_qty": 1,
+		"duration_months": 1, "cloud_card_tmpl_uuid": template.UUID, "cloud_card_operation": "renewal",
+		"delivery_mode": "cloud_card", "enabled": true,
+	}, nil)
+
+	createPaidCardOrder := func(skuCode, reference string) string {
+		t.Helper()
+		var order struct {
+			UUID    string `json:"uuid"`
+			OrderNo string `json:"order_no"`
+		}
+		env.mustCall(http.MethodPost, "/api/portal/orders", buyer, map[string]interface{}{
+			"sku_code": skuCode, "quantity": 1, "applicant_email": "buyer@test.local",
+		}, &order)
+		env.mustCall(http.MethodPost, "/api/portal/admin/orders/"+order.OrderNo+"/confirm-payment", admin,
+			map[string]string{"reference": reference}, nil)
+		return order.OrderNo
+	}
+
+	firstOrder := createPaidCardOrder("api-cloudcard-month", "CARD-ACTIVATE-1")
+	env.mustFail(http.MethodPost, "/api/cards", buyer, map[string]interface{}{
+		"card_name": "不允许自选区域", "storage_zone_uuid": "unapproved-zone", "pin": "12345678", "order_no": firstOrder,
+	})
+	var created struct {
+		UUID              string `json:"uuid"`
+		OrderNo           string `json:"order_no"`
+		CloudCardTmplUUID string `json:"cloud_card_tmpl_uuid"`
+		ServiceExpiresAt  string `json:"service_expires_at"`
+		CertificateLimit  int    `json:"certificate_limit"`
+	}
+	env.mustCall(http.MethodPost, "/api/cards", buyer, map[string]interface{}{
+		"card_name": "销售云卡", "pin": "12345678", "order_no": firstOrder,
+	}, &created)
+	if created.UUID == "" || created.OrderNo != firstOrder || created.CloudCardTmplUUID != template.UUID || created.CertificateLimit != 1 || created.ServiceExpiresAt == "" {
+		t.Fatalf("订单权益未应用到新云卡: %+v", created)
+	}
+	cardRecord, err := storage.NewCardRepo(env.db).GetByUUID(context.Background(), created.UUID)
+	if err != nil || cardRecord.StorageZoneUUID != zone.UUID || !cardRecord.ReminderEnabled || len(cardRecord.ReminderDays) != 2 {
+		t.Fatalf("云卡没有按模板保存存储区/提醒快照: %+v err=%v", cardRecord, err)
+	}
+	if used, err := storage.NewCardRepo(env.db).CountByOrderNo(context.Background(), firstOrder); err != nil || used != 1 {
+		t.Fatalf("开卡履约额度应恰好消耗一次: used=%d err=%v", used, err)
+	}
+	env.mustCall(http.MethodPut, "/api/admin/cards/"+created.UUID+"/status", admin, map[string]string{"status": "suspended"}, nil)
+	env.mustFail(http.MethodPost, "/api/cards/"+created.UUID+"/verify-pin", buyer, map[string]string{"pin": "12345678"})
+	env.mustCall(http.MethodPut, "/api/admin/cards/"+created.UUID+"/status", admin, map[string]string{"status": "active"}, nil)
+
+	certRepo := storage.NewCertRepo(env.db)
+	if err := certRepo.Create(context.Background(), &storage.Certificate{
+		CardUUID: created.UUID, UserUUID: cardRecord.UserUUID, CertType: "x509", KeyType: "ec256",
+	}); err != nil {
+		t.Fatalf("容量内第一张证书应可创建: %v", err)
+	}
+	if err := certRepo.Create(context.Background(), &storage.Certificate{
+		CardUUID: created.UUID, UserUUID: cardRecord.UserUUID, CertType: "x509", KeyType: "ec256",
+	}); !errors.Is(err, storage.ErrCardCertificateLimit) {
+		t.Fatalf("证书容量超限应失败关闭，实际: %v", err)
+	}
+
+	reminderMailer := &recordingMailer{}
+	env.apiServer.SetMailer(reminderMailer)
+	reminderNow := cardRecord.ServiceExpiresAt.AddDate(0, 0, -7)
+	if err := env.apiServer.ProcessCloudCardReminders(context.Background(), reminderNow); err != nil {
+		t.Fatalf("处理到期提醒失败: %v", err)
+	}
+	if len(reminderMailer.messages) != 1 || reminderMailer.messages[0].to != "buyer@test.local" {
+		t.Fatalf("到期提醒应发送给卡片用户一次: %+v", reminderMailer.messages)
+	}
+	if err := env.apiServer.ProcessCloudCardReminders(context.Background(), reminderNow); err != nil || len(reminderMailer.messages) != 1 {
+		t.Fatalf("重复扫描不得重复发送提醒: messages=%d err=%v", len(reminderMailer.messages), err)
+	}
+
+	wrongTypeOrder := createPaidCardOrder("api-cloudcard-month", "CARD-RENEW-WRONG-SKU")
+	env.mustFail(http.MethodPost, "/api/cards/"+created.UUID+"/renew", buyer,
+		map[string]string{"order_no": wrongTypeOrder})
+
+	secondOrder := createPaidCardOrder("api-cloudcard-renew-month", "CARD-RENEW-1")
+	var renewed struct {
+		ServiceExpiresAt time.Time `json:"service_expires_at"`
+	}
+	env.mustCall(http.MethodPost, "/api/cards/"+created.UUID+"/renew", buyer,
+		map[string]string{"order_no": secondOrder}, &renewed)
+	if !renewed.ServiceExpiresAt.After(*cardRecord.ServiceExpiresAt) {
+		t.Fatalf("续费应幂等延长服务期: old=%s new=%s", cardRecord.ServiceExpiresAt, renewed.ServiceExpiresAt)
+	}
+	if used, err := storage.NewCardRepo(env.db).CountByOrderNo(context.Background(), secondOrder); err != nil || used != 1 {
+		t.Fatalf("续费订单应只消耗一次: used=%d err=%v", used, err)
+	}
+	env.mustFail(http.MethodPost, "/api/cards/"+created.UUID+"/renew", buyer,
+		map[string]string{"order_no": secondOrder})
+
+	if _, err := env.db.ExecContext(context.Background(),
+		`UPDATE cards SET service_expires_at = ?, service_status = 'active' WHERE uuid = ?`,
+		time.Now().Add(-time.Hour), created.UUID); err != nil {
+		t.Fatalf("准备过期卡片测试失败: %v", err)
+	}
+	env.mustFail(http.MethodPost, "/api/cards/"+created.UUID+"/verify-pin", buyer, map[string]string{"pin": "12345678"})
+	env.mustCall(http.MethodDelete, "/api/cards/"+created.UUID, buyer, nil, nil)
+	if used, err := storage.NewCardRepo(env.db).CountByOrderNo(context.Background(), firstOrder); err != nil || used != 1 {
+		t.Fatalf("终止已售卡不得返还开卡权益: used=%d err=%v", used, err)
 	}
 }
 

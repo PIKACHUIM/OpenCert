@@ -7,10 +7,12 @@ import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined, UnorderedLi
 import {
   createAdminProduct, createAdminSKU, deleteAdminProduct, deleteAdminSKU,
   listAdminProducts, listAdminSKUs, updateAdminProduct, updateAdminSKU,
-  listCertApplyTemplates,
+  listCertApplyTemplates, listAdminCloudCardTemplates, createAdminCloudCardTemplate,
+  updateAdminCloudCardTemplate, deleteAdminCloudCardTemplate, listStorageZones,
 } from '../../../api';
 import type {
-  DeliveryMode, PortalProduct, PortalProductSKU, ProductView, CertApplyTemplateInfo,
+  CloudCardTemplate, DeliveryMode, PortalProduct, PortalProductSKU, ProductView,
+  CertApplyTemplateInfo, StorageZone,
 } from '../../../types';
 
 const { Title, Text } = Typography;
@@ -71,10 +73,28 @@ const ConsoleProducts: React.FC = () => {
   const [skuModalOpen, setSkuModalOpen] = useState(false);
   const [skuForm] = Form.useForm();
   const [applyTemplates, setApplyTemplates] = useState<CertApplyTemplateInfo[]>([]);
+  const [cloudCardTemplates, setCloudCardTemplates] = useState<CloudCardTemplate[]>([]);
+  const [storageZones, setStorageZones] = useState<StorageZone[]>([]);
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
+  const [templateFormOpen, setTemplateFormOpen] = useState(false);
+  const [templateEditing, setTemplateEditing] = useState<CloudCardTemplate | null>(null);
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const [templateForm] = Form.useForm();
+
+  const loadCloudCardTemplates = useCallback(async () => {
+    try {
+      const [templates, zones] = await Promise.all([listAdminCloudCardTemplates(), listStorageZones()]);
+      setCloudCardTemplates(templates);
+      setStorageZones(zones);
+    } catch (e: any) {
+      message.error(e?.message || '加载云卡开通模板失败');
+    }
+  }, []);
 
   useEffect(() => {
     listCertApplyTemplates().then(setApplyTemplates).catch(() => undefined);
-  }, []);
+    loadCloudCardTemplates();
+  }, [loadCloudCardTemplates]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -100,6 +120,69 @@ const ConsoleProducts: React.FC = () => {
       setSkusLoading(false);
     }
   }, []);
+
+  const openCloudCardTemplateForm = (template?: CloudCardTemplate) => {
+    setTemplateEditing(template ?? null);
+    templateForm.resetFields();
+    if (template) {
+      templateForm.setFieldsValue({
+        ...template,
+        reminder_days: template.reminder_days.join(', '),
+      });
+    } else {
+      templateForm.setFieldsValue({
+        certificate_limit: 10, pin_min_length: 6, reminder_enabled: true,
+        reminder_days: '7, 0', enabled: true,
+        storage_zone_uuid: storageZones.find((zone) => zone.status === 'active')?.uuid,
+      });
+    }
+    setTemplateFormOpen(true);
+  };
+
+  const saveCloudCardTemplate = async () => {
+    try {
+      const values = await templateForm.validateFields();
+      const reminderDays: number[] = Array.from(new Set<number>(
+        (values.reminder_days || '').split(/[ ,\n]+/).map((value: string) => Number(value)).filter(Number.isInteger),
+      ));
+      setTemplateSaving(true);
+      const payload: Partial<CloudCardTemplate> = {
+        name: values.name,
+        description: values.description || '',
+        storage_zone_uuid: values.storage_zone_uuid,
+        certificate_limit: values.certificate_limit,
+        pin_min_length: values.pin_min_length,
+        reminder_enabled: !!values.reminder_enabled,
+        reminder_days: [...new Set(reminderDays)],
+        enabled: !!values.enabled,
+      };
+      if (templateEditing) {
+        await updateAdminCloudCardTemplate(templateEditing.uuid, payload);
+        message.success('云卡开通模板已更新');
+      } else {
+        await createAdminCloudCardTemplate(payload);
+        message.success('云卡开通模板已创建');
+      }
+      setTemplateFormOpen(false);
+      setTemplateEditing(null);
+      await loadCloudCardTemplates();
+    } catch (e: any) {
+      if (e?.errorFields) return;
+      message.error(e?.message || '保存云卡开通模板失败');
+    } finally {
+      setTemplateSaving(false);
+    }
+  };
+
+  const removeCloudCardTemplate = async (uuid: string) => {
+    try {
+      await deleteAdminCloudCardTemplate(uuid);
+      message.success('云卡开通模板已删除');
+      await loadCloudCardTemplates();
+    } catch (e: any) {
+      message.error(e?.message || '删除失败');
+    }
+  };
 
   // ---- 商品编辑 ----
 
@@ -193,6 +276,9 @@ const ConsoleProducts: React.FC = () => {
         price_cents: 0,
         key_types: 'ec256\nrsa2048',
         san_policy: sanPolicy,
+        cloud_card_tmpl_uuid: skuProduct?.category === 'cloudcard'
+          ? cloudCardTemplates.find((template) => template.enabled)?.uuid : undefined,
+        cloud_card_operation: 'activation',
       });
     }
     setSkuModalOpen(true);
@@ -202,6 +288,7 @@ const ConsoleProducts: React.FC = () => {
     if (!skuProduct) return;
     try {
       const v = await skuForm.validateFields();
+      const isCloudCard = skuProduct.category === 'cloudcard';
       const payload: Partial<PortalProductSKU> = {
         product_uuid: skuProduct.uuid,
         code: v.code,
@@ -214,8 +301,8 @@ const ConsoleProducts: React.FC = () => {
         duration_months: v.duration_months ?? 12,
         delivery_mode: v.delivery_mode,
         key_types: linesToJson(v.key_types),
-        san_included: v.san_policy?.max_dns ?? v.san_included ?? 0,
-        san_policy: JSON.stringify({
+        san_included: isCloudCard ? 0 : (v.san_policy?.max_dns ?? v.san_included ?? 0),
+        san_policy: isCloudCard ? '{}' : JSON.stringify({
           max_dns: v.san_policy?.max_dns ?? 0,
           max_email: v.san_policy?.max_email ?? 0,
           max_ip: v.san_policy?.max_ip ?? 0,
@@ -224,8 +311,9 @@ const ConsoleProducts: React.FC = () => {
           email_suffixes: linesToArray(v.email_suffixes),
           dns_suffixes: linesToArray(v.dns_suffixes),
         }),
-        cert_apply_tmpl_uuid: v.cert_apply_tmpl_uuid || '',
-        cloud_card_tmpl_uuid: v.cloud_card_tmpl_uuid || '',
+        cert_apply_tmpl_uuid: isCloudCard ? '' : (v.cert_apply_tmpl_uuid || ''),
+        cloud_card_tmpl_uuid: isCloudCard ? (v.cloud_card_tmpl_uuid || '') : '',
+        cloud_card_operation: isCloudCard ? (v.cloud_card_operation || 'activation') : '',
         enabled: !!v.enabled,
         sort_weight: v.sort_weight ?? 0,
       };
@@ -339,8 +427,19 @@ const ConsoleProducts: React.FC = () => {
       render: (v: string) => DELIVERY_OPTIONS.find((d) => d.value === v)?.label ?? v,
     },
     {
-      title: '开通模板', dataIndex: 'cert_apply_tmpl_uuid', key: 'tmpl', width: 130,
-      render: (v: string) => (v ? <Tag color="green">已关联</Tag> : <Tag color="orange">未关联</Tag>),
+      title: skuProduct?.category === 'cloudcard' ? '云卡权益' : '证书开通模板',
+      key: 'tmpl', width: 170,
+      render: (_: unknown, row: PortalProductSKU) => {
+        const uuid = skuProduct?.category === 'cloudcard' ? row.cloud_card_tmpl_uuid : row.cert_apply_tmpl_uuid;
+        const templateName = cloudCardTemplates.find((template) => template.uuid === uuid)?.name;
+        const applyName = applyTemplates.find((template) => template.uuid === uuid)?.name;
+        const name = skuProduct?.category === 'cloudcard' ? templateName : applyName;
+        if (!name) return <Tag color="orange">未关联</Tag>;
+        if (skuProduct?.category === 'cloudcard') {
+          return <Space size={4}><Tag color="green">{name}</Tag><Tag>{row.cloud_card_operation === 'renewal' ? '续费' : '开通'}</Tag></Space>;
+        }
+        return <Tag color="green">{name}</Tag>;
+      },
     },
     {
       title: '启用', dataIndex: 'enabled', key: 'enabled', width: 80,
@@ -369,6 +468,7 @@ const ConsoleProducts: React.FC = () => {
           </Text>
         </div>
         <Space>
+          <Button icon={<UnorderedListOutlined />} onClick={() => setTemplateManagerOpen(true)}>云卡开通模板</Button>
           <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openProductModal()}>
             新建商品
@@ -454,6 +554,84 @@ const ConsoleProducts: React.FC = () => {
         </Form>
       </Modal>
 
+      {/* 云卡服务策略管理 */}
+      <Modal
+        title="云卡开通模板"
+        open={templateManagerOpen}
+        onCancel={() => setTemplateManagerOpen(false)}
+        footer={<Button type="primary" icon={<PlusOutlined />} onClick={() => openCloudCardTemplateForm()}>新建模板</Button>}
+        width={900}
+      >
+        <Alert
+          type="info" showIcon style={{ marginBottom: 16 }}
+          message="云卡模板决定服务端存储区域、证书容量、PIN 强度与到期通知；购买期限由 SKU 配置。"
+        />
+        <Table
+          rowKey="uuid"
+          dataSource={cloudCardTemplates}
+          pagination={false}
+          size="small"
+          columns={[
+            { title: '模板', dataIndex: 'name', key: 'name' },
+            { title: '存储区域', key: 'zone', render: (_: unknown, row: CloudCardTemplate) => storageZones.find((zone) => zone.uuid === row.storage_zone_uuid)?.name || '不可用' },
+            { title: '证书容量', dataIndex: 'certificate_limit', key: 'capacity', render: (value: number) => value < 0 ? '不限' : `${value} 张` },
+            { title: '提醒', key: 'reminders', render: (_: unknown, row: CloudCardTemplate) => row.reminder_enabled ? row.reminder_days.map((day) => day === 0 ? '到期当天' : `提前 ${day} 天`).join('、') : '关闭' },
+            { title: '状态', dataIndex: 'enabled', key: 'enabled', render: (value: boolean) => <Tag color={value ? 'green' : 'default'}>{value ? '启用' : '停用'}</Tag> },
+            {
+              title: '操作', key: 'action', width: 110,
+              render: (_: unknown, row: CloudCardTemplate) => (
+                <Space size={4}>
+                  <Button size="small" icon={<EditOutlined />} onClick={() => openCloudCardTemplateForm(row)} />
+                  <Popconfirm title="模板仍被商品或云卡引用时不可删除" onConfirm={() => removeCloudCardTemplate(row.uuid)}>
+                    <Button size="small" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Modal>
+
+      <Modal
+        title={templateEditing ? '编辑云卡开通模板' : '新建云卡开通模板'}
+        open={templateFormOpen}
+        onOk={saveCloudCardTemplate}
+        onCancel={() => { setTemplateFormOpen(false); setTemplateEditing(null); }}
+        confirmLoading={templateSaving}
+        okText={templateEditing ? '保存' : '创建'}
+        width={620}
+      >
+        <Form form={templateForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="name" label="模板名称" rules={[{ required: true, message: '请输入模板名称' }]}>
+            <Input maxLength={80} />
+          </Form.Item>
+          <Form.Item name="description" label="说明"><Input.TextArea rows={2} maxLength={300} /></Form.Item>
+          <Form.Item name="storage_zone_uuid" label="私钥存储区域" rules={[{ required: true, message: '请选择存储区域' }]}>
+            <Select
+              showSearch optionFilterProp="label"
+              options={storageZones.filter((zone) => zone.status === 'active').map((zone) => ({ value: zone.uuid, label: zone.name }))}
+            />
+          </Form.Item>
+          <Space size={12} style={{ display: 'flex' }} align="start">
+            <Form.Item name="certificate_limit" label="证书容量" extra="-1 表示不限" rules={[{ required: true }]} style={{ flex: 1 }}>
+              <InputNumber min={-1} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="pin_min_length" label="PIN 最小长度" rules={[{ required: true }]} style={{ flex: 1 }}>
+              <InputNumber min={6} max={64} style={{ width: '100%' }} />
+            </Form.Item>
+          </Space>
+          <Form.Item name="reminder_enabled" label="到期邮件提醒" valuePropName="checked">
+            <Switch checkedChildren="启用" unCheckedChildren="关闭" />
+          </Form.Item>
+          <Form.Item name="reminder_days" label="提醒时间（天）" extra="逗号分隔；0 表示到期当天，例如 7, 0">
+            <Input placeholder="7, 0" />
+          </Form.Item>
+          <Form.Item name="enabled" label="允许购买" valuePropName="checked">
+            <Switch checkedChildren="启用" unCheckedChildren="停用" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
       {/* 规格管理 */}
       <Drawer
         title={skuProduct ? `规格管理 · ${skuProduct.name}` : '规格管理'}
@@ -464,8 +642,10 @@ const ConsoleProducts: React.FC = () => {
       >
         <Alert
           type="info" showIcon style={{ marginBottom: 16 }}
-          message="规格决定前台展示的价格、库存与服务时长"
-          description="证书类规格需要关联「证书申请模板」才能开通；未关联时前台将禁止购买。"
+          message="规格决定前台价格、库存、服务时长与开通策略"
+          description={skuProduct?.category === 'cloudcard'
+            ? '云卡规格必须关联启用的云卡开通模板；用户不能自行覆盖模板指定的私钥存储区域。'
+            : '证书类规格需要关联「证书申请模板」才能购买；签发参数与安全级别由关联模板约束。'}
         />
         <Table
           rowKey="uuid"
@@ -504,7 +684,7 @@ const ConsoleProducts: React.FC = () => {
             <Form.Item name="currency" label="币种" style={{ flex: 1 }}>
               <Select options={[{ value: 'CNY', label: 'CNY' }]} />
             </Form.Item>
-            <Form.Item name="duration_months" label="服务期（月）" style={{ flex: 1 }}>
+            <Form.Item name="duration_months" label="服务期（月）" rules={[{ required: true, message: '请输入服务期（月）' }]} style={{ flex: 1 }}>
               <InputNumber min={1} max={120} style={{ width: '100%' }} />
             </Form.Item>
           </Space>
@@ -530,51 +710,77 @@ const ConsoleProducts: React.FC = () => {
             </Form.Item>
           </Space>
 
-          <Form.Item name="key_types" label="支持的密钥算法" extra="每行一个，如 ec256 / rsa2048">
-            <Input.TextArea rows={2} />
-          </Form.Item>
-
-          <Form.Item
-            name="cert_apply_tmpl_uuid" label="关联证书开通模板"
-            rules={[{ required: true, message: '请选择证书开通模板' }]}
-            extra="决定申请资料要求与审批策略；云智能卡商品可选择任意模板占位（不会被使用）"
-          >
-            <Select
-              showSearch optionFilterProp="label"
-              options={applyTemplates.map((t) => ({ label: `${t.name}${t.require_approval ? '（人工审批）' : '（自动开通）'}`, value: t.uuid }))}
-            />
-          </Form.Item>
-
-          <Alert type="info" showIcon style={{ marginBottom: 12 }}
-            message="单张证书的 SAN 限制（本规格内每次申请生效）" />
-          <Space size={12} style={{ display: 'flex' }} align="start">
-            <Form.Item name={['san_policy', 'max_dns']} label="域名数量" style={{ flex: 1 }}>
-              <InputNumber min={0} max={999} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item name={['san_policy', 'max_email']} label="邮箱数量" style={{ flex: 1 }}>
-              <InputNumber min={0} max={999} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item name={['san_policy', 'max_ip']} label="IP 数量" style={{ flex: 1 }}>
-              <InputNumber min={0} max={999} style={{ width: '100%' }} />
-            </Form.Item>
-          </Space>
-          <Space size={24} style={{ display: 'flex' }}>
-            <Form.Item name={['san_policy', 'allow_wildcard']} label="允许通配符域名" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item name={['san_policy', 'ip_versions']} label="允许的 IP 版本">
-              <Select mode="multiple" style={{ minWidth: 180 }}
-                options={[{ label: 'IPv4', value: 'v4' }, { label: 'IPv6', value: 'v6' }]} />
-            </Form.Item>
-          </Space>
-          <Space size={12} style={{ display: 'flex' }} align="start">
-            <Form.Item name="email_suffixes" label="允许的邮箱后缀" style={{ flex: 1 }} extra="每行一个，如 corp.com；留空不限">
-              <Input.TextArea rows={2} />
-            </Form.Item>
-            <Form.Item name="dns_suffixes" label="允许的域名后缀" style={{ flex: 1 }} extra="每行一个，如 example.com；留空不限">
-              <Input.TextArea rows={2} />
-            </Form.Item>
-          </Space>
+          {skuProduct?.category === 'cloudcard' ? (
+            <>
+              <Form.Item
+                name="cloud_card_tmpl_uuid" label="云卡开通模板"
+                rules={[{ required: true, message: '请选择云卡开通模板' }]}
+                extra="服务期、存储区域、证书容量和到期提醒由该模板及此规格共同决定"
+              >
+                <Select
+                  showSearch optionFilterProp="label"
+                  options={cloudCardTemplates.map((template) => ({
+                    label: `${template.name}${template.enabled ? '' : '（停用）'}`,
+                    value: template.uuid,
+                    disabled: !template.enabled,
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item name="cloud_card_operation" label="权益用途" rules={[{ required: true, message: '请选择该规格的用途' }]}>
+                <Select options={[
+                  { value: 'activation', label: '新开云端智能卡' },
+                  { value: 'renewal', label: '续费已有同模板云卡' },
+                ]} />
+              </Form.Item>
+              <Alert type="info" showIcon message="续费规格只延长用户已有同模板云卡的服务期，不会创建新卡；到期后暂停敏感操作，证书与审计数据保留。" />
+            </>
+          ) : (
+            <>
+              <Form.Item name="key_types" label="支持的密钥算法" extra="每行一个，如 ec256 / rsa2048">
+                <Input.TextArea rows={2} />
+              </Form.Item>
+              <Form.Item
+                name="cert_apply_tmpl_uuid" label="关联证书开通模板"
+                rules={[{ required: true, message: '请选择证书开通模板' }]}
+                extra="决定申请资料要求与审批策略；签发参数由关联颁发模板统一约束"
+              >
+                <Select
+                  showSearch optionFilterProp="label"
+                  options={applyTemplates.map((t) => ({ label: `${t.name}${t.require_approval ? '（人工审批）' : '（自动开通）'}`, value: t.uuid }))}
+                />
+              </Form.Item>
+              <Alert type="info" showIcon style={{ marginBottom: 12 }}
+                message="单张证书的 SAN 限制（本规格内每次申请生效）" />
+              <Space size={12} style={{ display: 'flex' }} align="start">
+                <Form.Item name={['san_policy', 'max_dns']} label="域名数量" style={{ flex: 1 }}>
+                  <InputNumber min={0} max={999} style={{ width: '100%' }} />
+                </Form.Item>
+                <Form.Item name={['san_policy', 'max_email']} label="邮箱数量" style={{ flex: 1 }}>
+                  <InputNumber min={0} max={999} style={{ width: '100%' }} />
+                </Form.Item>
+                <Form.Item name={['san_policy', 'max_ip']} label="IP 数量" style={{ flex: 1 }}>
+                  <InputNumber min={0} max={999} style={{ width: '100%' }} />
+                </Form.Item>
+              </Space>
+              <Space size={24} style={{ display: 'flex' }}>
+                <Form.Item name={['san_policy', 'allow_wildcard']} label="允许通配符域名" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item name={['san_policy', 'ip_versions']} label="允许的 IP 版本">
+                  <Select mode="multiple" style={{ minWidth: 180 }}
+                    options={[{ label: 'IPv4', value: 'v4' }, { label: 'IPv6', value: 'v6' }]} />
+                </Form.Item>
+              </Space>
+              <Space size={12} style={{ display: 'flex' }} align="start">
+                <Form.Item name="email_suffixes" label="允许的邮箱后缀" style={{ flex: 1 }} extra="每行一个，如 corp.com；留空不限">
+                  <Input.TextArea rows={2} />
+                </Form.Item>
+                <Form.Item name="dns_suffixes" label="允许的域名后缀" style={{ flex: 1 }} extra="每行一个，如 example.com；留空不限">
+                  <Input.TextArea rows={2} />
+                </Form.Item>
+              </Space>
+            </>
+          )}
 
           <Form.Item name="enabled" label="启用该规格" valuePropName="checked">
             <Switch checkedChildren="启用" unCheckedChildren="停用" />

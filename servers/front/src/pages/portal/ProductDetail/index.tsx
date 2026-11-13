@@ -166,6 +166,7 @@ const PortalProductDetail: React.FC = () => {
                 >
                   <Space size={8} style={{ marginBottom: 10 }} wrap>
                     <Text strong style={{ fontSize: 16, color: '#0f172a' }}>{s.name}</Text>
+                    {product.category === 'cloudcard' && <Tag color={s.cloud_card_operation === 'renewal' ? 'gold' : 'blue'} style={{ margin: 0 }}>{s.cloud_card_operation === 'renewal' ? '续费云卡' : '开通云卡'}</Tag>}
                     {s.stock === 0 && <Tag color="red" style={{ margin: 0 }}>已售罄</Tag>}
                     {!s.enabled && <Tag style={{ margin: 0 }}>已下架</Tag>}
                   </Space>

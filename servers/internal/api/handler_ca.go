@@ -762,6 +762,14 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if targetCard.ServiceState(time.Now()) != "active" {
+		writeError(w, http.StatusForbidden, "目标云卡已暂停、到期或终止，无法签发到该卡片")
+		return
+	}
+	if targetCard.CertificateLimit >= 0 && targetCard.CertificateCount >= targetCard.CertificateLimit {
+		writeError(w, http.StatusConflict, "目标云卡证书容量已用尽")
+		return
+	}
 
 	resp, err := s.caSvc.IssueCert(r.Context(), issueReq)
 	if err != nil {

@@ -22,21 +22,29 @@ type User struct {
 
 // Card 是云端卡片模型。
 type Card struct {
-	UUID            string      `json:"uuid"`
-	UserUUID        string      `json:"user_uuid"`
-	CardName        string      `json:"card_name"`
-	Remark          string      `json:"remark"`
-	StorageZoneUUID string      `json:"storage_zone_uuid"`  // 关联存储区域 UUID
-	PINData         Base64Bytes `json:"-"`                  // AES-256-GCM 加密存储的 PIN
-	PUKData         Base64Bytes `json:"-"`                  // AES-256-GCM 加密存储的 PUK
-	AdminKeyData    Base64Bytes `json:"-"`                  // AES-256-GCM 加密存储的 Admin Key
-	PINRetries      int         `json:"pin_retries"`        // PIN 错误最大次数（默认 3）
-	PINFailedCount  int         `json:"pin_failed_count"`   // 当前连续错误次数
-	PINLocked       bool        `json:"pin_locked"`         // PIN 是否被锁定
-	Kind            string      `json:"kind"`               // user=用户智能卡；hosting=证书托管容器
-	OrderNo         string      `json:"order_no,omitempty"` // 销售模式下开卡所凭订单号
-	CreatedAt       time.Time   `json:"created_at"`
-	UpdatedAt       time.Time   `json:"updated_at"`
+	UUID              string      `json:"uuid"`
+	UserUUID          string      `json:"user_uuid"`
+	CardName          string      `json:"card_name"`
+	Remark            string      `json:"remark"`
+	StorageZoneUUID   string      `json:"storage_zone_uuid"`  // 关联存储区域 UUID
+	PINData           Base64Bytes `json:"-"`                  // AES-256-GCM 加密存储的 PIN
+	PUKData           Base64Bytes `json:"-"`                  // AES-256-GCM 加密存储的 PUK
+	AdminKeyData      Base64Bytes `json:"-"`                  // AES-256-GCM 加密存储的 Admin Key
+	PINRetries        int         `json:"pin_retries"`        // PIN 错误最大次数（默认 3）
+	PINFailedCount    int         `json:"pin_failed_count"`   // 当前连续错误次数
+	PINLocked         bool        `json:"pin_locked"`         // PIN 是否被锁定
+	Kind              string      `json:"kind"`               // user=用户智能卡；hosting=证书托管容器
+	OrderNo           string      `json:"order_no,omitempty"` // 销售模式下开卡所凭订单号
+	CloudCardTmplUUID string      `json:"cloud_card_tmpl_uuid,omitempty"`
+	ServiceStatus     string      `json:"service_status"` // active/suspended/expired
+	ServiceExpiresAt  *time.Time  `json:"service_expires_at,omitempty"`
+	CertificateLimit  int         `json:"certificate_limit"` // -1 表示不限量
+	CertificateCount  int         `json:"certificate_count"`
+	ServiceVersion    int         `json:"-"` // 云卡服务状态乐观锁
+	ReminderEnabled   bool        `json:"reminder_enabled"`
+	ReminderDays      []int       `json:"reminder_days"` // 到期前 N 天，0 表示到期当天
+	CreatedAt         time.Time   `json:"created_at"`
+	UpdatedAt         time.Time   `json:"updated_at"`
 }
 
 // 卡片类型。
@@ -47,6 +55,23 @@ const (
 
 // IsHosting 判断是否为系统托管容器。
 func (c *Card) IsHosting() bool { return c.Kind == CardKindHosting }
+
+// ServiceState 返回卡片当前的服务状态；历史卡片无服务期字段时按有效处理。
+func (c *Card) ServiceState(now time.Time) string {
+	if c == nil || c.IsHosting() {
+		return "active"
+	}
+	if c.ServiceStatus == "terminated" {
+		return "terminated"
+	}
+	if c.ServiceStatus == "suspended" {
+		return "suspended"
+	}
+	if c.ServiceStatus == "expired" || (c.ServiceExpiresAt != nil && !now.Before(*c.ServiceExpiresAt)) {
+		return "expired"
+	}
+	return "active"
+}
 
 // Certificate 是云端证书模型。
 // 私鑰加密存储在服务端，不对外暴露。
@@ -707,27 +732,53 @@ type PortalProduct struct {
 
 // PortalProductSKU 是商品规格/套餐模型（决定"按什么规格和价格卖"）。
 type PortalProductSKU struct {
-	UUID              string       `json:"uuid"`
-	ProductUUID       string       `json:"product_uuid"`
-	Code              string       `json:"code"`
-	Name              string       `json:"name"`
-	PriceCents        int64        `json:"price_cents"`
-	Currency          string       `json:"currency"`
-	Stock             int          `json:"stock"` // -1 表示不限库存，0 表示售罄
-	MinQty            int          `json:"min_qty"`
-	MaxQty            int          `json:"max_qty"`
-	DurationMonths    int          `json:"duration_months"` // 服务期（月）
-	DeliveryMode      DeliveryMode `json:"delivery_mode"`
-	ValidDays         int          `json:"valid_days"`           // 证书有效期（天，0=使用颁发模板默认值，须在颁发模板允许范围内）
-	KeyTypes          string       `json:"key_types"`            // 允许的密钥算法（JSON 数组，须为颁发模板允许算法的子集）
-	SANIncluded       int          `json:"san_included"`         // 含多少 SAN 域名（0 表示不适用）
-	CertApplyTmplUUID string       `json:"cert_apply_tmpl_uuid"` // 关联证书申请模板
-	CloudCardTmplUUID string       `json:"cloud_card_tmpl_uuid"` // 预留：云卡开通模板
-	SANPolicy         string       `json:"san_policy"`           // 单张证书的 SAN 限制 JSON，见 SANPolicy
-	Enabled           bool         `json:"enabled"`
-	SortWeight        int          `json:"sort_weight"`
-	CreatedAt         time.Time    `json:"created_at"`
-	UpdatedAt         time.Time    `json:"updated_at"`
+	UUID               string       `json:"uuid"`
+	ProductUUID        string       `json:"product_uuid"`
+	Code               string       `json:"code"`
+	Name               string       `json:"name"`
+	PriceCents         int64        `json:"price_cents"`
+	Currency           string       `json:"currency"`
+	Stock              int          `json:"stock"` // -1 表示不限库存，0 表示售罄
+	MinQty             int          `json:"min_qty"`
+	MaxQty             int          `json:"max_qty"`
+	DurationMonths     int          `json:"duration_months"` // 服务期（月）
+	DeliveryMode       DeliveryMode `json:"delivery_mode"`
+	ValidDays          int          `json:"valid_days"`           // 证书有效期（天，0=使用颁发模板默认值，须在颁发模板允许范围内）
+	KeyTypes           string       `json:"key_types"`            // 允许的密钥算法（JSON 数组，须为颁发模板允许算法的子集）
+	SANIncluded        int          `json:"san_included"`         // 含多少 SAN 域名（0 表示不适用）
+	CertApplyTmplUUID  string       `json:"cert_apply_tmpl_uuid"` // 关联证书申请模板
+	CloudCardTmplUUID  string       `json:"cloud_card_tmpl_uuid"` // 关联云卡开通模板
+	CloudCardOperation string       `json:"cloud_card_operation"` // activation/renewal
+	SANPolicy          string       `json:"san_policy"`           // 单张证书的 SAN 限制 JSON，见 SANPolicy
+	Enabled            bool         `json:"enabled"`
+	SortWeight         int          `json:"sort_weight"`
+	CreatedAt          time.Time    `json:"created_at"`
+	UpdatedAt          time.Time    `json:"updated_at"`
+}
+
+// CloudCardTemplate 是云卡服务开通策略，商品规格引用模板而非直接选择存储区域。
+type CloudCardTemplate struct {
+	UUID             string    `json:"uuid"`
+	Name             string    `json:"name"`
+	Description      string    `json:"description"`
+	StorageZoneUUID  string    `json:"storage_zone_uuid"`
+	CertificateLimit int       `json:"certificate_limit"` // -1 表示不限量
+	PINMinLength     int       `json:"pin_min_length"`
+	ReminderEnabled  bool      `json:"reminder_enabled"`
+	ReminderDays     []int     `json:"reminder_days"` // 0 表示到期当天
+	Enabled          bool      `json:"enabled"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// CloudCardReminderCandidate 是到期邮件提醒所需的最小数据。
+type CloudCardReminderCandidate struct {
+	CardUUID     string
+	CardName     string
+	UserUUID     string
+	Email        string
+	ExpiresAt    time.Time
+	ReminderDays []int
 }
 
 // SoldOut 判断规格是否无库存可售（-1 为不限）。

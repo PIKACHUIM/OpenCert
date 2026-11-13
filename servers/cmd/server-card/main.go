@@ -238,13 +238,13 @@ func main() {
 	// 身份认证接口（SMTP/Resend 邮件、实名回调）：配置用主密钥加密存储
 	identityStore := identity.NewStore(db, cardSvc, mailer.New(cfg.SMTP))
 	verifySvc.SetProviders(identityStore)
-	// 系统邮件：优先使用后台配置并设为默认的邮件接口，未配置时回退到环境变量 SMTP
-	if m, err := identityStore.SystemMailer(context.Background()); err == nil {
-		verifySvc.SetMailer(m)
-	} else {
-		slog.Info("未配置邮件接口，验证码邮件将只记录日志", "reason", err)
-		verifySvc.SetMailer(mailer.New(configs.SMTPConfig{}))
+	// 共用后台配置的系统邮件接口，失败时回退到环境变量 SMTP（未配置则只记录日志）。
+	systemMailer, mailErr := identityStore.SystemMailer(context.Background())
+	if mailErr != nil {
+		slog.Info("未配置邮件接口，邮件将只记录日志", "reason", mailErr)
+		systemMailer = mailer.New(configs.SMTPConfig{})
 	}
+	verifySvc.SetMailer(systemMailer)
 	// 域名 TLS 验证复用 ACME TLS-ALPN-01 校验
 	verifySvc.SetTLSValidator(acmeSvc.ValidateTLSALPN01)
 
@@ -318,7 +318,7 @@ func main() {
 		PromoSvc:      promoSvc,
 	}
 	apiServer := api.NewServer(cfg, db, jwtMgr, svcs, userRepo, logRepo)
-	apiServer.SetMailer(mailer.New(cfg.SMTP))
+	apiServer.SetMailer(systemMailer)
 	if err := apiServer.Start(); err != nil {
 		slog.Error("启动 API 服务失败", "error", err)
 		os.Exit(1)
@@ -330,8 +330,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 启动 CRL 定时刷新（使用信号上下文，优雅退出时自动停止）
+	// 启动 CRL 定时刷新与云卡到期提醒（使用信号上下文，优雅退出时自动停止）
 	revocationSvc.StartCRLRefreshLoop(ctx)
+	apiServer.StartCloudCardReminderLoop(ctx)
 
 	<-ctx.Done()
 

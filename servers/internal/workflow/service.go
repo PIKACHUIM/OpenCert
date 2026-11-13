@@ -900,29 +900,33 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		issueReq.KeyZoneUUID = keyStorage.StorageZoneUUID
 	}
 
-	// 调用签发引擎
+	// 先校验交付目标和云卡服务权益，避免证书已签发后才发现目标卡已到期、暂停或容量用尽。
+	cardRepo := storage.NewCardRepo(s.db)
+	var targetCard *storage.Card
+	if app.CardUUID != "" {
+		cardRecord, cardErr := cardRepo.GetByUUID(ctx, app.CardUUID)
+		if cardErr != nil || cardRecord.UserUUID != app.UserUUID {
+			return "", fmt.Errorf("目标智能卡不存在或不属于申请人")
+		}
+		targetCard = cardRecord
+	} else {
+		hosting, hostingErr := cardRepo.GetOrCreateHostingCard(ctx, app.UserUUID)
+		if hostingErr != nil {
+			return "", hostingErr
+		}
+		targetCard = hosting
+	}
+	if targetCard.ServiceState(time.Now()) != "active" {
+		return "", storage.ErrCardServiceUnavailable
+	}
+	if targetCard.CertificateLimit >= 0 && targetCard.CertificateCount >= targetCard.CertificateLimit {
+		return "", storage.ErrCardCertificateLimit
+	}
+
+	// 调用签发引擎；证书入库仍由后续证书事务校验一次容量，防止并发超额。
 	resp, err := s.caSvc.IssueCert(ctx, issueReq)
 	if err != nil {
 		return "", err
-	}
-
-	// 确定存放卡片：
-	//   - 申请指定了用户智能卡 → 签入该卡（可远程签名/解密）；
-	//   - 未指定 → 签入用户的系统托管容器（供下载，不支持远程密码运算）。
-	// 证书表要求 card_uuid 引用有效卡片，不能写空值，否则会被外键拒绝。
-	cardRepo := storage.NewCardRepo(s.db)
-	targetCard := app.CardUUID
-	if targetCard != "" {
-		c, cErr := cardRepo.GetByUUID(ctx, targetCard)
-		if cErr != nil || c.UserUUID != app.UserUUID {
-			return "", fmt.Errorf("目标智能卡不存在或不属于申请人")
-		}
-	} else {
-		hosting, hErr := cardRepo.GetOrCreateHostingCard(ctx, app.UserUUID)
-		if hErr != nil {
-			return "", hErr
-		}
-		targetCard = hosting.UUID
 	}
 
 	// 存入证书表
@@ -931,7 +935,7 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		ipStrs = append(ipStrs, ip.String())
 	}
 	cert := &storage.Certificate{
-		CardUUID:         targetCard,
+		CardUUID:         targetCard.UUID,
 		OrderNo:          orderNo,
 		UserUUID:         app.UserUUID,
 		CertType:         "x509",

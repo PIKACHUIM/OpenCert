@@ -150,10 +150,18 @@ const PortalBuy: React.FC = () => {
                       {quote.delivery_mode === 'cloud_card' ? '云端智能卡'
                         : quote.delivery_mode === 'csr' ? '自备 CSR' : '文件下载'}
                     </Tag>
+                    {quote.delivery_mode === 'cloud_card' && (
+                      <Tag color={quote.cloud_card_operation === 'renewal' ? 'gold' : 'blue'}>
+                        {quote.cloud_card_operation === 'renewal' ? '续费已有云卡' : '开通新云卡'}
+                      </Tag>
+                    )}
                   </Space>
                   <div style={{ marginTop: 10, fontSize: 13, color: '#6b7280' }}>
-                    密钥算法：{quote.key_types.join(' / ') || '-'}
-                    {quote.san_included > 0 ? ` · 含 ${quote.san_included} 个域名` : ''}
+                    {quote.delivery_mode === 'cloud_card'
+                      ? quote.cloud_card_operation === 'renewal'
+                        ? `续费同一开通模板的已有云卡 · 证书容量由套餐决定`
+                        : `服务端云卡 · 证书容量由套餐决定`
+                      : <>密钥算法：{quote.key_types.join(' / ') || '-'}{quote.san_included > 0 ? ` · 含 ${quote.san_included} 个域名` : ''}</>}
                   </div>
                 </div>
               </div>

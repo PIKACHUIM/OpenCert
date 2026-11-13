@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"software.sslmate.com/src/go-pkcs12"
 
@@ -82,14 +83,19 @@ func (s *Service) EKTrust() *EKTrustStore {
 
 // CreateCardRequest 是创建卡片的请求参数。
 type CreateCardRequest struct {
-	UserUUID        string
-	CardName        string
-	Remark          string
-	StorageZoneUUID string
-	PIN             string // 明文 PIN（加密后存储）
-	PUK             string // 明文 PUK（加密后存储）
-	AdminKey        string // 明文 Admin Key（加密后存储）
-	PINRetries      int    // PIN 错误最大次数，默认 3
+	UserUUID          string
+	CardName          string
+	Remark            string
+	StorageZoneUUID   string
+	CloudCardTmplUUID string
+	ServiceExpiresAt  *time.Time
+	CertificateLimit  int
+	ReminderEnabled   bool
+	ReminderDays      []int
+	PIN               string // 明文 PIN（加密后存储）
+	PUK               string // 明文 PUK（加密后存储）
+	AdminKey          string // 明文 Admin Key（加密后存储）
+	PINRetries        int    // PIN 错误最大次数，默认 3
 
 	// 以下字段用于高安全等级卡片创建（可选）。
 	// 当 SecurityLevel=high 且 SlotType=tpmv2 时，必须提供 Attestation 与 AttestationNonce。
@@ -124,11 +130,16 @@ func (s *Service) CreateCard(ctx context.Context, req *CreateCardRequest) (*stor
 	}
 
 	card := &storage.Card{
-		UserUUID:        req.UserUUID,
-		CardName:        req.CardName,
-		Remark:          req.Remark,
-		StorageZoneUUID: req.StorageZoneUUID,
-		PINRetries:      req.PINRetries,
+		UserUUID:          req.UserUUID,
+		CardName:          req.CardName,
+		Remark:            req.Remark,
+		StorageZoneUUID:   req.StorageZoneUUID,
+		CloudCardTmplUUID: req.CloudCardTmplUUID,
+		ServiceExpiresAt:  req.ServiceExpiresAt,
+		CertificateLimit:  req.CertificateLimit,
+		ReminderEnabled:   req.ReminderEnabled,
+		ReminderDays:      req.ReminderDays,
+		PINRetries:        req.PINRetries,
 	}
 	if card.PINRetries <= 0 {
 		card.PINRetries = 3

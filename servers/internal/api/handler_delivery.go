@@ -129,6 +129,11 @@ func (s *Server) handleDeliverCertificate(w http.ResponseWriter, r *http.Request
 	}
 
 	// ---- 以下为私钥交付，需要策略与额度校验 ----
+	if cert.CardUUID != "" {
+		if _, ok := s.requireActiveCard(w, r, cert.CardUUID); !ok {
+			return
+		}
+	}
 	// 私钥位于 TPM/HSM 时由硬件保护，PKCS#12 必须内嵌明文私钥，无法交付
 	if keybackend.IsHardware(cert.KeyBackend) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf(
