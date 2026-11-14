@@ -13,7 +13,7 @@ import {
   verifyDNS, verifyHTTP, verifyTLS, verifyEmail, renewExtensionInfo,
   submitApplication, listMySubscriptions,
 } from '../../api';
-import type { ApplyContext, ExtensionInfo, Subscription } from '../../types';
+import type { ApplyContext, DeliveryMode, ExtensionInfo, Subscription } from '../../types';
 import HelpLink from '../HelpLink';
 import AdminApplyWizard from './AdminApplyWizard';
 
@@ -22,6 +22,12 @@ const { Title, Text, Paragraph } = Typography;
 /** 验证方式文案 */
 const VERIFY_TEXT: Record<string, string> = {
   manual: '人工审核', auto: '实名认证接口', none: '免验证',
+};
+
+const CSR_DELIVERY_MODES = new Set(['csr', 'physical_card', 'virtual_card']);
+const DELIVERY_LABELS: Record<string, string> = {
+  download: '文件下载', cloud_card: '云端智能卡', csr: '自备 CSR',
+  physical_card: '实体智能卡（CSR）', virtual_card: '本地虚拟卡（CSR）',
 };
 
 type SourceOption = {
@@ -58,6 +64,7 @@ const SelfApplyWizard: React.FC = () => {
   const [addResult, setAddResult] = useState<{ info: ExtensionInfo; instructions?: string } | null>(null);
 
   const [keyType, setKeyType] = useState('');
+  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>('download');
   const [cardUUID, setCardUUID] = useState('');
   const [csrPEM, setCsrPEM] = useState('');
   const [result, setResult] = useState<{ auto_issued: boolean; message: string; app: any } | null>(null);
@@ -107,6 +114,7 @@ const SelfApplyWizard: React.FC = () => {
         (qSub && x.params.subscription === qSub && x.params.tmpl === qTmpl) ||
         (!qOrder && !qSub && qTmpl && x.params.tmpl === qTmpl));
       if (matched) {
+        setCsrPEM('');
         setSource(matched);
         await loadContext(matched);
         setStep(1);
@@ -121,6 +129,10 @@ const SelfApplyWizard: React.FC = () => {
       const c = await getApplyContext(s.params);
       setCtx(c);
       setKeyType(c.source.key_types?.[0] ?? '');
+      const deliveryModes = c.source.delivery_modes ?? [];
+      const initialMode = c.source.delivery_mode;
+      setDeliveryMode(initialMode && deliveryModes.includes(initialMode)
+        ? initialMode : deliveryModes[0] ?? 'download');
       setCardUUID(c.cards?.[0]?.uuid ?? '');
       // 优先选择可用主体信息
       const usable = (c.subject_infos ?? []).find((i) => i.status === 'approved' &&
@@ -187,15 +199,23 @@ const SelfApplyWizard: React.FC = () => {
   // ---- 提交申请 ----
   const doSubmit = async () => {
     if (!source) return;
+    const needsCSR = CSR_DELIVERY_MODES.has(deliveryMode);
+    if (needsCSR && !csrPEM.trim()) {
+      message.warning('该交付目标需要从目标设备提交 CSR');
+      return;
+    }
     setLoading(true);
     try {
       const r = await submitApplication({
-        ...source.params,
+        order_no: source.kind === 'order' ? source.params.order_no : undefined,
+        cert_apply_tmpl_uuid: source.kind === 'self' ? source.params.tmpl : undefined,
+        subscription_uuid: source.kind === 'subscription' ? source.params.subscription : undefined,
         subject_info_uuid: subjectChoice || undefined,
         extension_info_uuids: picked,
         key_type: keyType,
-        card_uuid: cardUUID || undefined,
-        csr_pem: csrPEM || undefined,
+        delivery_mode: source.kind === 'order' ? undefined : deliveryMode,
+        card_uuid: deliveryMode === 'cloud_card' ? cardUUID || undefined : undefined,
+        csr_pem: needsCSR ? csrPEM.trim() : undefined,
       });
       setResult({ auto_issued: r.auto_issued, message: r.message, app: r.application });
       setStep(3);
@@ -214,6 +234,8 @@ const SelfApplyWizard: React.FC = () => {
     email: pickedExtensions.filter((e) => e.type === 'email').length,
     ip: pickedExtensions.filter((e) => e.type === 'ip').length,
   };
+  const needsCSR = CSR_DELIVERY_MODES.has(deliveryMode);
+  const localCardDelivery = deliveryMode === 'physical_card' || deliveryMode === 'virtual_card';
 
   const renderSourceStep = () => (
     <div>
@@ -230,6 +252,7 @@ const SelfApplyWizard: React.FC = () => {
           renderItem={(item) => (
             <List.Item
               actions={[<Button key="go" type="primary" onClick={async () => {
+                setCsrPEM('');
                 setSource(item);
                 const c = await loadContext(item);
                 if (c) setStep(1);
@@ -476,6 +499,7 @@ const SelfApplyWizard: React.FC = () => {
           {source?.label}（{source?.sub}）
         </Descriptions.Item>
         <Descriptions.Item label="证书类型">{ctx?.source.template?.name ?? '—'}</Descriptions.Item>
+        <Descriptions.Item label="交付目标">{DELIVERY_LABELS[deliveryMode] ?? deliveryMode}</Descriptions.Item>
         <Descriptions.Item label="有效期">
           {ctx?.source.valid_days ? `${ctx.source.valid_days} 天` : '按模板缺省'}
         </Descriptions.Item>
@@ -493,14 +517,28 @@ const SelfApplyWizard: React.FC = () => {
       </Descriptions>
 
       <Form layout="vertical">
-        <Form.Item label="密钥算法" extra="密钥在云端智能卡或托管容器内生成，私钥不出服务端">
+        {source?.kind !== 'order' && (
+          <Form.Item label="交付目标" required>
+            <Select
+              value={deliveryMode}
+              onChange={(mode: DeliveryMode) => { setDeliveryMode(mode); setCsrPEM(''); }}
+              options={(ctx?.source.delivery_modes ?? []).map((mode) => ({
+                value: mode, label: DELIVERY_LABELS[mode] ?? mode,
+              }))}
+            />
+          </Form.Item>
+        )}
+        <Form.Item
+          label="密钥算法"
+          extra={needsCSR ? '算法必须与 CSR 公钥一致，并在证书模板允许范围内。' : '密钥生成位置由证书模板指定。'}
+        >
           <Select
             value={keyType || undefined}
             onChange={setKeyType}
             options={(ctx?.source.key_types ?? []).map((k) => ({ label: k, value: k }))}
           />
         </Form.Item>
-        {(ctx?.source.delivery_mode === 'cloud_card') && (
+        {deliveryMode === 'cloud_card' && (
           <Form.Item label="签发到智能卡" required extra="该证书可通过智能卡远程签名/解密">
             {ctx?.cards?.length ? (
               <Select value={cardUUID} onChange={setCardUUID}
@@ -511,10 +549,18 @@ const SelfApplyWizard: React.FC = () => {
             )}
           </Form.Item>
         )}
-        <Form.Item label="自带 CSR（可选）" extra="提交后将使用您的公钥签发，私钥不进入服务端；CSR 中的名称需在本次申请中通过验证">
-          <Input.TextArea rows={4} value={csrPEM} onChange={(e) => setCsrPEM(e.target.value)}
-            placeholder="-----BEGIN CERTIFICATE REQUEST-----" />
-        </Form.Item>
+        {needsCSR && (
+          <Form.Item
+            label={localCardDelivery ? `${DELIVERY_LABELS[deliveryMode]} CSR` : '自带 CSR'}
+            required
+            extra={localCardDelivery
+              ? 'CSR 必须由目标设备生成。平台校验 CSR 签名、公钥算法及验证资料，不对硬件类型做远程认证；私钥不会上传。签发后请在客户端绑定匹配密钥。'
+              : '提交后仅使用 CSR 公钥签发；私钥由您保管，CSR 中的名称必须通过本次申请验证。'}
+          >
+            <Input.TextArea rows={4} value={csrPEM} onChange={(e) => setCsrPEM(e.target.value)}
+              placeholder="-----BEGIN CERTIFICATE REQUEST-----" />
+          </Form.Item>
+        )}
       </Form>
 
       {!subjectOk && (
@@ -534,7 +580,11 @@ const SelfApplyWizard: React.FC = () => {
       icon={result?.auto_issued ? <CheckCircleOutlined /> : <SolutionOutlined />}
       title={result?.auto_issued ? '证书已签发' : '证书审核中'}
       subTitle={result?.auto_issued
-        ? '证书已签发并存入您的托管容器或智能卡，可立即下载或使用。'
+        ? localCardDelivery
+          ? '证书已签发；请在客户端将公开证书绑定到持有匹配私钥的目标卡。平台校验 CSR 与资料，不对设备硬件类型做远程认证。'
+          : needsCSR
+            ? '证书已签发；私钥始终由您保管，可下载公开证书并在目标环境中导入。'
+            : '证书已签发并存入您的托管容器或智能卡，可立即下载或使用。'
         : '申请已提交，审核通过后将自动签发；可在「我的证书申请」中查看进度。'}
       extra={[
         <Button type="primary" key="apps" onClick={() => navigate('/console/apply-records')}>查看我的申请</Button>,

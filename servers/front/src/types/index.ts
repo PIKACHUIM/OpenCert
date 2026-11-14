@@ -75,7 +75,7 @@ export interface User {
 export type ProductCategory = 'ssl' | 'codesign' | 'email' | 'docsign' | 'cloudcard';
 
 /** 交付方式 */
-export type DeliveryMode = 'download' | 'cloud_card' | 'csr';
+export type DeliveryMode = 'download' | 'cloud_card' | 'csr' | 'physical_card' | 'virtual_card';
 
 /** 门户商品 */
 export interface PortalProduct {
@@ -380,7 +380,8 @@ export interface ApplyContext {
     subject_tmpl_uuid: string;
     extension_tmpl_uuid: string;
     san_policy: SANPolicy;
-    delivery_mode: DeliveryMode;
+    delivery_mode: DeliveryMode | '';
+    delivery_modes: DeliveryMode[];
     key_types: string[];
     valid_days: number;
     subscription_uuid?: string;
@@ -900,7 +901,7 @@ export interface CertApplication {
   csr_pem?: string;
   card_uuid?: string;
   applicant_email?: string;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'issuing' | 'issuance_failed' | 'approved' | 'rejected';
   reject_reason?: string;
   cert_uuid?: string;
   /** 列表展示：申请人用户名 / 邮箱 */
@@ -1255,6 +1256,7 @@ export interface AdminApplyOrder {
   cert_apply_tmpl_uuid: string;
   template_name: string;
   status: string;
+  delivery_mode: DeliveryMode | '';
 }
 
 export interface AdminApplyTemplate {
@@ -1264,6 +1266,7 @@ export interface AdminApplyTemplate {
   apply_modes: string[];
   require_approval: boolean;
   issuance_tmpl_uuid: string;
+  delivery_modes: DeliveryMode[];
 }
 
 export interface AdminApplySubscription {
@@ -1293,6 +1296,7 @@ export interface AdminCreateApplicationRequest {
   extension_info_uuids?: string[];
   extensions?: Array<{ info_type: string; value: string }>;
   key_type?: string;
+  delivery_mode?: DeliveryMode;
   csr_pem?: string;
   card_uuid?: string;
   skip_approval?: boolean;

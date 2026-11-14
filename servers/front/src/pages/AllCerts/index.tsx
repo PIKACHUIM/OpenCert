@@ -1,18 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Card, Table, Button, Space, Tag, Typography, Input, Select, Tooltip,
-  message, Popconfirm, Drawer, Descriptions,
+  message, Popconfirm, Drawer, Descriptions, Alert, Form, Modal,
 } from 'antd';
 import {
   SafetyCertificateOutlined, ReloadOutlined, SearchOutlined,
   StopOutlined, ReconciliationOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import {
-  listAllCerts, revokeCert, renewCert, exportCert, listCAs, listIssuanceTemplates,
+  listAllCerts, revokeCert, renewCert, getCertificateRenewalContext, exportCert, listCAs, listIssuanceTemplates,
 } from '../../api';
+import type { CertificateRenewalContext } from '../../api';
 import type { Certificate, CA, IssuanceTemplate } from '../../types';
 
 const { Title, Text } = Typography;
+const isCSRDeliveryMode = (mode?: string) => mode === 'csr' || mode === 'physical_card' || mode === 'virtual_card';
 
 /**
  * AllCerts 页面：全局证书管理（管理员）。
@@ -39,6 +41,13 @@ const AllCertsPage: React.FC = () => {
 
   // 详情抽屉
   const [detail, setDetail] = useState<Certificate | null>(null);
+  const [renewOpen, setRenewOpen] = useState(false);
+  const [renewLoading, setRenewLoading] = useState(false);
+  const [renewTarget, setRenewTarget] = useState('');
+  const [renewContext, setRenewContext] = useState<CertificateRenewalContext | null>(null);
+  const [renewOrderNo, setRenewOrderNo] = useState<string>();
+  const [renewCardUUID, setRenewCardUUID] = useState<string>();
+  const [renewCSR, setRenewCSR] = useState('');
 
   const fetchData = async (p = page, ps = pageSize) => {
     setLoading(true);
@@ -80,12 +89,48 @@ const AllCertsPage: React.FC = () => {
     } catch (e: any) { message.error(e.message || '吊销失败'); }
   };
 
-  const handleRenew = async (uuid: string) => {
+  const openRenew = async (uuid: string) => {
+    setRenewTarget(uuid);
+    setRenewContext(null);
+    setRenewOrderNo(undefined);
+    setRenewCardUUID(undefined);
+    setRenewCSR('');
+    setRenewOpen(true);
+    setRenewLoading(true);
     try {
-      await renewCert(uuid, 365);
-      message.success('证书已续期 365 天');
+      const context = await getCertificateRenewalContext(uuid);
+      setRenewContext(context);
+      setRenewOrderNo(context.orders[0]?.order_no);
+      setRenewCardUUID(context.cards.some((card) => card.uuid === context.original_card_uuid)
+        ? context.original_card_uuid : context.cards[0]?.uuid);
+    } catch (e: any) {
+      message.error(e.message || '加载续期信息失败');
+    } finally {
+      setRenewLoading(false);
+    }
+  };
+
+  const selectedRenewOrder = renewContext?.orders.find((order) => order.order_no === renewOrderNo);
+  const handleRenew = async () => {
+    if (!renewTarget || !renewOrderNo) return;
+    if (selectedRenewOrder?.delivery_mode === 'cloud_card' && !renewCardUUID) {
+      message.warning('请先开通并选择一张可用云端智能卡');
+      return;
+    }
+    if (isCSRDeliveryMode(selectedRenewOrder?.delivery_mode) && !renewCSR.trim()) {
+      message.warning('该续期订单需要提交由新密钥生成的 CSR');
+      return;
+    }
+    try {
+      const result = await renewCert(renewTarget, {
+        order_no: renewOrderNo,
+        card_uuid: selectedRenewOrder?.delivery_mode === 'cloud_card' ? renewCardUUID : undefined,
+        csr_pem: isCSRDeliveryMode(selectedRenewOrder?.delivery_mode) ? renewCSR : undefined,
+      }) as { auto_issued?: boolean };
+      message.success(result.auto_issued ? '已按新订单重新签发证书，原证书保持不变' : '续期申请已提交，等待审批');
+      setRenewOpen(false);
       fetchData();
-    } catch (e: any) { message.error(e.message || '续期失败'); }
+    } catch (e: any) { message.error(e.message || '续期申请失败'); }
   };
 
   const handleExport = async (uuid: string, format: 'pem' | 'der' | 'chain' | 'p7b') => {
@@ -137,9 +182,8 @@ const AllCertsPage: React.FC = () => {
           <Button type="link" size="small" icon={<DownloadOutlined />}
             onClick={() => handleExport(r.uuid, 'pem')}>PEM</Button>
           <Button type="link" size="small" onClick={() => handleExport(r.uuid, 'chain')}>证书链</Button>
-          <Popconfirm title="确认续期 365 天？" onConfirm={() => handleRenew(r.uuid)}>
-            <Button type="link" size="small" icon={<ReconciliationOutlined />}>续期</Button>
-          </Popconfirm>
+          <Button type="link" size="small" icon={<ReconciliationOutlined />}
+            onClick={() => openRenew(r.uuid)}>续期</Button>
           <Popconfirm title="确认吊销此证书？（不可恢复）" onConfirm={() => handleRevoke(r.uuid)}>
             <Button type="link" size="small" danger icon={<StopOutlined />}>吊销</Button>
           </Popconfirm>
@@ -208,6 +252,56 @@ const AllCertsPage: React.FC = () => {
           </Descriptions>
         )}
       </Drawer>
+
+      <Modal
+        title="证书续期"
+        open={renewOpen}
+        onCancel={() => setRenewOpen(false)}
+        onOk={handleRenew}
+        okText="提交续期申请"
+        confirmLoading={renewLoading}
+        okButtonProps={{ disabled: renewLoading || !renewOrderNo }}
+        destroyOnClose
+      >
+        <Alert
+          type="info" showIcon style={{ marginTop: 16, marginBottom: 16 }}
+          message="续期将使用证书所有者的新已支付订单，按当前模板及有效验证资料重新签发；原证书保持不变。"
+        />
+        {!renewLoading && renewContext?.orders.length === 0 && (
+          <Alert type="warning" showIcon message="没有可用于续期的已支付订单。" />
+        )}
+        {renewContext && renewContext.orders.length > 0 && (
+          <>
+            <Form.Item label="续期订单" required>
+              <Select
+                value={renewOrderNo}
+                onChange={setRenewOrderNo}
+                placeholder="选择已支付的同类型证书订单"
+                options={renewContext.orders.map((order) => ({
+                  value: order.order_no,
+                  label: `${order.sku_name || '证书套餐'} · 剩余 ${order.remaining} 份`,
+                }))}
+              />
+            </Form.Item>
+            {selectedRenewOrder?.delivery_mode === 'cloud_card' && (
+              <Form.Item label="签发到云端智能卡" required>
+                <Select
+                  value={renewCardUUID}
+                  onChange={setRenewCardUUID}
+                  placeholder="选择服务有效的云端智能卡"
+                  options={renewContext.cards.map((card) => ({ value: card.uuid, label: card.card_name }))}
+                />
+              </Form.Item>
+            )}
+            {isCSRDeliveryMode(selectedRenewOrder?.delivery_mode) && (
+              <Form.Item label="新密钥的 CSR" required extra="请使用目标设备生成新的 CSR；私钥不会上传。">
+                <Input.TextArea rows={5} value={renewCSR} onChange={(event) => setRenewCSR(event.target.value)}
+                  placeholder="-----BEGIN CERTIFICATE REQUEST-----" />
+              </Form.Item>
+            )}
+          </>
+        )}
+      </Modal>
     </div>
   );
 };

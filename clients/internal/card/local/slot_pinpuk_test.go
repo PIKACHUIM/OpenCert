@@ -4,10 +4,12 @@ package local
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/globaltrusts/client-card/internal/storage"
+	"github.com/globaltrusts/client-card/internal/tpm"
 )
 
 // newTestRepos 创建临时 SQLite 数据库，返回 CardRepo。
@@ -38,6 +40,27 @@ func newTestRepos(t *testing.T) (*storage.DB, *storage.CardRepo) {
 }
 
 // TestCreateCardWithCreds_GeneratesPUKAndAdmin 验证：未提供 PUK/AdminKey 时自动生成并返回。
+func TestCreateMediumCardRejectsProviderWithoutHardwareNV(t *testing.T) {
+	ctx := context.Background()
+	_, cardRepo := newTestRepos(t)
+	provider := tpm.NewMock()
+
+	_, err := CreateCardWithCredsAndTPM(ctx, cardRepo, provider, CreateCardArgs{
+		UserUUID: "user-1", CardName: "medium-card", PIN: "123456",
+		SecurityLevel: storage.SecurityLevelMedium, GeneratePUK: true, GenerateAdmin: true,
+	})
+	if !errors.Is(err, tpm.ErrHardwareNVUnavailable) {
+		t.Fatalf("medium card error = %v, want ErrHardwareNVUnavailable", err)
+	}
+	cards, err := cardRepo.ListByUser(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("list user cards: %v", err)
+	}
+	if len(cards) != 0 {
+		t.Fatalf("unsupported medium card creation left %d records", len(cards))
+	}
+}
+
 func TestCreateCardWithCreds_GeneratesPUKAndAdmin(t *testing.T) {
 	_, cardRepo := newTestRepos(t)
 	ctx := context.Background()

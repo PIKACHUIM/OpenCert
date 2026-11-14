@@ -118,9 +118,13 @@ func (s *Server) handleAdminApplyContext(w http.ResponseWriter, r *http.Request)
 			if rows.Scan(&orderNo, &tmplUUID, &tmplName, &status, &spec, &createdAt) != nil {
 				continue
 			}
+			var orderSpec struct {
+				DeliveryMode string `json:"delivery_mode"`
+			}
+			_ = json.Unmarshal([]byte(spec), &orderSpec)
 			out.Orders = append(out.Orders, map[string]interface{}{
 				"order_no": orderNo, "cert_apply_tmpl_uuid": tmplUUID,
-				"template_name": tmplName, "status": status,
+				"template_name": tmplName, "status": status, "delivery_mode": orderSpec.DeliveryMode,
 			})
 		}
 		rows.Close()
@@ -143,10 +147,14 @@ func (s *Server) handleAdminApplyContext(w http.ResponseWriter, r *http.Request)
 			if len(modeList) == 0 {
 				modeList = []string{"order", "self", "subscription"}
 			}
+			deliveryModes := []string{}
+			if s.workflowSvc != nil {
+				deliveryModes, _ = s.workflowSvc.DeliveryModesForApplyTemplate(r.Context(), uuid)
+			}
 			out.Templates = append(out.Templates, map[string]interface{}{
 				"uuid": uuid, "name": name, "description": desc,
 				"apply_modes": modeList, "require_approval": requireApproval == 1,
-				"issuance_tmpl_uuid": issuanceUUID,
+				"issuance_tmpl_uuid": issuanceUUID, "delivery_modes": deliveryModes,
 			})
 		}
 		trows.Close()
@@ -212,6 +220,7 @@ type adminApplyRequest struct {
 	ExtensionInfoUUIDs []string           `json:"extension_info_uuids"`
 	Extensions         []adminExtensionIn `json:"extensions"`
 	KeyType            string             `json:"key_type"`
+	DeliveryMode       string             `json:"delivery_mode,omitempty"`
 	CSRPEM             string             `json:"csr_pem"`
 	CardUUID           string             `json:"card_uuid"`
 	SkipApproval       bool               `json:"skip_approval"`
@@ -263,6 +272,34 @@ func (s *Server) handleAdminCreateApplication(w http.ResponseWriter, r *http.Req
 		writeError(w, st, err.Error())
 		return
 	}
+	deliveryMode := strings.TrimSpace(req.DeliveryMode)
+	if src.Kind == "order" {
+		if deliveryMode != "" && deliveryMode != src.DeliveryMode {
+			writeError(w, http.StatusBadRequest, "订单交付目标由已购规格固定")
+			return
+		}
+		deliveryMode = src.DeliveryMode
+	} else if deliveryMode == "" {
+		deliveryMode = src.DeliveryMode
+	}
+	if deliveryMode == "" && len(src.DeliveryModes) == 1 {
+		deliveryMode = src.DeliveryModes[0]
+	}
+	if !containsStrLocal(src.DeliveryModes, deliveryMode) {
+		writeError(w, http.StatusBadRequest, "请选择该证书类型支持的交付目标")
+		return
+	}
+	if (deliveryMode == string(storage.DeliveryCSR) || deliveryMode == string(storage.DeliveryPhysical) ||
+		deliveryMode == string(storage.DeliveryVirtual)) && strings.TrimSpace(req.CSRPEM) == "" {
+		writeError(w, http.StatusBadRequest, "所选交付目标需要提交由目标设备生成的 CSR")
+		return
+	}
+	if (deliveryMode == string(storage.DeliveryPhysical) || deliveryMode == string(storage.DeliveryVirtual)) &&
+		strings.TrimSpace(req.CardUUID) != "" {
+		writeError(w, http.StatusBadRequest, "本地设备目标不能填写服务端智能卡 UUID")
+		return
+	}
+	req.DeliveryMode = deliveryMode
 
 	// 管理员录入的主体信息：按该证书类型的主体模板创建并直接审核通过
 	subjectInfoUUID := strings.TrimSpace(req.SubjectInfoUUID)
@@ -307,6 +344,11 @@ func (s *Server) handleAdminCreateApplication(w http.ResponseWriter, r *http.Req
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := s.workflowSvc.SetOrderDeliveryMode(r.Context(), order.UUID, deliveryMode); err != nil {
+			s.db.ExecContext(r.Context(), `UPDATE cert_orders SET status = 'cancelled', updated_at = ? WHERE uuid = ?`, time.Now(), order.UUID) //nolint:errcheck
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		src.Order = order
 		src.OrderNo = order.OrderNo
 	}
@@ -320,6 +362,7 @@ func (s *Server) handleAdminCreateApplication(w http.ResponseWriter, r *http.Req
 		SubjectInfoUUID:    subjectInfoUUID,
 		ExtensionInfoUUIDs: extUUIDs,
 		KeyType:            req.KeyType,
+		DeliveryMode:       deliveryMode,
 		CSRPEM:             req.CSRPEM,
 		CardUUID:           req.CardUUID,
 	}

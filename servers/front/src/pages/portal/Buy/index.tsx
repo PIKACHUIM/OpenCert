@@ -11,6 +11,11 @@ import type { PortalQuote } from '../../../types';
 
 const { Title, Text, Paragraph } = Typography;
 
+const deliveryLabel: Record<string, string> = {
+  download: '文件下载', cloud_card: '云端智能卡', csr: '自备 CSR',
+  physical_card: '实体智能卡（设备 CSR）', virtual_card: '本地虚拟卡（设备 CSR）',
+};
+
 /**
  * 门户购买配置页。
  *
@@ -146,10 +151,7 @@ const PortalBuy: React.FC = () => {
                   <Space size={10} wrap>
                     <Text strong style={{ fontSize: 15 }}>{quote.sku_name}</Text>
                     <Tag bordered={false}>{quote.duration_months} 个月</Tag>
-                    <Tag bordered={false}>
-                      {quote.delivery_mode === 'cloud_card' ? '云端智能卡'
-                        : quote.delivery_mode === 'csr' ? '自备 CSR' : '文件下载'}
-                    </Tag>
+                    <Tag bordered={false}>{deliveryLabel[quote.delivery_mode] ?? quote.delivery_mode}</Tag>
                     {quote.delivery_mode === 'cloud_card' && (
                       <Tag color={quote.cloud_card_operation === 'renewal' ? 'gold' : 'blue'}>
                         {quote.cloud_card_operation === 'renewal' ? '续费已有云卡' : '开通新云卡'}
@@ -161,7 +163,11 @@ const PortalBuy: React.FC = () => {
                       ? quote.cloud_card_operation === 'renewal'
                         ? `续费同一开通模板的已有云卡 · 证书容量由套餐决定`
                         : `服务端云卡 · 证书容量由套餐决定`
-                      : <>密钥算法：{quote.key_types.join(' / ') || '-'}{quote.san_included > 0 ? ` · 含 ${quote.san_included} 个域名` : ''}</>}
+                      : <>
+                        {(quote.delivery_mode === 'physical_card' || quote.delivery_mode === 'virtual_card') &&
+                          <div>需使用目标设备生成 CSR；订单仅收取证书费用，硬件由用户自备。</div>}
+                        密钥算法：{quote.key_types.join(' / ') || '-'}{quote.san_included > 0 ? ` · 含 ${quote.san_included} 个域名` : ''}
+                      </>}
                   </div>
                 </div>
               </div>

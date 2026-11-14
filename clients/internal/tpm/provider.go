@@ -1,17 +1,12 @@
 // Package tpm 提供 TPM2 / Secure Enclave 的抽象接口。
 //
-// 接口语义参照真实 TPM 模型设计：
-//   - NV 域：以 (Index, AuthValue) 形式存放对称密钥/小数据，永不出 TPM。
-//   - 非对称密钥：用 CreateKey 在 TPM 内生成，得到 wrapped blob（Public+Private+AuthValue 哈希），
-//     通过 LoadKey/Sign/Decrypt 在 TPM 内部完成签名/解密；私钥永远不以明文形式出现在外部。
+// Provider 抽象 TPM/Secure Enclave 能力。各方法的硬件保证由具体后端决定；
+// SoftwareStub 只用于显式选择的开发/测试场景，不能作为硬件能力的替代。
 //
-// 当前提供两种后端：
-//  1. SoftwareStub（默认）：用本地受保护文件 + AES-256-GCM 模拟，保持与真 TPM 完全相同的接口语义，
-//     用于尚未接入真实硬件 / 开发 / 测试。PlatformName="sw-stub"。
-//  2. （TODO）TPM2 真实后端：Windows 走 CNG/Platform Crypto Provider（自家 KSP 同源），
-//     Linux/macOS 走 go-tpm + /dev/tpmrm0 等。完成后会替换 NewProvider 工厂。
+// 默认 Provider 只返回当前平台明确实现的硬件后端。SoftwareStub 仅能通过显式调用
+// NewSoftwareStub 获取，不能作为真实 TPM 的自动回退。
 //
-// 上层（local 包）只依赖本接口，不感知后端差异。
+// 上层（local 包）只依赖本接口；需要硬件保证的调用方还必须确认 Provider 的后端身份。
 package tpm
 
 import (
@@ -80,6 +75,18 @@ type WrappedKey struct {
 // LoadedHandle 是 LoadKey 返回的会话内句柄；上层用完必须 FlushHandle。
 type LoadedHandle uint32
 
+// HardwareNVCapability 是后端对真实 TPM NV 存储能力的可选声明。
+// 未实现此接口的 Provider 不得用于宣称 TPM NV 双层保护。
+type HardwareNVCapability interface {
+	HardwareNVStorageAvailable() bool
+}
+
+// SupportsHardwareNV 判断 Provider 是否明确声明并提供硬件 TPM NV。
+func SupportsHardwareNV(provider Provider) bool {
+	capability, ok := provider.(HardwareNVCapability)
+	return provider != nil && ok && capability.HardwareNVStorageAvailable()
+}
+
 // Provider 是 TPM/SE 的抽象接口。
 type Provider interface {
 	// ---- 基础 ----
@@ -90,9 +97,9 @@ type Provider interface {
 	Seal(data []byte) (blob []byte, err error)
 	Unseal(blob []byte) (data []byte, err error)
 
-	// ---- NV 存储能力（用于 medium：把"证书密钥"放进 NV 域） ----
-	// NVDefine 在 TPM 中定义一个 NV 槽（label 仅作运维标识）。
-	// authValue 是访问该槽时必须提供的口令（可为 nil 表示不限制；medium 模式应使用 AdminKey）。
+	// ---- NV 存储能力（具体后端可能使用硬件 NV 或明确标注的软件存储） ----
+	// NVDefine 定义一个 NV 槽（label 仅作运维标识）。
+	// authValue 是访问该槽时必须提供的口令（可为 nil 表示不限制）。
 	NVDefine(label string, size int, authValue []byte) (NVHandle, error)
 	// NVWrite 写入数据到指定 NV 槽，需要正确的 authValue。
 	NVWrite(h NVHandle, authValue, data []byte) error
@@ -101,12 +108,11 @@ type Provider interface {
 	// NVUndefine 删除 NV 槽。
 	NVUndefine(h NVHandle) error
 
-	// ---- 非对称密钥能力（用于 high：私钥永不出 TPM） ----
-	// CreateKey 在 TPM 内生成非对称密钥对，返回 wrapped blob 与 SPKI 公钥。
-	// authValue 可为 nil；当非空时使用该密钥必须提供同样的 authValue。
+	// ---- 非对称密钥能力 ----
+	// CreateKey 在后端支持的安全边界内生成非对称密钥对，返回 wrapped blob 与 SPKI 公钥。
+	// 真实 TPM 后端应在 TPM 内生成密钥；SoftwareStub 只作软件模拟。
 	CreateKey(alg KeyAlg, authValue []byte) (wrapped *WrappedKey, pub crypto.PublicKey, err error)
-	// ImportKey 将外部 PKCS#8 DER 私钥导入 TPM，设为不可导出，返回 wrapped blob 与 SPKI 公钥。
-	// 导入后私钥留在 TPM 中，外部明文会被调用方清零。后续 Sign/Decrypt 走 TPM 内部完成。
+	// ImportKey 按后端能力导入外部 PKCS#8 DER 私钥；不支持时必须返回明确错误。
 	ImportKey(privKeyDER []byte, authValue []byte) (wrapped *WrappedKey, pub crypto.PublicKey, err error)
 	// LoadKey 把 wrapped blob 加载进 TPM，得到一个仅当前会话有效的临时句柄。
 	LoadKey(wrapped *WrappedKey, authValue []byte) (LoadedHandle, error)
@@ -122,19 +128,21 @@ type Provider interface {
 
 // 错误集合。
 var (
-	ErrNotAvailable    = fmt.Errorf("TPM/Secure Enclave 不可用")
-	ErrUnsealFailed    = fmt.Errorf("TPM 解封失败")
-	ErrNVNotFound      = fmt.Errorf("TPM NV 槽不存在")
-	ErrNVAuthFailed    = fmt.Errorf("TPM NV 授权值校验失败")
-	ErrKeyAuthFailed   = fmt.Errorf("TPM 密钥授权值校验失败")
-	ErrUnknownAlg      = fmt.Errorf("TPM 不支持的密钥算法")
-	ErrUnknownScheme   = fmt.Errorf("TPM 不支持的签名方案")
-	ErrHandleNotLoaded = fmt.Errorf("TPM 密钥句柄无效")
+	ErrNotAvailable          = fmt.Errorf("TPM/Secure Enclave 不可用")
+	ErrUnsealFailed          = fmt.Errorf("TPM 解封失败")
+	ErrNVNotFound            = fmt.Errorf("TPM NV 槽不存在")
+	ErrNVAuthFailed          = fmt.Errorf("TPM NV 授权值校验失败")
+	ErrKeyAuthFailed         = fmt.Errorf("TPM 密钥授权值校验失败")
+	ErrUnknownAlg            = fmt.Errorf("TPM 不支持的密钥算法")
+	ErrUnknownScheme         = fmt.Errorf("TPM 不支持的签名方案")
+	ErrHandleNotLoaded       = fmt.Errorf("TPM 密钥句柄无效")
+	ErrImportNotSupported    = fmt.Errorf("当前 TPM Provider 不支持导入外部私钥；请在硬件 TPM 中生成密钥")
+	ErrHardwareNVUnavailable = fmt.Errorf("当前 TPM Provider 未实现硬件 NV 存储；medium 安全级别不可用")
 )
 
-// NewProvider 创建当前平台默认的 TPM Provider。
-// 各平台在对应的 build tag 文件中实现 newPlatformProvider()。
-// 当真实硬件不可用 / 后端尚未实现时，可在调用方退化到 NewSoftwareStub()。
+// NewProvider 创建当前平台默认的硬件 TPM Provider。
+// 各平台在对应的 build tag 文件中实现 newPlatformProvider()；硬件后端不可用时返回错误，
+// 不会自动退化为 SoftwareStub。
 func NewProvider() (Provider, error) {
 	return newPlatformProvider()
 }

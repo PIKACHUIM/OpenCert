@@ -23,6 +23,8 @@ const deliveryLabel: Record<string, string> = {
   download: '文件下载',
   cloud_card: '云端智能卡',
   csr: '自备 CSR',
+  physical_card: '实体智能卡（设备 CSR）',
+  virtual_card: '本地虚拟卡（设备 CSR）',
 };
 
 /**
@@ -181,6 +183,9 @@ const PortalProductDetail: React.FC = () => {
 
                   <div style={{ fontSize: 13, color: '#4b5563', lineHeight: 2 }}>
                     <div>交付方式：{deliveryLabel[s.delivery_mode] ?? s.delivery_mode}</div>
+                    {(s.delivery_mode === 'physical_card' || s.delivery_mode === 'virtual_card') && (
+                      <div>需在本地目标设备生成 CSR；价格只包含证书，不包含卡片或 TPM 硬件。</div>
+                    )}
                     <div>密钥算法：{parseList(s.key_types).join(' / ') || '-'}</div>
                     {s.san_included > 0 && <div>含 {s.san_included} 个域名</div>}
                     <div>

@@ -206,8 +206,8 @@ const CertsPage: React.FC = () => {
     try {
       const values = await toCardForm.validateFields();
       setToCardLoading(true);
-      await importPKICertToCard(toCardRecord.uuid, values.card_uuid);
-      message.success('证书已导入到智能卡');
+      await importPKICertToCard(toCardRecord.uuid, values.card_uuid, values.card_password);
+      message.success('证书已绑定到目标卡片中公钥匹配的私钥');
       setToCardOpen(false);
       toCardForm.resetFields();
     } catch (e: any) { if (e.message) message.error(e.message); }
@@ -647,9 +647,16 @@ const CertsPage: React.FC = () => {
         onCancel={() => { setToCardOpen(false); toCardForm.resetFields(); }}
         okText="导入" cancelText="取消" confirmLoading={toCardLoading} width={400}>
         <Form form={toCardForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Alert
+            type="info" showIcon style={{ marginBottom: 16 }}
+            message="仅在证书公钥与目标卡现有私钥匹配时绑定；不会上传或复制私钥。"
+          />
           <Form.Item name="card_uuid" label="目标智能卡" rules={[{ required: true, message: '请选择智能卡' }]}>
             <Select placeholder="选择目标智能卡"
               options={cards.map((c) => ({ value: c.uuid, label: `${c.card_name} (${c.slot_type})` }))} />
+          </Form.Item>
+          <Form.Item name="card_password" label="卡片 PIN / 密码" rules={[{ required: true, message: '请输入卡片 PIN 或密码' }]}>
+            <Input.Password autoComplete="current-password" placeholder="用于解锁目标卡片" />
           </Form.Item>
         </Form>
       </Modal>

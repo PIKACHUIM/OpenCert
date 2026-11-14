@@ -95,7 +95,7 @@ func (r *CertRepo) GetByUUID(ctx context.Context, certUUID string) (*Certificate
 func (r *CertRepo) ListByCard(ctx context.Context, cardUUID string) ([]*Certificate, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT uuid, slot_type, card_uuid, cert_type, key_type,
-			cert_content, tpm_platform, remark, cloud_meta, created_at, updated_at,
+			cert_content, tpm_platform, tpm_key_handle, remark, cloud_meta, created_at, updated_at,
 			CASE WHEN private_data IS NOT NULL AND length(private_data) > 0 THEN 1 ELSE 0 END as has_private,
 			temp_key_salt, temp_key_enc, private_data,
 			tpm_wrapped_blob, tpm_private_blob, tpm_cert_key_salt
@@ -109,11 +109,16 @@ func (r *CertRepo) ListByCard(ctx context.Context, cardUUID string) ([]*Certific
 	for rows.Next() {
 		c := &Certificate{}
 		var hasPrivate int
+		var tpmKeyHandle sql.NullInt64
 		if err := rows.Scan(&c.UUID, &c.SlotType, &c.CardUUID, &c.CertType, &c.KeyType,
-			&c.CertContent, &c.TPMPlatform, &c.Remark, &c.CloudMeta, &c.CreatedAt, &c.UpdatedAt,
+			&c.CertContent, &c.TPMPlatform, &tpmKeyHandle, &c.Remark, &c.CloudMeta, &c.CreatedAt, &c.UpdatedAt,
 			&hasPrivate, &c.TempKeySalt, &c.TempKeyEnc, &c.PrivateData,
 			&c.TPMWrappedBlob, &c.TPMPrivateBlob, &c.TPMCertKeySalt); err != nil {
 			return nil, fmt.Errorf("扫描证书数据失败: %w", err)
+		}
+		if tpmKeyHandle.Valid {
+			handle := tpmKeyHandle.Int64
+			c.TPMKeyHandle = &handle
 		}
 		_ = hasPrivate
 		certs = append(certs, c)
@@ -218,7 +223,8 @@ func (r *CertRepo) CountGroupedByCard(ctx context.Context) (map[string]*CertStat
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT card_uuid, cert_type, COUNT(*) as cnt
 		FROM certificates
-		GROUP BY card_uuid, cert_type`)
+		WHERE cert_type != ?
+		GROUP BY card_uuid, cert_type`, string(CertTypeInternal))
 	if err != nil {
 		return nil, fmt.Errorf("统计证书数量失败: %w", err)
 	}

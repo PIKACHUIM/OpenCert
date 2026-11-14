@@ -29,13 +29,10 @@ const KEY_TYPE_OPTIONS = [
   { value: 'rsa4096', label: 'RSA 4096' },
 ];
 
-// 安全等级颜色和标签
-// 说明：当前实现里只有 slot_type=tpmsc 是真正的硬件保护（密钥落在 Windows TPM）；
-// 本地卡的 medium 仅在导出私钥时增加 ADMINKEY 校验，加密强度与 low 一致；
-// 本地卡的 high 暂未启用 TPM Provider，后端会拒绝创建。
+// 安全等级颜色和标签。仅硬件 Provider 内生成的密钥具备不可导出保证。
 const securityLevelConfig: Record<string, { color: string; label: string; desc: string }> = {
-  high: { color: 'red', label: '高', desc: '硬件 TPM 保护，私钥永不可导出（仅 TPM 智能卡支持）' },
-  medium: { color: 'orange', label: '中', desc: '软件加密 + ADMINKEY 校验，可导出私钥需 ADMINKEY' },
+  high: { color: 'red', label: '高', desc: '可用 TPM Provider 内生成并使用的密钥具备硬件不可导出保证' },
+  medium: { color: 'orange', label: '中', desc: '软件加密与 AdminKey 校验，不等同 TPM NV 硬件保护' },
   low: { color: 'green', label: '低', desc: '仅 PIN/卡密码软件加密，可凭密码导出' },
 };
 
@@ -48,7 +45,7 @@ const slotLabel = (t: string) => {
   switch (t) {
     case 'cloud': return '云端智能卡';
     case 'tpm2': return 'TPM2 硬件卡';
-    case 'tpmsc': return 'TPM 智能卡';
+    case 'tpmsc': return 'Windows TPM VSC（Provider 未接入）';
     default: return '本地智能卡';
   }
 };
@@ -663,7 +660,7 @@ const Cards: React.FC = () => {
             <Select
               options={[
                 { value: 'local', label: '本地 (本地数据库)' },
-                { value: 'tpmsc', label: 'TPM 虚拟智能卡 (Windows TPM)' },
+                { value: 'tpmsc', label: 'Windows TPM VSC（暂不可用：Provider 未接入）', disabled: true },
                 // { value: 'cloud', label: '云端 (云端数据库)' },
               ]}
               onChange={(val) => {
@@ -676,8 +673,8 @@ const Cards: React.FC = () => {
           </Form.Item>
           {createSlotType === 'tpmsc' && (
             <Alert
-              message="TPM 虚拟智能卡（需要管理员权限）"
-              description="创建后默认 PIN 为 12345678，请在创建成功后立即通过 Windows 修改 PIN。密钥由 TPM 硬件保护，永远不可导出。"
+              message="Windows TPM VSC 当前不可用"
+              description="安全交互式 PIN/PUK/AdminKey 初始化、证书枚举及 CNG/CAPI Provider 尚未接入。OpenCert 不会使用默认凭据创建卡片。"
               type="warning" showIcon style={{ marginBottom: 16 }}
             />
           )}
@@ -731,6 +728,8 @@ const Cards: React.FC = () => {
         extra={
           <Button
             type="primary" size="small" icon={<KeyOutlined />}
+            disabled={selectedCard?.slot_type === 'tpmsc'}
+            title={selectedCard?.slot_type === 'tpmsc' ? 'TPM VSC Provider 尚未接入' : undefined}
             onClick={() => setKeygenOpen(true)}
           >
             生成密钥对
@@ -744,6 +743,13 @@ const Cards: React.FC = () => {
               <Alert
                 message="此卡片当前不可用"
                 description={selectedCard.enabled === false ? '卡片已被禁用，其证书不会显示在用户证书管理中，也不会注册到系统。' : '卡片已过期，其证书不会显示在用户证书管理中，也不会注册到系统。'}
+                type="warning" showIcon style={{ marginBottom: 16 }}
+              />
+            )}
+            {selectedCard.slot_type === 'tpmsc' && (
+              <Alert
+                message="Windows TPM VSC Provider 未接入"
+                description="此记录已保留，但当前不能枚举证书、创建密钥、重置 PIN 或删除硬件卡片。OpenCert 不会伪报操作成功。"
                 type="warning" showIcon style={{ marginBottom: 16 }}
               />
             )}

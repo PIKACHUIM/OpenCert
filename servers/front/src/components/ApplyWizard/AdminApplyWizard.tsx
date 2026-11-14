@@ -1,9 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Card, Divider, Drawer, Empty, Form, Input, Select, Space, Switch, message } from 'antd';
+import { Alert, Button, Card, Divider, Drawer, Empty, Form, Input, Select, Space, Switch, message } from 'antd';
 import { UserAddOutlined } from '@ant-design/icons';
 import { listAdminApplyUsers, getAdminApplyContext, adminCreateCertApplication } from '../../api';
-import type { AdminApplyContext, User } from '../../types';
+import type { AdminApplyContext, DeliveryMode, User } from '../../types';
 import AlgorithmSelect from '../AlgorithmSelect';
+
+const DELIVERY_LABELS: Record<string, string> = {
+  download: '文件下载', cloud_card: '云端智能卡', csr: '自备 CSR',
+  physical_card: '实体智能卡（CSR）', virtual_card: '本地虚拟卡（CSR）',
+};
+const CSR_DELIVERY_MODES = new Set(['csr', 'physical_card', 'virtual_card']);
 
 /** 代办申请抽屉：选客户 → 选来源 → 选/填资料 → 提交 */
 const AdminApplyWizard: React.FC<{
@@ -46,6 +52,18 @@ const AdminApplyWizard: React.FC<{
   const subscriptionUUID = Form.useWatch('subscription_uuid', form) as string | undefined;
   const subjectMode = Form.useWatch('subject_mode', form);
   const extMode = Form.useWatch('ext_mode', form);
+  const orderNo = Form.useWatch('order_no', form) as string | undefined;
+  const applyTemplateUUID = Form.useWatch('cert_apply_tmpl_uuid', form) as string | undefined;
+  const selectedDeliveryMode = Form.useWatch('delivery_mode', form) as DeliveryMode | undefined;
+  const selectedOrder = ctx?.orders.find((order) => order.order_no === orderNo);
+  const selectedTemplate = ctx?.templates.find((template) => template.uuid === applyTemplateUUID);
+  const deliveryModes = mode === 'order'
+    ? (selectedOrder?.delivery_mode ? [selectedOrder.delivery_mode] : [])
+    : selectedTemplate?.delivery_modes ?? [];
+  const deliveryMode = mode === 'order' ? selectedOrder?.delivery_mode || undefined : selectedDeliveryMode;
+  const needsCSR = CSR_DELIVERY_MODES.has(deliveryMode ?? '');
+  const localCardDelivery = deliveryMode === 'physical_card' || deliveryMode === 'virtual_card';
+  const deliveryModesKey = deliveryModes.join('|');
   const selectedSubscription = ctx?.subscriptions.find((subscription) => subscription.uuid === subscriptionUUID);
   const subscriptionTemplates = ctx?.templates.filter((template) =>
     template.apply_modes.includes('subscription') &&
@@ -65,16 +83,45 @@ const AdminApplyWizard: React.FC<{
     }
   }, [subscriptionUUID, ctx, form]);
 
+  useEffect(() => {
+    form.setFieldValue('csr_pem', '');
+    if (mode === 'order' && selectedOrder?.delivery_mode) {
+      form.setFieldValue('delivery_mode', undefined);
+      return;
+    }
+    if (deliveryModes.length === 0) {
+      form.setFieldValue('delivery_mode', undefined);
+      return;
+    }
+    if (!deliveryModes.includes(form.getFieldValue('delivery_mode'))) {
+      form.setFieldValue('delivery_mode', deliveryModes[0]);
+    }
+  }, [userUUID, mode, orderNo, applyTemplateUUID, deliveryModesKey, selectedOrder?.delivery_mode, form]);
+
   const handleSubmit = async () => {
     if (!userUUID) { message.warning('请先选择客户'); return; }
     try {
       const values = await form.validateFields();
+      if (!deliveryMode) {
+        message.warning('请先选择或确认交付目标');
+        return;
+      }
+      if (needsCSR && !values.csr_pem?.trim()) {
+        message.warning('该交付目标需要设备生成的 CSR');
+        return;
+      }
+      if (deliveryMode === 'cloud_card' && !values.card_uuid) {
+        message.warning('请为云端智能卡证书选择目标卡片');
+        return;
+      }
       setSubmitting(true);
       const payload: any = {
         user_uuid: userUUID,
         skip_approval: !!values.skip_approval,
         key_type: values.key_type || '',
-        csr_pem: values.csr_pem || '',
+        delivery_mode: deliveryMode,
+        csr_pem: needsCSR ? values.csr_pem.trim() : '',
+        card_uuid: deliveryMode === 'cloud_card' ? values.card_uuid : undefined,
       };
       if (values.mode === 'order') payload.order_no = values.order_no;
       else if (values.mode === 'subscription') {
@@ -192,6 +239,31 @@ const AdminApplyWizard: React.FC<{
               </>
             )}
 
+            {mode === 'order' ? (
+              selectedOrder?.delivery_mode ? (
+                <Form.Item label="交付目标">
+                  <Input readOnly value={DELIVERY_LABELS[selectedOrder.delivery_mode] ?? selectedOrder.delivery_mode} />
+                </Form.Item>
+              ) : <Alert type="warning" showIcon message="该历史订单未记录交付目标，需由运营核实订单策略后再代办。" />
+            ) : (
+              <Form.Item name="delivery_mode" label="交付目标" rules={[{ required: true, message: '请选择交付目标' }]}>
+                <Select
+                  placeholder="请选择模板允许的证书交付目标"
+                  options={deliveryModes.map((delivery) => ({ value: delivery, label: DELIVERY_LABELS[delivery] ?? delivery }))}
+                  onChange={() => { form.setFieldValue('csr_pem', ''); form.setFieldValue('card_uuid', undefined); }}
+                />
+              </Form.Item>
+            )}
+
+            {deliveryMode === 'cloud_card' && (
+              <Form.Item name="card_uuid" label="签发到云端智能卡" rules={[{ required: true, message: '请选择目标云端智能卡' }]}>
+                <Select
+                  placeholder={ctx.cards.length ? '选择目标云端智能卡' : '客户暂无可用智能卡'}
+                  options={ctx.cards.map((card) => ({ value: card.uuid, label: card.card_name }))}
+                />
+              </Form.Item>
+            )}
+
             <Divider titlePlacement="start" plain>证书资料</Divider>
 
             <Form.Item label="主体信息" name="subject_mode">
@@ -265,9 +337,18 @@ const AdminApplyWizard: React.FC<{
               </Form.Item>
             </Space>
 
-            <Form.Item label="自带 CSR（可选，私钥由客户保管）" name="csr_pem">
-              <Input.TextArea rows={3} placeholder="-----BEGIN CERTIFICATE REQUEST-----" style={{ fontSize: 12 }} />
-            </Form.Item>
+            {needsCSR && (
+              <Form.Item
+                label={localCardDelivery ? `${DELIVERY_LABELS[deliveryMode ?? '']} CSR` : '自带 CSR'}
+                name="csr_pem"
+                rules={[{ required: true, message: '该交付目标需要提交 CSR' }]}
+                extra={localCardDelivery
+                  ? 'CSR 必须由目标设备生成。服务端校验 CSR 与验证资料，不对硬件类型做远程认证；私钥不会上传。'
+                  : '仅使用 CSR 公钥签发，私钥由客户保管。'}
+              >
+                <Input.TextArea rows={3} placeholder="-----BEGIN CERTIFICATE REQUEST-----" style={{ fontSize: 12 }} />
+              </Form.Item>
+            )}
           </>
         )}
 

@@ -1,37 +1,24 @@
-// Package tpmsc 的 Slot 实现。
-// TPM Virtual Smart Card 的 Slot 通过 Windows Smart Card API 访问，
-// 本 Slot 仅作为 PKCS#11 层的注册占位，实际密码学操作由 Windows CSP 完成。
+// Package tpmsc 提供 Windows TPM Virtual Smart Card 的 fail-closed PKCS#11 Slot。
+// 由于 Smart Card/CNG/CAPI provider 尚未接入，此 Slot 不声明 token 或算法能力。
 package tpmsc
 
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/pkg/pkcs11types"
 )
 
-// Slot 是 Microsoft TPM Virtual Smart Card 的 Slot 实现。
-// 与 local/tpm2 不同，tpmsc 的密钥操作由 Windows CSP 完成，
-// 本 Slot 主要提供元信息和状态管理。
+// Slot 是尚未接入 Windows TPM VSC 密码学 Provider 的占位实现。
 type Slot struct {
-	mu       sync.RWMutex
-	slotID   pkcs11types.SlotID
-	card     *storage.Card
-	certRepo *storage.CertRepo
-
-	// 登录状态
-	loggedIn bool
+	slotID pkcs11types.SlotID
+	card   *storage.Card
 }
 
-// New 创建 TPMSC Slot 实例。
-func New(slotID pkcs11types.SlotID, card *storage.Card, certRepo *storage.CertRepo) *Slot {
-	return &Slot{
-		slotID:   slotID,
-		card:     card,
-		certRepo: certRepo,
-	}
+// New 创建 TPMSC Slot 实例。该 Slot 不提供密码学能力。
+func New(slotID pkcs11types.SlotID, card *storage.Card, _ *storage.CertRepo) *Slot {
+	return &Slot{slotID: slotID, card: card}
 }
 
 // SlotID 返回 Slot ID。
@@ -39,114 +26,62 @@ func (s *Slot) SlotID() pkcs11types.SlotID {
 	return s.slotID
 }
 
-// SlotInfo 返回 Slot 信息。
+// SlotInfo 返回未检测到可用 token 的 Slot 信息。
 func (s *Slot) SlotInfo() pkcs11types.SlotInfo {
+	cardName := ""
+	if s.card != nil {
+		cardName = s.card.CardName
+	}
 	return pkcs11types.SlotInfo{
 		SlotID:       s.slotID,
-		Description:  fmt.Sprintf("TPM-VSC: %s [Windows TPM Virtual Smart Card]", s.card.CardName),
+		Description:  fmt.Sprintf("TPM-VSC: %s [provider unavailable]", cardName),
 		Manufacturer: "Microsoft",
-		Flags:        pkcs11types.CKF_TOKEN_PRESENT,
-		TokenPresent: true,
 	}
 }
 
-// TokenInfo 返回 Token 信息。
-func (s *Slot) TokenInfo() pkcs11types.TokenInfo {
-	s.mu.RLock()
-	loggedIn := s.loggedIn
-	s.mu.RUnlock()
+// TokenInfo 返回零值信息，因为此 Slot 尚未连接实际 Token。
+func (s *Slot) TokenInfo() pkcs11types.TokenInfo { return pkcs11types.TokenInfo{} }
 
-	flags := pkcs11types.CKF_TOKEN_INITIALIZED | pkcs11types.CKF_LOGIN_REQUIRED | pkcs11types.CKF_RNG
-	if loggedIn {
-		flags |= pkcs11types.CKF_USER_PIN_INITIALIZED
-	}
+// Mechanisms 返回空列表；VSC 密码学 Provider 尚未实现。
+func (s *Slot) Mechanisms() []pkcs11types.MechanismType { return nil }
 
-	label := s.card.CardName
-	if len(label) > 32 {
-		label = label[:32]
-	}
-
-	return pkcs11types.TokenInfo{
-		Label:           label,
-		Manufacturer:    "Microsoft",
-		Model:           "TPM-VirtualSmartCard",
-		SerialNumber:    s.card.UUID[:16],
-		Flags:           flags,
-		MaxPinLen:       127,
-		MinPinLen:       8,
-		TotalPublicMem:  0xFFFFFFFF,
-		FreePublicMem:   0xFFFFFFFF,
-		TotalPrivateMem: 0xFFFFFFFF,
-		FreePrivateMem:  0xFFFFFFFF,
-	}
+// unsupported 返回 PKCS#11 标准未实现错误，避免对调用方伪报成功。
+func unsupported() error {
+	return fmt.Errorf("%w: Windows TPM VSC provider 尚未接入", pkcs11types.CKR_FUNCTION_NOT_SUPPORTED)
 }
 
-// Mechanisms 返回支持的算法列表。
-// TPM VSC 支持 RSA 2048 和 ECDSA P-256。
-func (s *Slot) Mechanisms() []pkcs11types.MechanismType {
-	return []pkcs11types.MechanismType{
-		pkcs11types.CKM_RSA_PKCS,
-		pkcs11types.CKM_RSA_PKCS_KEY_PAIR_GEN,
-		pkcs11types.CKM_SHA256_RSA_PKCS,
-		pkcs11types.CKM_SHA384_RSA_PKCS,
-		pkcs11types.CKM_SHA512_RSA_PKCS,
-		pkcs11types.CKM_ECDSA,
-		pkcs11types.CKM_ECDSA_SHA256,
-	}
+// Login 在 PIN 校验能力接入前拒绝登录。
+func (s *Slot) Login(_ context.Context, _ pkcs11types.UserType, _ string) error {
+	return unsupported()
 }
 
-// Login 验证 PIN（通过 Windows Smart Card API）。
-func (s *Slot) Login(ctx context.Context, userType pkcs11types.UserType, pin string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// Logout 在认证会话能力接入前拒绝注销操作。
+func (s *Slot) Logout(_ context.Context) error { return unsupported() }
 
-	if s.loggedIn {
-		return fmt.Errorf("%w", pkcs11types.CKR_USER_ALREADY_LOGGED_IN)
-	}
+// IsLoggedIn 在 Provider 未实现时始终返回 false。
+func (s *Slot) IsLoggedIn() bool { return false }
 
-	// TPM VSC 的 PIN 验证由 Windows Smart Card 子系统处理
-	// 这里仅标记登录状态；实际签名时 Windows 会弹出 PIN 输入框
-	s.loggedIn = true
-	return nil
+// FindObjects 在 Windows 证书枚举接入前拒绝查询。
+func (s *Slot) FindObjects(_ context.Context, _ []pkcs11types.Attribute) ([]pkcs11types.ObjectHandle, error) {
+	return nil, unsupported()
 }
 
-// Logout 注销。
-func (s *Slot) Logout(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.loggedIn = false
-	return nil
+// GetAttributes 在对象属性访问接入前拒绝查询。
+func (s *Slot) GetAttributes(_ context.Context, _ pkcs11types.ObjectHandle, _ []pkcs11types.AttributeType) ([]pkcs11types.Attribute, error) {
+	return nil, unsupported()
 }
 
-// IsLoggedIn 返回登录状态。
-func (s *Slot) IsLoggedIn() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.loggedIn
+// Sign 在 Windows CNG/CAPI Provider 接入前拒绝签名。
+func (s *Slot) Sign(_ context.Context, _ pkcs11types.ObjectHandle, _ pkcs11types.Mechanism, _ []byte) ([]byte, error) {
+	return nil, unsupported()
 }
 
-// FindObjects 查找对象（TPM VSC 的证书通过 Windows 证书存储访问）。
-func (s *Slot) FindObjects(ctx context.Context, template []pkcs11types.Attribute) ([]pkcs11types.ObjectHandle, error) {
-	// TODO: 通过 Windows CertStore API 枚举 TPM VSC 上的证书
-	return nil, nil
+// Decrypt 在 Windows CNG/CAPI Provider 接入前拒绝解密。
+func (s *Slot) Decrypt(_ context.Context, _ pkcs11types.ObjectHandle, _ pkcs11types.Mechanism, _ []byte) ([]byte, error) {
+	return nil, unsupported()
 }
 
-// GetAttributes 获取对象属性。
-func (s *Slot) GetAttributes(ctx context.Context, handle pkcs11types.ObjectHandle, attrs []pkcs11types.AttributeType) ([]pkcs11types.Attribute, error) {
-	return nil, fmt.Errorf("TPM VSC 对象属性通过 Windows API 访问")
-}
-
-// Sign 签名操作（委托给 Windows CSP）。
-func (s *Slot) Sign(ctx context.Context, handle pkcs11types.ObjectHandle, mechanism pkcs11types.Mechanism, data []byte) ([]byte, error) {
-	return nil, fmt.Errorf("TPM VSC 签名操作由 Windows CSP 完成，请通过 Windows CNG/CAPI 调用")
-}
-
-// Decrypt 解密操作（委托给 Windows CSP）。
-func (s *Slot) Decrypt(ctx context.Context, handle pkcs11types.ObjectHandle, mechanism pkcs11types.Mechanism, ciphertext []byte) ([]byte, error) {
-	return nil, fmt.Errorf("TPM VSC 解密操作由 Windows CSP 完成，请通过 Windows CNG/CAPI 调用")
-}
-
-// Encrypt 加密操作。
-func (s *Slot) Encrypt(ctx context.Context, handle pkcs11types.ObjectHandle, mechanism pkcs11types.Mechanism, plaintext []byte) ([]byte, error) {
-	return nil, fmt.Errorf("TPM VSC 加密操作由 Windows CSP 完成，请通过 Windows CNG/CAPI 调用")
+// Encrypt 在对象与机制能力接入前拒绝加密。
+func (s *Slot) Encrypt(_ context.Context, _ pkcs11types.ObjectHandle, _ pkcs11types.Mechanism, _ []byte) ([]byte, error) {
+	return nil, unsupported()
 }

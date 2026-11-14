@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/globaltrusts/client-card/internal/card/local"
-	"github.com/globaltrusts/client-card/internal/card/tpmsc"
 	"github.com/globaltrusts/client-card/internal/storage"
+	"github.com/globaltrusts/client-card/internal/tpm"
 )
 
 // ---- 用户管理 Handler ----
@@ -236,7 +236,7 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ---- 解析并校验安全等级 ----
-	// 前端默认 low；选择 tpmsc 时强制 high；选择本地 high 时拒绝（当前实现不支持本地 TPM Provider）。
+	// 前端默认 low；TPMSC 会在安全创建与密码学 Provider 接入前明确拒绝。
 	secLevel := storage.SecurityLevel(strings.ToLower(strings.TrimSpace(req.SecurityLevel)))
 	switch secLevel {
 	case storage.SecurityLevelHigh, storage.SecurityLevelMedium, storage.SecurityLevelLow:
@@ -248,23 +248,18 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ---- 根据 slot_type 分发创建逻辑 ----
-	switch storage.SlotType(req.SlotType) {
-	case storage.SlotTypeTPMSC:
-		// TPMSC 强制 high，调用方传任何值都忽略（内部硬编码）
-		s.handleCreateTPMSCCard(w, r, req.UserUUID, req.CardName, req.PIN, req.Remark)
+	if rejectUnsupportedTPMSC(w, storage.SlotType(req.SlotType), "创建卡片") {
 		return
-	default:
-		// local / tpm2 / cloud 走原有逻辑
 	}
 
 	// medium / high 都需要 TPM Provider；缺失时给出明确错误，避免落库后再失败。
-	if secLevel == storage.SecurityLevelMedium || secLevel == storage.SecurityLevelHigh {
-		if s.tpmProvider == nil || !s.tpmProvider.Available() {
-			writeError(w, http.StatusBadRequest,
-				string(secLevel)+" 安全等级需要 TPM Provider；当前服务未注入或不可用，请改用 low 或联系管理员检查 TPM 配置")
-			return
-		}
+	if secLevel == storage.SecurityLevelMedium && !tpm.SupportsHardwareNV(s.tpmProvider) {
+		writeError(w, http.StatusNotImplemented, tpm.ErrHardwareNVUnavailable.Error())
+		return
+	}
+	if secLevel == storage.SecurityLevelHigh && (s.tpmProvider == nil || !s.tpmProvider.Available()) {
+		writeError(w, http.StatusServiceUnavailable, "high 安全等级需要可用的硬件 TPM Provider")
+		return
 	}
 
 	// 调用三级凭据版本；未提供 PUK/AdminKey 时自动生成并在响应中一次性返回
@@ -304,55 +299,6 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		"puk":       result.PUK,      // 仅自动生成时非空
 		"admin_key": result.AdminKey, // 仅自动生成时非空
 		"pin":       result.PIN,      // 仅自动生成时非空
-	}})
-}
-
-// handleCreateTPMSCCard 处理 Microsoft TPM Virtual Smart Card 的创建。
-// 使用 DEFAULT 模式非交互式创建（PIN=12345678），创建后提示用户修改 PIN。
-func (s *Server) handleCreateTPMSCCard(w http.ResponseWriter, r *http.Request, userUUID, cardName, pin, remark string) {
-	// 检查平台可用性
-	if !tpmsc.IsAvailable() {
-		writeError(w, http.StatusBadRequest, "当前系统不支持 TPM Virtual Smart Card（需要 Windows 且 tpmvscmgr.exe 可用）")
-		return
-	}
-
-	// 调用 tpmvscmgr.exe 创建虚拟智能卡（DEFAULT 模式，无需 stdin 交互）
-	vscResult, err := tpmsc.CreateCard(r.Context(), tpmsc.CreateCardArgs{
-		Name: cardName,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "创建 TPM Virtual Smart Card 失败: "+err.Error())
-		return
-	}
-
-	// 在数据库中记录卡片信息
-	card := &storage.Card{
-		UUID:          newUUID(),
-		SlotType:      storage.SlotTypeTPMSC,
-		CardName:      cardName,
-		UserUUID:      userUUID,
-		SecurityLevel: storage.SecurityLevelHigh, // TPM VSC 固定高安全性
-		Remark:        remark,
-		PINRetries:    5, // Microsoft 默认 PIN 重试次数
-	}
-
-	if err := s.cardRepo.Create(r.Context(), card); err != nil {
-		writeError(w, http.StatusInternalServerError, "保存卡片记录失败: "+err.Error())
-		return
-	}
-
-	// Slot 变更广播
-	s.notifySlotChanged("create")
-
-	// 响应：返回卡片信息和一次性 AdminKey/PUK/PIN
-	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: map[string]interface{}{
-		"card":        card,
-		"pin":         vscResult.PIN,        // 默认 PIN（12345678），提示用户修改
-		"puk":         vscResult.PUK,        // 默认 PUK（12345678）
-		"admin_key":   vscResult.AdminKey,   // 默认 AdminKey
-		"instance_id": vscResult.InstanceID, // Windows 设备实例 ID
-		"reader_name": vscResult.ReaderName, // 虚拟读卡器名称
-		"output":      vscResult.Output,     // 命令行输出（调试用）
 	}})
 }
 
@@ -472,6 +418,15 @@ func (s *Server) handleDeleteCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "删除卡片记录") {
+		return
+	}
+
 	if err := s.cardRepo.Delete(r.Context(), cardUUID); err != nil {
 		if isNotFoundErr(err) {
 			writeError(w, http.StatusNotFound, "卡片不存在")
@@ -494,6 +449,9 @@ func (s *Server) handleResetPIN(w http.ResponseWriter, r *http.Request) {
 	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
 	if err != nil || card == nil {
 		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "PIN 重置") {
 		return
 	}
 
@@ -536,6 +494,9 @@ func (s *Server) handleResetPUK(w http.ResponseWriter, r *http.Request) {
 	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
 	if err != nil || card == nil {
 		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "PUK 重置") {
 		return
 	}
 
@@ -588,6 +549,15 @@ func (s *Server) handleExportCard(w http.ResponseWriter, r *http.Request) {
 	}
 	if !verifyPassword(req.UserPassword, user.PasswordHash) {
 		writeError(w, http.StatusForbidden, "用户密码错误")
+		return
+	}
+
+	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "导出卡片") {
 		return
 	}
 

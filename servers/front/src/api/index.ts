@@ -3,7 +3,7 @@ import type {
   AuthToken, LoginRequest, RegisterRequest, ChangePasswordRequest,
   User, UserRole, PageResult,
   CA, CreateCARequest, RevokedCert, RevokeCertRequest, IssueCertRequest,
-  Certificate,
+  Certificate, DeliveryMode,
   IssuanceTemplate, SubjectTemplate, ExtensionTemplate,
   KeyUsageTemplate, CertExtTemplate, KeyStorageTemplate,
   SubjectInfo, ExtensionInfo,
@@ -363,8 +363,18 @@ export const revokeCert = (uuid: string) =>
 export const assignCert = (uuid: string, card_uuid: string) =>
   http.post(`/api/certs/${uuid}/assign`, { card_uuid }).then((r) => r.data);
 
-export const renewCert = (uuid: string, validity_days: number) =>
-  http.post(`/api/certs/${uuid}/renew`, { validity_days }).then((r) => r.data);
+export interface CertificateRenewalContext {
+  renewal_allowed: boolean;
+  orders: Array<{ order_no: string; sku_name: string; delivery_mode: DeliveryMode; remaining: number }>;
+  cards: Array<{ uuid: string; card_name: string; storage_zone_uuid: string }>;
+  original_card_uuid: string;
+}
+
+export const getCertificateRenewalContext = (uuid: string) =>
+  http.get<CertificateRenewalContext>(`/api/certs/${uuid}/renewal-context`).then((r) => r.data);
+
+export const renewCert = (uuid: string, data: { order_no: string; card_uuid?: string; csr_pem?: string }) =>
+  http.post(`/api/certs/${uuid}/renew`, data).then((r) => r.data);
 
 export const exportCert = (uuid: string, format: string) =>
   http.get(`/api/certs/${uuid}/export`, { params: { format }, responseType: 'blob' }).then((r) => r.data);
@@ -893,9 +903,11 @@ export const getCapabilities = () =>
 export const submitApplication = (data: {
   order_no?: string;
   cert_apply_tmpl_uuid?: string;
+  subscription_uuid?: string;
   subject_info_uuid?: string;
   extension_info_uuids?: string[];
   key_type?: string;
+  delivery_mode?: DeliveryMode;
   csr_pem?: string;
   card_uuid?: string;
 }) => http.post<SubmitApplicationResult>('/api/portal/applications', data).then((r) => r.data);

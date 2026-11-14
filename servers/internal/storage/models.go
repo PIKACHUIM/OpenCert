@@ -527,22 +527,25 @@ type CertOrder struct {
 	UpdatedAt          time.Time       `json:"updated_at"`
 }
 
-// CertApplication 是证书申请模型。
+// CertApplication 是证书申请模型。状态包括 pending、issuing、issuance_failed、approved、rejected。
 type CertApplication struct {
-	UUID           string     `json:"uuid"`
-	OrderUUID      string     `json:"order_uuid"`
-	UserUUID       string     `json:"user_uuid"`
-	SubjectJSON    string     `json:"subject_json"` // 主体信息 JSON
-	SANJSON        string     `json:"san_json"`     // SAN 信息 JSON
-	KeyType        string     `json:"key_type"`
-	CSRPEM         string     `json:"csr_pem,omitempty"` // 用户自带 CSR（私钥不进入服务端）
-	ApplicantEmail string     `json:"applicant_email,omitempty"`
-	CardUUID       string     `json:"card_uuid,omitempty"` // 签发目标卡片（空=托管容器）
-	Status         string     `json:"status"`              // pending/approved/rejected
-	ApprovedBy     string     `json:"approved_by,omitempty"`
-	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
-	RejectReason   string     `json:"reject_reason,omitempty"`
-	CertUUID       string     `json:"cert_uuid,omitempty"` // 签发后的证书 UUID
+	UUID               string     `json:"uuid"`
+	OrderUUID          string     `json:"order_uuid"`
+	UserUUID           string     `json:"user_uuid"`
+	SubjectJSON        string     `json:"subject_json"` // 主体信息 JSON
+	SANJSON            string     `json:"san_json"`     // SAN 信息 JSON
+	SubjectInfoUUID    string     `json:"subject_info_uuid,omitempty"`
+	ExtensionInfoUUIDs []string   `json:"extension_info_uuids,omitempty"`
+	RenewFromCertUUID  string     `json:"renew_from_cert_uuid,omitempty"`
+	KeyType            string     `json:"key_type"`
+	CSRPEM             string     `json:"csr_pem,omitempty"` // 用户自带 CSR（私钥不进入服务端）
+	ApplicantEmail     string     `json:"applicant_email,omitempty"`
+	CardUUID           string     `json:"card_uuid,omitempty"` // 签发目标卡片（空=托管容器）
+	Status             string     `json:"status"`              // pending/issuing/issuance_failed/approved/rejected
+	ApprovedBy         string     `json:"approved_by,omitempty"`
+	ApprovedAt         *time.Time `json:"approved_at,omitempty"`
+	RejectReason       string     `json:"reject_reason,omitempty"`
+	CertUUID           string     `json:"cert_uuid,omitempty"` // 签发后的证书 UUID
 	// 以下为列表展示用的只读信息（联表查询填充，不落库）
 	UserName       string    `json:"user_name,omitempty"`     // 申请人用户名
 	UserEmail      string    `json:"user_email,omitempty"`    // 申请人邮箱
@@ -705,9 +708,11 @@ const (
 type DeliveryMode string
 
 const (
-	DeliveryDownload  DeliveryMode = "download"   // 文件下载（PEM/DER/PFX）
-	DeliveryCloudCard DeliveryMode = "cloud_card" // 云端智能卡远程使用
-	DeliveryCSR       DeliveryMode = "csr"        // 用户自备 CSR
+	DeliveryDownload  DeliveryMode = "download"      // 文件下载（PEM/DER/PFX）
+	DeliveryCloudCard DeliveryMode = "cloud_card"    // 云端智能卡远程使用
+	DeliveryCSR       DeliveryMode = "csr"           // 用户自备 CSR，私钥由用户保管
+	DeliveryPhysical  DeliveryMode = "physical_card" // 用户本地实体卡，必须由设备 CSR 签发
+	DeliveryVirtual   DeliveryMode = "virtual_card"  // 用户本地虚拟卡，必须由设备 CSR 签发
 )
 
 // PortalProduct 是门户商品模型（决定"卖什么"，不含价格与签发参数）。

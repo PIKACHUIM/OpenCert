@@ -307,11 +307,20 @@ func (p *EffectivePolicy) AllowsPKCS12(keyType string) bool {
 
 // ---- 内部工具 ----
 
-// deliveryModesOf 由密钥存储模板推导可用的交付方式。
+// deliveryModesOf 由密钥生成位置与存储方式推导可用交付目标。
 func deliveryModesOf(ks *storage.KeyStorageTemplate) []string {
 	var modes []string
-	if ks.KeyGenLocation == storage.KeyGenCSR {
-		return []string{string(storage.DeliveryCSR)}
+	if ks.KeyGenLocation == storage.KeyGenCSR || ks.KeyGenLocation == storage.KeyGenCard {
+		if ks.HasMethod(storage.StoragePhysicalCard) {
+			modes = append(modes, string(storage.DeliveryPhysical))
+		}
+		if ks.HasMethod(storage.StorageVirtualCard) {
+			modes = append(modes, string(storage.DeliveryVirtual))
+		}
+		if len(modes) == 0 && ks.KeyGenLocation == storage.KeyGenCSR {
+			modes = append(modes, string(storage.DeliveryCSR))
+		}
+		return modes
 	}
 	if ks.HasMethod(storage.StorageFileDownload) {
 		modes = append(modes, string(storage.DeliveryDownload))

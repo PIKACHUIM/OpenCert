@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/globaltrusts/client-card/internal/card/local"
+	"github.com/globaltrusts/client-card/internal/card/tpm2"
 	"github.com/globaltrusts/client-card/internal/pki"
 	"github.com/globaltrusts/client-card/internal/storage"
 )
@@ -93,6 +95,10 @@ func (s *Server) handleCreateCSR(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := pki.CreateAndSaveCSR(r.Context(), s.csrRepo, s.certRepo, s.cardRepo, &req)
 	if err != nil {
+		if errors.Is(err, pki.ErrHardwareCSRProviderUnavailable) {
+			writeError(w, http.StatusNotImplemented, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "生成 CSR 失败: "+err.Error())
 		return
 	}
@@ -472,19 +478,45 @@ func (s *Server) handleImportPKICertToCard(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// 解锁卡片主密钥
-	slot := local.New(0, targetCard, s.certRepo)
-	if err := slot.Login(r.Context(), 1, req.CardPassword); err != nil {
-		writeError(w, http.StatusForbidden, "卡片密码错误")
+	// 按卡片类型验证 PIN 并解锁主密钥，TPM2 卡必须经过当前 provider 的 TPM Unseal。
+	var masterKey []byte
+	switch targetCard.SlotType {
+	case storage.SlotTypeLocal:
+		slot := local.New(0, targetCard, s.certRepo)
+		if err := slot.Login(r.Context(), 1, req.CardPassword); err != nil {
+			writeError(w, http.StatusForbidden, "卡片密码错误")
+			return
+		}
+		defer slot.Logout(r.Context())
+		masterKey = slot.MasterKey()
+	case storage.SlotTypeTPM2:
+		if s.tpmProvider == nil || !s.tpmProvider.Available() {
+			writeError(w, http.StatusServiceUnavailable, "本机 TPM Provider 不可用，不能绑定证书")
+			return
+		}
+		slot := tpm2.New(0, targetCard, s.certRepo, s.tpmProvider)
+		if err := slot.Login(r.Context(), 1, req.CardPassword); err != nil {
+			writeError(w, http.StatusForbidden, "TPM2 卡片 PIN 错误或设备不匹配")
+			return
+		}
+		defer slot.Logout(r.Context())
+		masterKey = slot.MasterKey()
+	case storage.SlotTypeTPMSC:
+		writeError(w, http.StatusNotImplemented, "TPM Virtual Smart Card 的证书对象与 CSP 绑定尚未实现")
+		return
+	default:
+		writeError(w, http.StatusBadRequest, "不支持的目标卡片类型")
 		return
 	}
-	defer slot.Logout(r.Context())
-
-	masterKey := slot.MasterKey()
 	if masterKey == nil {
 		writeError(w, http.StatusInternalServerError, "获取卡片主密钥失败")
 		return
 	}
+	defer func() {
+		for i := range masterKey {
+			masterKey[i] = 0
+		}
+	}()
 
 	km := local.NewKeyManagerWithTPM(s.certRepo, s.cardRepo, s.tpmProvider)
 
@@ -496,6 +528,7 @@ func (s *Server) handleImportPKICertToCard(w http.ResponseWriter, r *http.Reques
 	}
 
 	var resultMsg string
+	keyBound := false
 
 	// 如果有私钥，同时导入私钥
 	if cert.HasPrivateKey && len(cert.PrivateKeyEnc) > 0 {
@@ -525,21 +558,32 @@ func (s *Server) handleImportPKICertToCard(w http.ResponseWriter, r *http.Reques
 
 		// 修正 CertContent：将证书 DER 以 CERTIFICATE PEM 格式存储（而非 PUBLIC KEY）
 		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-		certRecord, _ := s.certRepo.GetByUUID(r.Context(), result.CertUUID)
-		if certRecord != nil {
-			certRecord.CertContent = certPEM
-			_ = s.certRepo.Update(r.Context(), certRecord)
+		certRecord, err := s.certRepo.GetByUUID(r.Context(), result.CertUUID)
+		if err != nil || certRecord == nil {
+			writeError(w, http.StatusInternalServerError, "读取卡片证书记录失败")
+			return
+		}
+		certRecord.CertContent = certPEM
+		if err := s.certRepo.Update(r.Context(), certRecord); err != nil {
+			writeError(w, http.StatusInternalServerError, "保存完整证书失败: "+err.Error())
+			return
 		}
 
 		resultMsg = "证书和私钥已导入到智能卡"
+		keyBound = true
 	} else {
-		// 仅导入证书（无私钥）
-		_, err = km.ImportCertificate(r.Context(), targetCard.UUID, certDER, fmt.Sprintf("从 PKI 导入: %s", cert.CommonName))
+		// CSR 签发的公开证书必须绑定到目标卡片中公钥完全匹配的本地私钥记录。
+		_, err = km.BindCertificateToKey(r.Context(), targetCard.UUID, certDER, fmt.Sprintf("证书绑定: %s", cert.CommonName))
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "导入证书到卡片失败: "+err.Error())
+			status := http.StatusInternalServerError
+			if errors.Is(err, local.ErrNoMatchingCardPrivateKey) || errors.Is(err, local.ErrAmbiguousCardPrivateKey) {
+				status = http.StatusConflict
+			}
+			writeError(w, status, err.Error())
 			return
 		}
-		resultMsg = "证书已导入到智能卡（无私钥）"
+		resultMsg = "证书已绑定到目标卡片中公钥匹配的私钥"
+		keyBound = true
 	}
 
 	// 广播 slot 变更事件
@@ -552,7 +596,7 @@ func (s *Server) handleImportPKICertToCard(w http.ResponseWriter, r *http.Reques
 		SlotType: string(targetCard.SlotType),
 		CardUUID: targetCard.UUID,
 		Title:    "PKI 证书导入到智能卡",
-		Content:  fmt.Sprintf("cert=%s card=%s has_key=%v", cert.CommonName, targetCard.CardName, cert.HasPrivateKey),
+		Content:  fmt.Sprintf("cert=%s card=%s key_bound=%v", cert.CommonName, targetCard.CardName, keyBound),
 	})
 
 	writeOK(w, map[string]string{

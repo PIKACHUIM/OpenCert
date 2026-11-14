@@ -263,6 +263,9 @@ func (db *DB) alterTables() error {
 
 	// 申请：签发目标卡片（为空时按交付方式落到托管容器）
 	db.execIgnoreError(`ALTER TABLE cert_applications ADD COLUMN card_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cert_applications ADD COLUMN subject_info_uuid TEXT NOT NULL DEFAULT ''`)
+	db.execIgnoreError(`ALTER TABLE cert_applications ADD COLUMN extension_info_uuids TEXT NOT NULL DEFAULT '[]'`)
+	db.execIgnoreError(`ALTER TABLE cert_applications ADD COLUMN renew_from_cert_uuid TEXT NOT NULL DEFAULT ''`)
 
 	db.alterTablesV2()
 	return nil
@@ -926,9 +929,12 @@ CREATE TABLE IF NOT EXISTS cert_applications (
     uuid           TEXT PRIMARY KEY,
     order_uuid     TEXT NOT NULL REFERENCES cert_orders(uuid),
     user_uuid      TEXT NOT NULL REFERENCES users(uuid),
-    subject_json   TEXT NOT NULL DEFAULT '{}',
-    san_json       TEXT NOT NULL DEFAULT '{}',
-    key_type       TEXT NOT NULL DEFAULT 'ec256',
+    subject_json         TEXT NOT NULL DEFAULT '{}',
+    san_json             TEXT NOT NULL DEFAULT '{}',
+    subject_info_uuid    TEXT NOT NULL DEFAULT '',
+    extension_info_uuids TEXT NOT NULL DEFAULT '[]',
+    renew_from_cert_uuid TEXT NOT NULL DEFAULT '',
+    key_type             TEXT NOT NULL DEFAULT 'ec256',
     status         TEXT NOT NULL DEFAULT 'pending',
     approved_by    TEXT,
     approved_at    DATETIME,

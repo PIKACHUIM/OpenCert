@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"github.com/globaltrusts/server-card/internal/auth"
 	"github.com/globaltrusts/server-card/internal/card"
 	"github.com/globaltrusts/server-card/internal/storage"
+	"github.com/globaltrusts/server-card/internal/workflow"
 )
 
 // ---- 卡片处理器 ----
@@ -556,60 +558,232 @@ func (s *Server) handleAssignCertToCard(w http.ResponseWriter, r *http.Request) 
 
 // ---- 证书续期 ----
 
-// RenewCertRequest 是证书续期请求体。
+// RenewCertRequest 用新购买的证书订单续期；目标证书必须仍在允许续期的证书类型范围内。
 type RenewCertRequest struct {
-	ValidDays int `json:"valid_days"` // 新的有效期天数
+	OrderNo  string `json:"order_no"`
+	CardUUID string `json:"card_uuid,omitempty"`
+	CSRPEM   string `json:"csr_pem,omitempty"`
+}
+
+func (s *Server) handleCertificateRenewalContext(w http.ResponseWriter, r *http.Request) {
+	claims := claimsFromCtx(r.Context())
+	cert, err := storage.NewCertRepo(s.db).GetByUUID(r.Context(), r.PathValue("uuid"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "证书不存在")
+		return
+	}
+	if !s.canAccessCert(r, cert, claims) {
+		writeError(w, http.StatusForbidden, "无权查看续期订单")
+		return
+	}
+	if cert.CertType != "x509" || cert.RevocationStatus == "revoked" || cert.IssuanceTmplUUID == "" {
+		writeError(w, http.StatusConflict, "该证书类型或状态不支持续期")
+		return
+	}
+	cardRecord, err := storage.NewCardRepo(s.db).GetByUUID(r.Context(), cert.CardUUID)
+	if err != nil {
+		writeError(w, http.StatusConflict, "证书未关联有效的用户资产")
+		return
+	}
+	var applyTemplateUUID, originalOrderUUID string
+	if err := s.db.QueryRowContext(r.Context(),
+		`SELECT o.cert_apply_tmpl_uuid, a.order_uuid FROM cert_applications a JOIN cert_orders o ON o.uuid = a.order_uuid
+		 WHERE a.cert_uuid = ? AND a.user_uuid = ? AND a.status = 'approved'
+		 ORDER BY a.updated_at DESC LIMIT 1`, cert.UUID, cardRecord.UserUUID).Scan(&applyTemplateUUID, &originalOrderUUID); err != nil {
+		writeError(w, http.StatusConflict, "未找到原申请记录；请重新完成资料核验后续期")
+		return
+	}
+	tmpl, err := s.workflowSvc.LoadApplyTemplate(r.Context(), applyTemplateUUID)
+	if err != nil || !tmpl.AllowRenewal {
+		writeError(w, http.StatusForbidden, "原证书类型当前不允许续期")
+		return
+	}
+	rows, err := s.db.QueryContext(r.Context(),
+		`SELECT uuid, order_no, spec_json FROM cert_orders
+		 WHERE user_uuid = ? AND cert_apply_tmpl_uuid = ? AND uuid <> ?
+		 AND status IN ('paid', 'applying', 'reviewing', 'issuing') AND order_no <> ''
+		 ORDER BY created_at DESC LIMIT 100`, cardRecord.UserUUID, applyTemplateUUID, originalOrderUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取续期订单失败")
+		return
+	}
+	defer rows.Close()
+	orders := []map[string]interface{}{}
+	for rows.Next() {
+		var orderUUID, orderNo, specJSON string
+		if err := rows.Scan(&orderUUID, &orderNo, &specJSON); err != nil {
+			writeError(w, http.StatusInternalServerError, "读取续期订单失败")
+			return
+		}
+		if workflow.SpecKind(specJSON) != storage.OrderKindCert {
+			continue
+		}
+		var used int
+		if err := s.db.QueryRowContext(r.Context(),
+			`SELECT COUNT(*) FROM cert_applications WHERE order_uuid = ? AND status <> 'rejected'`, orderUUID).Scan(&used); err != nil {
+			writeError(w, http.StatusInternalServerError, "检查续期订单额度失败")
+			return
+		}
+		quantity := workflow.SpecQuantity(specJSON)
+		if used >= quantity {
+			continue
+		}
+		var spec struct {
+			SKUName      string `json:"sku_name"`
+			DeliveryMode string `json:"delivery_mode"`
+		}
+		if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+			continue
+		}
+		orders = append(orders, map[string]interface{}{
+			"order_no": orderNo, "sku_name": spec.SKUName, "delivery_mode": spec.DeliveryMode,
+			"remaining": quantity - used,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "读取续期订单失败")
+		return
+	}
+	availableCards := []map[string]interface{}{}
+	if cards, err := s.cardSvc.ListCards(r.Context(), cardRecord.UserUUID); err == nil {
+		for _, candidate := range cards {
+			if !candidate.IsHosting() && candidate.ServiceState(time.Now()) == "active" {
+				availableCards = append(availableCards, map[string]interface{}{
+					"uuid": candidate.UUID, "card_name": candidate.CardName,
+					"storage_zone_uuid": candidate.StorageZoneUUID,
+				})
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"renewal_allowed": true, "orders": orders, "cards": availableCards,
+		"original_card_uuid": cardRecord.UUID,
+	})
 }
 
 func (s *Server) handleRenewCert(w http.ResponseWriter, r *http.Request) {
 	claims := claimsFromCtx(r.Context())
 	certUUID := r.PathValue("uuid")
-
 	var req RenewCertRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	if req.ValidDays <= 0 {
-		req.ValidDays = 365
+	if strings.TrimSpace(req.OrderNo) == "" {
+		writeError(w, http.StatusBadRequest, "证书续期必须关联已支付的新订单")
+		return
 	}
 
-	certRepo := storage.NewCertRepo(s.db)
-	cert, err := certRepo.GetByUUID(r.Context(), certUUID)
+	cert, err := storage.NewCertRepo(s.db).GetByUUID(r.Context(), certUUID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeError(w, http.StatusNotFound, "证书不存在")
 		return
 	}
-
-	// 权限检查：只有证书所有者或管理员可以续期
-	cardRepo := storage.NewCardRepo(s.db)
-	card, err := cardRepo.GetByUUID(r.Context(), cert.CardUUID)
-	if err != nil || (card.UserUUID != claims.UserUUID && !auth.IsAdmin(claims.Role)) {
-		writeError(w, http.StatusForbidden, "无权续期此证书")
-		return
-	}
-
-	// 检查证书是否已被吊销
 	if cert.RevocationStatus == "revoked" {
 		writeError(w, http.StatusBadRequest, "已吊销的证书不能续期")
 		return
 	}
-
-	// 调用 issuance 服务续期
-	newCert, err := s.issuanceSvc.RenewCert(r.Context(), cert, req.ValidDays)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if cert.IssuanceTmplUUID == "" || cert.CertType != "x509" {
+		writeError(w, http.StatusConflict, "该历史证书缺少续期策略，请使用新订单重新提交申请")
 		return
 	}
 
-	s.logRepo.Create(r.Context(), &storage.Log{ //nolint:errcheck
-		UserUUID: claims.UserUUID,
-		CertUUID: certUUID,
-		Action:   fmt.Sprintf("renew_cert:days=%d", req.ValidDays),
-		IPAddr:   r.RemoteAddr,
-	})
+	cardRepo := storage.NewCardRepo(s.db)
+	cardRecord, err := cardRepo.GetByUUID(r.Context(), cert.CardUUID)
+	if err != nil || (cert.UserUUID != "" && cert.UserUUID != cardRecord.UserUUID) {
+		writeError(w, http.StatusConflict, "证书归属数据不一致，无法安全续期")
+		return
+	}
+	targetUserUUID := cardRecord.UserUUID
+	if claims.UserUUID != targetUserUUID && !auth.IsAdmin(claims.Role) {
+		writeError(w, http.StatusForbidden, "无权续期此证书")
+		return
+	}
+	targetClaims := *claims
+	targetClaims.UserUUID = targetUserUUID
 
-	writeJSON(w, http.StatusCreated, newCert)
+	// 找回原申请保存的经过验证的资料引用；旧系统未记录引用的申请必须重新完成资料核验。
+	var originalOrderUUID, oldApplyTmplUUID, subjectInfoUUID, extensionIDsJSON string
+	err = s.db.QueryRowContext(r.Context(),
+		`SELECT a.order_uuid, o.cert_apply_tmpl_uuid, a.subject_info_uuid, a.extension_info_uuids
+		 FROM cert_applications a JOIN cert_orders o ON o.uuid = a.order_uuid
+		 WHERE a.cert_uuid = ? AND a.user_uuid = ? AND a.status = 'approved'
+		 ORDER BY a.updated_at DESC LIMIT 1`, certUUID, targetUserUUID,
+	).Scan(&originalOrderUUID, &oldApplyTmplUUID, &subjectInfoUUID, &extensionIDsJSON)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusConflict, "未找到原申请的验证资料引用；请重新完成资料验证后通过新订单申请")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "读取原申请续期资料失败")
+		return
+	}
+	var extensionInfoUUIDs []string
+	if err := json.Unmarshal([]byte(extensionIDsJSON), &extensionInfoUUIDs); err != nil {
+		writeError(w, http.StatusConflict, "原申请的扩展验证引用损坏，需重新完成资料核验")
+		return
+	}
+
+	// resolveApplySource 校验续期订单归属、支付、剩余数量、模板和当前证书策略。
+	source, status, err := s.resolveApplySource(r, &targetClaims, req.OrderNo, "", "")
+	if err != nil {
+		writeError(w, status, err.Error())
+		return
+	}
+	if source.Order == nil || source.Order.UUID == originalOrderUUID {
+		writeError(w, http.StatusConflict, "证书续期必须使用一笔新的已支付证书订单")
+		return
+	}
+	if source.Kind != "order" || source.Policy == nil || source.Policy.ApplyTmpl == nil ||
+		!source.Policy.AllowRenewal || source.Policy.ApplyTmpl.UUID != oldApplyTmplUUID ||
+		source.Policy.IssuanceTmpl == nil || source.Policy.IssuanceTmpl.UUID != cert.IssuanceTmplUUID {
+		writeError(w, http.StatusForbidden, "续期订单与原证书模板不匹配，或该证书类型当前不允许续期")
+		return
+	}
+	if source.SubjectUUID != "" && subjectInfoUUID == "" {
+		writeError(w, http.StatusConflict, "原申请未保存主体验证引用；请重新完成主体核验后续期")
+		return
+	}
+
+	// 若原证书使用云卡交付，默认沿用仍有效的原卡；否则由申请人显式选择可用目标。
+	cardUUID := strings.TrimSpace(req.CardUUID)
+	if source.DeliveryMode == string(storage.DeliveryCloudCard) && cardUUID == "" &&
+		!cardRecord.IsHosting() && cardRecord.ServiceState(time.Now()) == "active" {
+		cardUUID = cardRecord.UUID
+	}
+	keyType := cert.KeyType
+	if strings.TrimSpace(req.CSRPEM) != "" {
+		keyType = "" // 新 CSR 决定轮换后的公钥算法，仍由模板范围校验。
+	}
+	applyReq := &submitApplicationRequest{
+		OrderNo: req.OrderNo, SubjectInfoUUID: subjectInfoUUID, ExtensionInfoUUIDs: extensionInfoUUIDs,
+		KeyType: keyType, CSRPEM: req.CSRPEM, CardUUID: cardUUID, RenewFromCertUUID: certUUID,
+	}
+	user, err := s.userRepo.GetByUUID(r.Context(), targetUserUUID)
+	if err == nil {
+		applyReq.ApplicantEmail = user.Email
+	}
+	app, autoIssued, issueErr, httpStatus, err := s.submitApplication(r, &targetClaims, applyReq)
+	if err != nil {
+		writeError(w, httpStatus, err.Error())
+		return
+	}
+	if claims.UserUUID != targetUserUUID {
+		s.auditLogRepo.Create(r.Context(), &storage.AuditLog{ //nolint:errcheck
+			UserUUID: claims.UserUUID, Action: "admin_submit_certificate_renewal",
+			ResourceType: "certificate", ResourceUUID: certUUID,
+			Detail: fmt.Sprintf(`{"application_uuid":%q,"order_no":%q}`, app.UUID, req.OrderNo), IPAddress: r.RemoteAddr,
+		})
+	}
+	message := "续期申请已提交，等待审核"
+	if autoIssued {
+		message = "续期证书已重新签发，原证书保持不变"
+	}
+	resp := map[string]interface{}{"application": app, "auto_issued": autoIssued, "message": message}
+	if issueErr != nil {
+		resp["issue_error"] = issueErr.Error()
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // ---- 证书导出 ----

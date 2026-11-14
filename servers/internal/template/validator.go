@@ -39,6 +39,12 @@ func Validate(t *storage.KeyStorageTemplate, zoneNonExportable bool) error {
 	if t.KeyGenLocation == storage.KeyGenCard && !(hasCloudCard || hasPhysicalCard || hasVirtualCard) {
 		return fmt.Errorf("在智能卡上生成密钥时，至少需要选择一种智能卡下发方式")
 	}
+	if t.KeyGenLocation == storage.KeyGenCSR && hasCloudCard {
+		return fmt.Errorf("自带 CSR 的私钥不在服务端，不能交付到云端智能卡")
+	}
+	if t.KeyGenLocation == storage.KeyGenCard && (hasFileDownload || hasCloudCard) {
+		return fmt.Errorf("卡内生成密钥只支持本地实体卡或虚拟卡目标")
+	}
 	if t.KeyGenLocation == storage.KeyGenCSR && hasFileDownload {
 		return fmt.Errorf("使用自带 CSR 时私钥不经过服务端，不能提供私钥文件下载")
 	}
@@ -88,6 +94,9 @@ func Validate(t *storage.KeyStorageTemplate, zoneNonExportable bool) error {
 		if t.AllowReimport {
 			return fmt.Errorf("高安全性模式下不允许重新导入（密钥不可导出）")
 		}
+	}
+	if t.KeyGenLocation == storage.KeyGenServer && (hasPhysicalCard || hasVirtualCard) {
+		return fmt.Errorf("本地实体/虚拟卡目标必须由目标设备生成密钥并提交 CSR")
 	}
 
 	// 文件下载自动启用云端备份，且不限次数、无需"重新导入"

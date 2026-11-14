@@ -2,8 +2,18 @@ package local
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
+	"encoding/pem"
+	"errors"
+	"math/big"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/pkg/pkcs11types"
@@ -256,5 +266,154 @@ func TestSecretKeyAESCBC(t *testing.T) {
 	}
 	if string(pt) != "aes cbc payload" {
 		t.Fatalf("AES-CBC 解密结果不一致: %q", pt)
+	}
+}
+
+func TestBindCertificateToKeyRequiresUniqueMatchingPublicKey(t *testing.T) {
+	ctx := context.Background()
+	db, err := storage.Open(filepath.Join(t.TempDir(), "client.db"))
+	if err != nil {
+		t.Fatalf("打开测试数据库失败: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("关闭测试数据库失败: %v", err)
+		}
+	})
+
+	userRepo := storage.NewUserRepo(db)
+	if err := userRepo.Create(ctx, &storage.User{
+		UUID: "binding-user", UserType: storage.UserTypeLocal, Username: "binding-user", Enabled: true,
+	}); err != nil {
+		t.Fatalf("创建测试用户失败: %v", err)
+	}
+	cardRepo := storage.NewCardRepo(db)
+	if err := cardRepo.Create(ctx, &storage.Card{
+		UUID: "binding-card", SlotType: storage.SlotTypeLocal, CardName: "binding-card",
+		UserUUID: "binding-user", Enabled: true, CardKeys: []storage.CardKeyEntry{},
+	}); err != nil {
+		t.Fatalf("创建测试卡片失败: %v", err)
+	}
+
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("生成测试私钥失败: %v", err)
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("编码测试公钥失败: %v", err)
+	}
+	privateData := []byte("encrypted-private-key")
+	certRepo := storage.NewCertRepo(db)
+	keyRecord := &storage.Certificate{
+		UUID: "binding-key", SlotType: storage.SlotTypeLocal, CardUUID: "binding-card",
+		CertType: storage.CertTypeX509, KeyType: "ec256",
+		CertContent: pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}),
+		PrivateData: privateData,
+	}
+	if err := certRepo.Create(ctx, keyRecord); err != nil {
+		t.Fatalf("创建测试私钥记录失败: %v", err)
+	}
+
+	createCertificate := func(key *ecdsa.PrivateKey, serial int64) []byte {
+		t.Helper()
+		now := time.Now()
+		template := &x509.Certificate{
+			SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "bind.example.test"},
+			NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour),
+			KeyUsage: x509.KeyUsageDigitalSignature, BasicConstraintsValid: true,
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+		if err != nil {
+			t.Fatalf("创建测试证书失败: %v", err)
+		}
+		return der
+	}
+
+	manager := NewKeyManager(certRepo, cardRepo)
+	matchingCert := createCertificate(privateKey, 1)
+	bound, err := manager.BindCertificateToKey(ctx, "binding-card", matchingCert, "server-issued")
+	if err != nil {
+		t.Fatalf("匹配证书应成功绑定: %v", err)
+	}
+	if bound.UUID != keyRecord.UUID || string(bound.PrivateData) != string(privateData) {
+		t.Fatalf("绑定必须更新原密钥记录且保留私钥密文: %+v", bound)
+	}
+	block, _ := pem.Decode(bound.CertContent)
+	if block == nil || block.Type != "CERTIFICATE" {
+		t.Fatal("绑定后的记录应保存完整 X.509 证书")
+	}
+
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("生成不匹配私钥失败: %v", err)
+	}
+	if _, err := manager.BindCertificateToKey(ctx, "binding-card", createCertificate(otherKey, 2), "mismatch"); !errors.Is(err, ErrNoMatchingCardPrivateKey) {
+		t.Fatalf("不匹配的公钥应被拒绝: %v", err)
+	}
+
+	tpmKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("生成 TPM 句柄密钥失败: %v", err)
+	}
+	tpmPublicDER, err := x509.MarshalPKIXPublicKey(&tpmKey.PublicKey)
+	if err != nil {
+		t.Fatalf("编码 TPM 句柄公钥失败: %v", err)
+	}
+	handle := int64(77)
+	tpmKeyRecord := &storage.Certificate{
+		UUID: "binding-tpm-key", SlotType: storage.SlotTypeLocal, CardUUID: "binding-card",
+		CertType: storage.CertTypeX509, KeyType: "ec256",
+		CertContent: pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: tpmPublicDER}),
+		TPMKeyHandle: &handle,
+	}
+	if err := certRepo.Create(ctx, tpmKeyRecord); err != nil {
+		t.Fatalf("创建 TPM 句柄密钥记录失败: %v", err)
+	}
+	boundTPM, err := manager.BindCertificateToKey(ctx, "binding-card", createCertificate(tpmKey, 3), "tpm-bound")
+	if err != nil || boundTPM.UUID != tpmKeyRecord.UUID || boundTPM.TPMKeyHandle == nil {
+		t.Fatalf("TPM 句柄密钥也应能按公钥绑定: cert=%+v err=%v", boundTPM, err)
+	}
+
+	duplicate := &storage.Certificate{
+		UUID: "binding-key-duplicate", SlotType: storage.SlotTypeLocal, CardUUID: "binding-card",
+		CertType: storage.CertTypeX509, KeyType: "ec256",
+		CertContent: pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}),
+		PrivateData: []byte("another-encrypted-key"),
+	}
+	if err := certRepo.Create(ctx, duplicate); err != nil {
+		t.Fatalf("创建重复公钥测试记录失败: %v", err)
+	}
+	if _, err := manager.BindCertificateToKey(ctx, "binding-card", matchingCert, "ambiguous"); !errors.Is(err, ErrAmbiguousCardPrivateKey) {
+		t.Fatalf("多个相同公钥私钥记录应拒绝自动绑定: %v", err)
+	}
+}
+
+func TestValidateKeyPairRejectsCertificateKeyMismatch(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("生成私钥失败: %v", err)
+	}
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("生成另一私钥失败: %v", err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("编码私钥失败: %v", err)
+	}
+	matchingPublicDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("编码匹配公钥失败: %v", err)
+	}
+	otherPublicDER, err := x509.MarshalPKIXPublicKey(&otherKey.PublicKey)
+	if err != nil {
+		t.Fatalf("编码另一公钥失败: %v", err)
+	}
+	if err := validateKeyPair(privateDER, matchingPublicDER); err != nil {
+		t.Fatalf("匹配的密钥对应通过: %v", err)
+	}
+	if err := validateKeyPair(privateDER, otherPublicDER); err == nil {
+		t.Fatal("不匹配的私钥与证书公钥必须被拒绝")
 	}
 }

@@ -25,21 +25,22 @@ import (
 
 // applySource 是解析后的申请来源。
 type applySource struct {
-	Kind         string                     `json:"kind"` // order / self / subscription
-	Order        *storage.CertOrder         `json:"-"`
-	OrderNo      string                     `json:"order_no,omitempty"`
-	ProductName  string                     `json:"product_name"`
-	Remaining    int                        `json:"remaining"`
-	Template     *storage.CertApplyTemplate `json:"template"`
-	Policy       *issuance.EffectivePolicy  `json:"-"`
-	SubjectTmpl  *storage.SubjectTemplate   `json:"-"`
-	SubjectUUID  string                     `json:"subject_tmpl_uuid"`
-	ExtTmplUUID  string                     `json:"extension_tmpl_uuid"`
-	SANPolicy    identity.SANPolicy         `json:"san_policy"`
-	DeliveryMode string                     `json:"delivery_mode"`
-	KeyTypes     []string                   `json:"key_types"`
-	ValidDays    int                        `json:"valid_days"`
-	SubUUID      string                     `json:"subscription_uuid,omitempty"`
+	Kind          string                     `json:"kind"` // order / self / subscription
+	Order         *storage.CertOrder         `json:"-"`
+	OrderNo       string                     `json:"order_no,omitempty"`
+	ProductName   string                     `json:"product_name"`
+	Remaining     int                        `json:"remaining"`
+	Template      *storage.CertApplyTemplate `json:"template"`
+	Policy        *issuance.EffectivePolicy  `json:"-"`
+	SubjectTmpl   *storage.SubjectTemplate   `json:"-"`
+	SubjectUUID   string                     `json:"subject_tmpl_uuid"`
+	ExtTmplUUID   string                     `json:"extension_tmpl_uuid"`
+	SANPolicy     identity.SANPolicy         `json:"san_policy"`
+	DeliveryMode  string                     `json:"delivery_mode"`
+	DeliveryModes []string                   `json:"delivery_modes"`
+	KeyTypes      []string                   `json:"key_types"`
+	ValidDays     int                        `json:"valid_days"`
+	SubUUID       string                     `json:"subscription_uuid,omitempty"`
 }
 
 // selfSANPolicy 读取自助/订阅申请使用的 SAN 限制。
@@ -68,7 +69,7 @@ func (s *Server) resolveApplySource(r *http.Request, claims *auth.Claims, orderN
 			return nil, http.StatusBadRequest, fmt.Errorf("该订单不是证书订单")
 		}
 		switch order.Status {
-		case storage.CertOrderPaid, storage.CertOrderApplying, storage.CertOrderReviewing:
+		case storage.CertOrderPaid, storage.CertOrderApplying, storage.CertOrderReviewing, storage.CertOrderIssuing:
 		default:
 			return nil, http.StatusBadRequest, fmt.Errorf("订单当前状态不能提交申请（%s）", order.Status)
 		}
@@ -163,6 +164,27 @@ func (s *Server) resolveApplySource(r *http.Request, claims *auth.Claims, orderN
 		return nil, http.StatusBadRequest, err
 	}
 	src.Policy = policy
+	src.DeliveryModes = append([]string(nil), policy.DeliveryModes...)
+	if src.Kind == "order" {
+		if src.DeliveryMode == "" {
+			switch {
+			case containsStrLocal(src.DeliveryModes, string(storage.DeliveryDownload)):
+				src.DeliveryMode = string(storage.DeliveryDownload)
+			case len(src.DeliveryModes) == 1:
+				src.DeliveryMode = src.DeliveryModes[0]
+			}
+		}
+		if src.DeliveryMode == "" {
+			src.DeliveryModes = []string{}
+		} else {
+			src.DeliveryModes = []string{src.DeliveryMode}
+		}
+	} else if !containsStrLocal(src.DeliveryModes, src.DeliveryMode) {
+		src.DeliveryMode = ""
+		if len(src.DeliveryModes) == 1 {
+			src.DeliveryMode = src.DeliveryModes[0]
+		}
+	}
 	if len(src.KeyTypes) > 0 {
 		var kept []string
 		for _, k := range src.KeyTypes {
@@ -322,9 +344,11 @@ type submitApplicationRequest struct {
 	SubjectInfoUUID    string   `json:"subject_info_uuid"`
 	ExtensionInfoUUIDs []string `json:"extension_info_uuids"`
 	KeyType            string   `json:"key_type"`
-	CSRPEM             string   `json:"csr_pem"`         // 自带 CSR（可选，私钥不进入服务端）
-	CardUUID           string   `json:"card_uuid"`       // 签发到的智能卡（可选）
-	ApplicantEmail     string   `json:"applicant_email"` // 仅代办时使用：目标用户邮箱
+	DeliveryMode       string   `json:"delivery_mode,omitempty"` // 自助/订阅可选；订单来源由 SKU 固定
+	CSRPEM             string   `json:"csr_pem"`                 // 自带 CSR（本地设备交付时必填）
+	CardUUID           string   `json:"card_uuid"`               // 签发到的智能卡（可选）
+	ApplicantEmail     string   `json:"applicant_email"`         // 仅代办时使用：目标用户邮箱
+	RenewFromCertUUID  string   `json:"-"`
 	// ViaAdmin 表示由管理员代办：可申请方式（订单/自助/订阅）是面向用户的入口限制，
 	// 管理员可以显式选择任意一种方式。
 	ViaAdmin bool `json:"-"`
@@ -385,29 +409,51 @@ func (s *Server) submitApplication(r *http.Request, claims *auth.Claims, req *su
 	}
 
 	// 交付方式与密钥生成位置必须与密钥存储模板一致：
-	//   - 只允许模板声明的方式（云端智能卡 / 文件下载 / 自带 CSR）；
-	//   - 平台生成密钥时不能使用自带 CSR（否则私钥无处交付）；
-	//   - 智能卡生成密钥时必须有卡作为载体；
-	//   - 要求自带 CSR 时必须提交 CSR。
+	//   - 本地实体/虚拟卡使用申请方 CSR，私钥不得上传或由服务端生成；
+	//   - 平台生成密钥时不能使用自带 CSR；云卡密钥由服务端持有；
+	//   - CSR 中的名称与公钥算法在后续步骤按模板和验证资料检查。
 	deliveryMode := src.DeliveryMode
-	if src.Policy != nil {
-		if deliveryMode == "" && len(src.Policy.DeliveryModes) > 0 {
-			deliveryMode = src.Policy.DeliveryModes[0]
+	requestedDeliveryMode := strings.TrimSpace(req.DeliveryMode)
+	if src.Kind == "order" {
+		if requestedDeliveryMode != "" && requestedDeliveryMode != deliveryMode {
+			return bad("已购订单的交付目标由商品规格固定，不能在申请时更改")
 		}
-		if deliveryMode != "" && !containsStrLocal(src.Policy.DeliveryModes, deliveryMode) {
+	} else if requestedDeliveryMode != "" {
+		deliveryMode = requestedDeliveryMode
+	}
+	if src.Policy != nil {
+		if deliveryMode == "" {
+			if len(src.Policy.DeliveryModes) == 1 {
+				deliveryMode = src.Policy.DeliveryModes[0]
+			} else {
+				return bad("请选择该证书类型支持的交付目标")
+			}
+		}
+		if !containsStrLocal(src.Policy.DeliveryModes, deliveryMode) {
 			return bad("该证书类型不支持所选交付方式")
 		}
 		if ks := src.Policy.KeyStorage; ks != nil {
 			switch ks.KeyGenLocation {
-			case storage.KeyGenCSR:
+			case storage.KeyGenCSR, storage.KeyGenCard:
 				if strings.TrimSpace(req.CSRPEM) == "" {
-					return bad("该证书类型需自带 CSR（私钥由您自己保管），请上传 CSR 后再提交")
+					return bad("该证书类型需由目标设备生成 CSR，私钥不得上传")
 				}
 			case storage.KeyGenServer, "":
 				if strings.TrimSpace(req.CSRPEM) != "" {
 					return bad("该证书类型的密钥由平台生成，不能使用自带 CSR")
 				}
 			}
+		}
+	}
+	if deliveryMode == string(storage.DeliveryCSR) ||
+		deliveryMode == string(storage.DeliveryPhysical) || deliveryMode == string(storage.DeliveryVirtual) {
+		if strings.TrimSpace(req.CSRPEM) == "" {
+			return bad("所选交付目标需要提交由目标设备生成的 CSR")
+		}
+	}
+	if deliveryMode == string(storage.DeliveryPhysical) || deliveryMode == string(storage.DeliveryVirtual) {
+		if strings.TrimSpace(req.CardUUID) != "" {
+			return bad("本地设备目标不能填写服务端智能卡 UUID")
 		}
 	}
 	if deliveryMode == string(storage.DeliveryCloudCard) && strings.TrimSpace(req.CSRPEM) != "" {
@@ -497,6 +543,14 @@ func (s *Server) submitApplication(r *http.Request, claims *auth.Claims, req *su
 				return bad("CSR 中的 %s 未在本次申请中通过所有权验证", n)
 			}
 		}
+		csrKeyType, e := workflow.CSRKeyType(req.CSRPEM)
+		if e != nil {
+			return bad("CSR 公钥算法无效: %v", e)
+		}
+		if req.KeyType != "" && req.KeyType != csrKeyType {
+			return bad("所选密钥算法与 CSR 公钥不匹配")
+		}
+		req.KeyType = csrKeyType
 	}
 
 	// 5) 密钥算法：必须在颁发模板允许的范围内；SM2 只能与 SM3 搭配
@@ -565,12 +619,20 @@ func (s *Server) submitApplication(r *http.Request, claims *auth.Claims, req *su
 			return bad("%v", err)
 		}
 	}
+	if src.Kind != "order" {
+		if err := s.workflowSvc.SetOrderDeliveryMode(ctx, order.UUID, deliveryMode); err != nil {
+			s.db.ExecContext(ctx, `UPDATE cert_orders SET status = 'cancelled', updated_at = ? WHERE uuid = ?`, now, order.UUID) //nolint:errcheck
+			return bad("%v", err)
+		}
+	}
 
 	subjectJSON, _ := json.Marshal(subject)
 	sanJSON, _ := json.Marshal(san)
 	app = &storage.CertApplication{
 		OrderUUID: order.UUID, UserUUID: claims.UserUUID, SubjectJSON: string(subjectJSON), SANJSON: string(sanJSON),
-		KeyType: req.KeyType, CSRPEM: req.CSRPEM, ApplicantEmail: email, CardUUID: cardUUID,
+		SubjectInfoUUID: req.SubjectInfoUUID, ExtensionInfoUUIDs: append([]string(nil), req.ExtensionInfoUUIDs...),
+		RenewFromCertUUID: req.RenewFromCertUUID,
+		KeyType:           req.KeyType, CSRPEM: req.CSRPEM, ApplicantEmail: email, CardUUID: cardUUID,
 	}
 	autoIssued, issueErr, err = s.workflowSvc.SubmitApplication(ctx, app)
 	if err != nil {

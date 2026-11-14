@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -260,15 +261,49 @@ type CreateCSRRequest struct {
 	Remark       string             `json:"remark"`
 }
 
-// CreateAndSaveCSR 生成 CSR 并持久化到数据库。
-// 若 KeyStorage=database，同时保存加密私钥；
-// 若 KeyStorage=smartcard，私钥加密后存储到智能卡 certificates 表。
+// ErrHardwareCSRProviderUnavailable 表示客户端尚未接入所选硬件卡的 CSR 密钥 Provider。
+var ErrHardwareCSRProviderUnavailable = errors.New("目标卡片的硬件 CSR 密钥 Provider 尚未接入")
+
+// CreateAndSaveCSR 生成 CSR 并持久化到本地数据库或低安全级别本地卡。
+// Smartcard 模式目前只支持本地软件卡加密存储，不代表 TPM/实体智能卡密钥生成。
 func CreateAndSaveCSR(ctx context.Context, repo *storage.CSRRepo, certRepo *storage.CertRepo, cardRepo *storage.CardRepo, req *CreateCSRRequest) (*storage.CSRRecord, error) {
+	if req == nil {
+		return nil, fmt.Errorf("CSR 请求不能为空")
+	}
 	if req.KeyType == "" {
 		req.KeyType = "ec256"
 	}
 	if req.KeyStorage == "" {
 		req.KeyStorage = storage.KeyStorageDatabase
+	}
+
+	var targetCard *storage.Card
+	switch req.KeyStorage {
+	case storage.KeyStorageDatabase:
+	case storage.KeyStorageSmartcard:
+		if req.CardUUID == "" || req.CardPassword == "" {
+			return nil, fmt.Errorf("smartcard 模式需要 card_uuid 和卡片密码")
+		}
+		if certRepo == nil || cardRepo == nil {
+			return nil, fmt.Errorf("smartcard 模式需要 certRepo 和 cardRepo")
+		}
+		var err error
+		targetCard, err = cardRepo.GetByUUID(ctx, req.CardUUID)
+		if err != nil {
+			return nil, fmt.Errorf("查询目标卡片失败: %w", err)
+		}
+		if targetCard == nil {
+			return nil, fmt.Errorf("卡片不存在: %s", req.CardUUID)
+		}
+		securityLevel := targetCard.SecurityLevel
+		if securityLevel == "" {
+			securityLevel = storage.SecurityLevelLow
+		}
+		if targetCard.SlotType != storage.SlotTypeLocal || securityLevel != storage.SecurityLevelLow {
+			return nil, ErrHardwareCSRProviderUnavailable
+		}
+	default:
+		return nil, fmt.Errorf("不支持的私钥存储方式: %s", req.KeyStorage)
 	}
 
 	// 构建 CSR 请求
@@ -298,6 +333,10 @@ func CreateAndSaveCSR(ctx context.Context, repo *storage.CSRRepo, certRepo *stor
 	result, err := GenerateCSR(csrReq)
 	if err != nil {
 		return nil, fmt.Errorf("生成 CSR 失败: %w", err)
+	}
+	if req.KeyStorage == storage.KeyStorageSmartcard {
+		defer cryptoutil.ZeroBytes(result.KeyPEM)
+		defer cryptoutil.ZeroBytes(result.KeyDER)
 	}
 
 	record := &storage.CSRRecord{
@@ -330,45 +369,34 @@ func CreateAndSaveCSR(ctx context.Context, repo *storage.CSRRepo, certRepo *stor
 		record.PrivateKeyEnc = result.KeyPEM
 
 	case storage.KeyStorageSmartcard:
-		// 智能卡模式：将密钥加密后存储到 certificates 表
-		if req.CardUUID == "" {
-			return nil, fmt.Errorf("smartcard 模式需要指定 card_uuid")
-		}
-		if req.CardPassword == "" {
-			return nil, fmt.Errorf("smartcard 模式需要提供卡片密码")
-		}
-		if certRepo == nil || cardRepo == nil {
-			return nil, fmt.Errorf("smartcard 模式需要 certRepo 和 cardRepo")
-		}
-
-		// 获取卡片并解锁主密钥
-		card, err := cardRepo.GetByUUID(ctx, req.CardUUID)
-		if err != nil || card == nil {
-			return nil, fmt.Errorf("卡片不存在: %s", req.CardUUID)
-		}
-
-		// 用卡片密码解锁主密钥
-		masterKey, err := unlockMasterKeyByPassword(card, req.CardPassword)
+		masterKey, err := unlockMasterKeyByPassword(targetCard, req.CardPassword)
 		if err != nil {
 			return nil, fmt.Errorf("卡片密码错误: %w", err)
 		}
 		defer cryptoutil.ZeroBytes(masterKey)
 
-		// 解析私钥 DER
 		privDER, err := parsePrivateKeyDER(result.KeyPEM)
 		if err != nil {
 			return nil, fmt.Errorf("解析私钥失败: %w", err)
 		}
 
-		// 加密私钥并存储到 certificates 表（创建空证书记录，只存储密钥）
-		certRecord, err := encryptAndStoreKeyOnly(ctx, certRepo, card, masterKey, privDER, req)
+		csr, err := x509.ParseCertificateRequest(result.CSRDER)
 		if err != nil {
-			return nil, fmt.Errorf("存储密钥到智能卡失败: %w", err)
+			return nil, fmt.Errorf("解析本地 CSR 失败: %w", err)
+		}
+		publicKeyDER, err := x509.MarshalPKIXPublicKey(csr.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("编码 CSR 公钥失败: %w", err)
+		}
+		publicKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKeyDER})
+
+		certRecord, err := encryptAndStoreKeyOnly(ctx, certRepo, targetCard, masterKey, privDER, publicKeyPEM, req)
+		if err != nil {
+			return nil, fmt.Errorf("存储密钥到本地卡片失败: %w", err)
 		}
 
 		record.HasPrivateKey = true
 		record.CardUUID = req.CardUUID
-		// 在 CSR 记录中关联智能卡证书 UUID（不存储明文密钥）
 		record.PrivateKeyEnc = []byte(certRecord.UUID)
 	}
 
@@ -403,8 +431,8 @@ func parsePrivateKeyDER(keyPEM []byte) ([]byte, error) {
 	return block.Bytes, nil
 }
 
-// encryptAndStoreKeyOnly 加密私钥并存储到 certificates 表（创建空证书记录）。
-func encryptAndStoreKeyOnly(ctx context.Context, certRepo *storage.CertRepo, card *storage.Card, masterKey, privDER []byte, req *CreateCSRRequest) (*storage.Certificate, error) {
+// encryptAndStoreKeyOnly 将 CSR 私钥加密后存储，并保留 CSR 公钥供签发后绑定。
+func encryptAndStoreKeyOnly(ctx context.Context, certRepo *storage.CertRepo, card *storage.Card, masterKey, privDER, publicKeyPEM []byte, req *CreateCSRRequest) (*storage.Certificate, error) {
 	// 1. 生成临时密钥
 	tempKey, err := cryptoutil.GenerateKey()
 	if err != nil {
@@ -431,13 +459,13 @@ func encryptAndStoreKeyOnly(ctx context.Context, certRepo *storage.CertRepo, car
 		return nil, fmt.Errorf("加密私钥失败: %w", err)
 	}
 
-	// 5. 创建空证书记录（只存储密钥，CertContent 为空）
+	// 5. 创建待绑定的内部密钥记录：公开 CSR 公钥用于后续精确匹配，不作为用户证书展示。
 	cert := &storage.Certificate{
 		SlotType:    storage.SlotTypeLocal,
 		CardUUID:    card.UUID,
-		CertType:    storage.CertTypeX509,
+		CertType:    storage.CertTypeInternal,
 		KeyType:     req.KeyType,
-		CertContent: nil, // 空证书，等待后续签发后填充
+		CertContent: publicKeyPEM,
 		TempKeySalt: tempKeySalt,
 		TempKeyEnc:  tempKeyEnc,
 		PrivateData: privateData,

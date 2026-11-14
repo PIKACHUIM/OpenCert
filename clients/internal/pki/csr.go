@@ -35,8 +35,7 @@ type CSRResult struct {
 	KeyDER []byte `json:"key_der"`
 }
 
-// GenerateCSR 生成 CSR（证书签名请求）。
-// 密钥对在本地生成，CSR 使用私钥签名，确保片上生成的可信性。
+// GenerateCSR 使用客户端本地软件密钥生成并签名 CSR；此函数不调用 TPM/智能卡 Provider。
 func GenerateCSR(req *CSRRequest) (*CSRResult, error) {
 	// 生成密钥对
 	privKey, _, err := generateKeyPair(req.KeyType)

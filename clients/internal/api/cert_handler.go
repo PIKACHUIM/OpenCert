@@ -32,6 +32,15 @@ type certListItem struct {
 // handleListCerts GET /api/cards/{card_uuid}/certs
 func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 	cardUUID := r.PathValue("card_uuid")
+	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "证书枚举") {
+		return
+	}
+
 	certs, err := s.certRepo.ListByCardPublic(r.Context(), cardUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询证书列表失败: "+err.Error())
@@ -76,6 +85,14 @@ func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 // 用于导入已有证书（公钥/X.509 DER，base64 编码）
 func (s *Server) handleCreateCert(w http.ResponseWriter, r *http.Request) {
 	cardUUID := r.PathValue("card_uuid")
+	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "证书导入") {
+		return
+	}
 
 	var req struct {
 		CertType    string `json:"cert_type"`
@@ -113,6 +130,15 @@ func (s *Server) handleCreateCert(w http.ResponseWriter, r *http.Request) {
 
 // handleGetCert GET /api/cards/{card_uuid}/certs/{uuid}
 func (s *Server) handleGetCert(w http.ResponseWriter, r *http.Request) {
+	card, err := s.cardRepo.GetByUUID(r.Context(), r.PathValue("card_uuid"))
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "证书读取") {
+		return
+	}
+
 	certUUID := r.PathValue("uuid")
 	cert, err := s.certRepo.GetByUUID(r.Context(), certUUID)
 	if err != nil {
@@ -128,6 +154,15 @@ func (s *Server) handleGetCert(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteCert DELETE /api/cards/{card_uuid}/certs/{uuid}
 func (s *Server) handleDeleteCert(w http.ResponseWriter, r *http.Request) {
+	card, err := s.cardRepo.GetByUUID(r.Context(), r.PathValue("card_uuid"))
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "证书删除") {
+		return
+	}
+
 	certUUID := r.PathValue("uuid")
 	if err := s.certRepo.Delete(r.Context(), certUUID); err != nil {
 		writeError(w, http.StatusInternalServerError, "删除证书失败: "+err.Error())
@@ -159,6 +194,9 @@ func (s *Server) handleExportCertKey(w http.ResponseWriter, r *http.Request) {
 	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
 	if err != nil || card == nil {
 		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "证书私钥导出") {
 		return
 	}
 
@@ -312,6 +350,9 @@ func (s *Server) handleImportCertWithKey(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "卡片不存在")
 		return
 	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "证书和私钥导入") {
+		return
+	}
 	slot := local.New(0, card, s.certRepo)
 	if err := slot.Login(r.Context(), 1, req.CardPassword); err != nil {
 		writeError(w, http.StatusUnauthorized, "卡片密码错误")
@@ -412,8 +453,16 @@ func (s *Server) handleImportCertWithKey(w http.ResponseWriter, r *http.Request)
 // handleCertDetail GET /api/cards/{card_uuid}/certs/{uuid}/detail
 // 解析 X.509 证书返回详细信息。
 func (s *Server) handleCertDetail(w http.ResponseWriter, r *http.Request) {
-	certUUID := r.PathValue("uuid")
+	card, err := s.cardRepo.GetByUUID(r.Context(), r.PathValue("card_uuid"))
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "证书详情读取") {
+		return
+	}
 
+	certUUID := r.PathValue("uuid")
 	cert, err := s.certRepo.GetByUUID(r.Context(), certUUID)
 	if err != nil || cert == nil {
 		writeError(w, http.StatusNotFound, "证书不存在")
@@ -462,6 +511,9 @@ func (s *Server) handleKeyGen(w http.ResponseWriter, r *http.Request) {
 	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
 	if err != nil || card == nil {
 		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "密钥生成") {
 		return
 	}
 

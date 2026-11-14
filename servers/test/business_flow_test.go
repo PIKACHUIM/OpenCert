@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/x509/pkix"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/globaltrusts/server-card/internal/ca"
@@ -213,6 +214,101 @@ func TestFlowReviewApproveIntoUserCardAndReject(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "不属于") {
 		t.Errorf("不应允许签入他人智能卡，实际: %v", err)
+	}
+}
+
+func TestFlowConcurrentApprovalSignsOnce(t *testing.T) {
+	env, _, reviewTmpl := newFlowEnv(t)
+	userUUID := createTestUser(t, env.db, "concurrent-approval@test.com")
+	adminUUID := createTestUser(t, env.db, "concurrent-reviewer@test.com")
+	order := &storage.CertOrder{UserUUID: userUUID, CertApplyTmplUUID: reviewTmpl, AmountCents: 500, SKUCode: "sku"}
+	if err := env.wf.CreateOrder(env.ctx, order); err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	markOrderPaid(t, env.db, order.UUID)
+	app := &storage.CertApplication{
+		OrderUUID: order.UUID, UserUUID: userUUID,
+		SubjectJSON: `{"CN":"concurrent.example.test"}`, SANJSON: `{}`, KeyType: "ec256",
+	}
+	if _, _, err := env.wf.SubmitApplication(env.ctx, app); err != nil {
+		t.Fatalf("submit application: %v", err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var workers sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			results <- env.wf.ApproveApplication(env.ctx, app.UUID, adminUUID)
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	succeeded := 0
+	for err := range results {
+		if err == nil {
+			succeeded++
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("exactly one concurrent approval should succeed; succeeded=%d", succeeded)
+	}
+
+	approved, err := env.wf.GetApplication(env.ctx, app.UUID)
+	if err != nil || approved.Status != "approved" || approved.CertUUID == "" {
+		t.Fatalf("application did not complete exactly once: app=%+v err=%v", approved, err)
+	}
+	var issuedCount int
+	if err := env.db.QueryRowContext(env.ctx,
+		`SELECT COUNT(*) FROM certificates WHERE order_no = ?`, order.OrderNo).Scan(&issuedCount); err != nil {
+		t.Fatalf("count issued certificates: %v", err)
+	}
+	if issuedCount != 1 {
+		t.Fatalf("concurrent approval created %d certificates; want 1", issuedCount)
+	}
+}
+
+func TestFlowFailedApprovalRequiresManualReconciliation(t *testing.T) {
+	env, _, reviewTmpl := newFlowEnv(t)
+	userUUID := createTestUser(t, env.db, "failed-approval@test.com")
+	adminUUID := createTestUser(t, env.db, "failed-reviewer@test.com")
+	order := &storage.CertOrder{UserUUID: userUUID, CertApplyTmplUUID: reviewTmpl, AmountCents: 500, SKUCode: "sku"}
+	if err := env.wf.CreateOrder(env.ctx, order); err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	markOrderPaid(t, env.db, order.UUID)
+	app := &storage.CertApplication{
+		OrderUUID: order.UUID, UserUUID: userUUID,
+		SubjectJSON: `{"CN":"failed.example.test"}`, SANJSON: `{}`, KeyType: "ec256",
+	}
+	if _, _, err := env.wf.SubmitApplication(env.ctx, app); err != nil {
+		t.Fatalf("submit application: %v", err)
+	}
+	if _, err := env.db.ExecContext(env.ctx, `UPDATE cas SET status = 'revoked'`); err != nil {
+		t.Fatalf("revoke CA for failure test: %v", err)
+	}
+	if err := env.wf.ApproveApplication(env.ctx, app.UUID, adminUUID); err == nil {
+		t.Fatal("approval should fail when the CA is unavailable")
+	}
+	failed, err := env.wf.GetApplication(env.ctx, app.UUID)
+	if err != nil || failed.Status != "issuance_failed" {
+		t.Fatalf("failed signing must require manual reconciliation: app=%+v err=%v", failed, err)
+	}
+	if err := env.wf.ApproveApplication(env.ctx, app.UUID, adminUUID); err == nil {
+		t.Fatal("failed issuance must not be retried automatically")
+	}
+	var issuedCount int
+	if err := env.db.QueryRowContext(env.ctx,
+		`SELECT COUNT(*) FROM certificates WHERE order_no = ?`, order.OrderNo).Scan(&issuedCount); err != nil {
+		t.Fatalf("count issued certificates: %v", err)
+	}
+	if issuedCount != 0 {
+		t.Fatalf("failed approval created %d certificates; want 0", issuedCount)
 	}
 }
 

@@ -122,6 +122,39 @@ func (s *Service) LoadApplyTemplate(ctx context.Context, tmplUUID string) (*stor
 	return s.loadApplyTemplate(ctx, tmplUUID)
 }
 
+// DeliveryModesForApplyTemplate returns delivery targets allowed by an application template.
+func (s *Service) DeliveryModesForApplyTemplate(ctx context.Context, applyTmplUUID string) ([]string, error) {
+	if s.issuanceSvc == nil {
+		return nil, fmt.Errorf("颁发策略服务不可用")
+	}
+	tmpl, err := s.LoadApplyTemplate(ctx, applyTmplUUID)
+	if err != nil {
+		return nil, err
+	}
+	if !tmpl.Enabled {
+		return nil, fmt.Errorf("证书开通模板已停用")
+	}
+	policy, err := s.issuanceSvc.ResolvePolicy(issuance.WithPolicyCache(ctx), tmpl.UUID, "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("解析证书交付策略失败: %w", err)
+	}
+	return append([]string(nil), policy.DeliveryModes...), nil
+}
+
+// ValidateDeliveryMode 确认 SKU 选择的交付目标被开通模板关联的颁发策略允许。
+func (s *Service) ValidateDeliveryMode(ctx context.Context, applyTmplUUID, deliveryMode string) error {
+	modes, err := s.DeliveryModesForApplyTemplate(ctx, applyTmplUUID)
+	if err != nil {
+		return err
+	}
+	for _, allowed := range modes {
+		if allowed == deliveryMode {
+			return nil
+		}
+	}
+	return fmt.Errorf("交付方式 %s 不受该证书类型允许", deliveryMode)
+}
+
 // loadApplyTemplate 读取证书开通模板（只含业务规则：审批、续期、申请方式；
 // CA、有效期、算法、资料要求由其关联的颁发模板提供）。
 func (s *Service) loadApplyTemplate(ctx context.Context, tmplUUID string) (*storage.CertApplyTemplate, error) {
@@ -287,29 +320,66 @@ func (s *Service) CreateApplication(ctx context.Context, app *storage.CertApplic
 		return err
 	}
 
+	var specJSON string
+	if err := s.db.QueryRowContext(ctx, `SELECT spec_json FROM cert_orders WHERE uuid = ?`, app.OrderUUID).Scan(&specJSON); err != nil {
+		return fmt.Errorf("读取订单规格失败: %w", err)
+	}
+	quantity := SpecQuantity(specJSON)
+	if quantity < 1 {
+		return fmt.Errorf("订单证书份数无效")
+	}
+
 	app.UUID = uuid.New().String()
 	app.Status = "pending"
 	app.CreatedAt = time.Now()
-	app.UpdatedAt = time.Now()
-
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO cert_applications
-		 (uuid, order_uuid, user_uuid, subject_json, san_json, key_type, csr_pem, applicant_email, card_uuid, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		app.UUID, app.OrderUUID, app.UserUUID, app.SubjectJSON, app.SANJSON, app.KeyType,
-		app.CSRPEM, app.ApplicantEmail, app.CardUUID, app.Status, app.CreatedAt, app.UpdatedAt,
-	)
+	app.UpdatedAt = app.CreatedAt
+	if app.ExtensionInfoUUIDs == nil {
+		app.ExtensionInfoUUIDs = []string{}
+	}
+	extensionIDsJSON, err := json.Marshal(app.ExtensionInfoUUIDs)
 	if err != nil {
+		return fmt.Errorf("序列化扩展信息引用失败: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开启申请事务失败: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	// 锁定订单行，让并发申请在检查份数前串行化；SQLite、MySQL 和 PostgreSQL 均以更新锁保护该行。
+	if _, err := tx.ExecContext(ctx, `UPDATE cert_orders SET status = status WHERE uuid = ?`, app.OrderUUID); err != nil {
+		return fmt.Errorf("锁定申请订单失败: %w", err)
+	}
+	var used int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM cert_applications WHERE order_uuid = ? AND status <> 'rejected'`, app.OrderUUID,
+	).Scan(&used); err != nil {
+		return fmt.Errorf("检查订单申请额度失败: %w", err)
+	}
+	if used >= quantity {
+		return fmt.Errorf("该订单可申请 %d 张证书，已全部提交", quantity)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO cert_applications
+		 (uuid, order_uuid, user_uuid, subject_json, san_json, subject_info_uuid, extension_info_uuids,
+		  renew_from_cert_uuid, key_type, csr_pem, applicant_email, card_uuid, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		app.UUID, app.OrderUUID, app.UserUUID, app.SubjectJSON, app.SANJSON, app.SubjectInfoUUID, string(extensionIDsJSON),
+		app.RenewFromCertUUID, app.KeyType, app.CSRPEM, app.ApplicantEmail, app.CardUUID, app.Status, app.CreatedAt, app.UpdatedAt,
+	); err != nil {
 		return fmt.Errorf("创建申请失败: %w", err)
 	}
 
-	// 订单进入申请阶段；未关联订单的自由申请保持原状态
-	if app.OrderUUID != "" {
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE cert_orders SET status = ?, updated_at = ? WHERE uuid = ? AND status = ?`,
-			storage.CertOrderApplying, time.Now(), app.OrderUUID, storage.CertOrderPaid); err != nil {
-			return fmt.Errorf("更新订单状态失败: %w", err)
-		}
+	// 订单进入申请阶段；未关联订单的自由申请保持原状态。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE cert_orders SET status = ?, updated_at = ? WHERE uuid = ? AND status = ?`,
+		storage.CertOrderApplying, time.Now(), app.OrderUUID, storage.CertOrderPaid); err != nil {
+		return fmt.Errorf("更新订单状态失败: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交申请事务失败: %w", err)
 	}
 	return nil
 }
@@ -409,6 +479,18 @@ func (s *Service) validateApplication(ctx context.Context, app *storage.CertAppl
 		if err != nil {
 			return fmt.Errorf("解析证书申请策略失败: %w", err)
 		}
+		if policy.KeyStorage != nil {
+			switch policy.KeyStorage.KeyGenLocation {
+			case storage.KeyGenCSR, storage.KeyGenCard:
+				if strings.TrimSpace(app.CSRPEM) == "" {
+					return fmt.Errorf("该密钥存储策略要求申请方提交 CSR")
+				}
+			case storage.KeyGenServer, "":
+				if strings.TrimSpace(app.CSRPEM) != "" {
+					return fmt.Errorf("服务端生成密钥的策略不接受自带 CSR")
+				}
+			}
+		}
 		if app.KeyType != "" {
 			if err := policy.ValidateSelection("", app.KeyType, "", 0); err != nil {
 				return fmt.Errorf("该商品不支持所选密钥算法: %w", err)
@@ -446,6 +528,19 @@ func ParseCSR(csrPEM string) (*x509.CertificateRequest, error) {
 	return csr, nil
 }
 
+// CSRKeyType 返回已验证 CSR 公钥对应的密钥算法标识。
+func CSRKeyType(csrPEM string) (string, error) {
+	csr, err := ParseCSR(csrPEM)
+	if err != nil {
+		return "", err
+	}
+	keyType := keyTypeFromPublicKey(csr.PublicKey)
+	if keyType == "" {
+		return "", fmt.Errorf("CSR 公钥算法不受支持")
+	}
+	return keyType, nil
+}
+
 // parseCSRPEM 解析 PEM 编码的 CSR。
 func parseCSRPEM(csrPEM string) (*x509.CertificateRequest, error) {
 	block, _ := pem.Decode([]byte(csrPEM))
@@ -477,17 +572,22 @@ func keyTypeFromPublicKey(pub crypto.PublicKey) string {
 }
 
 // certApplicationColumns 是 cert_applications 的查询列，保证读写字段一致。
-const certApplicationColumns = `uuid, order_uuid, user_uuid, subject_json, san_json, key_type,
-	csr_pem, applicant_email, card_uuid, status, approved_by, approved_at, reject_reason, cert_uuid, created_at, updated_at`
+const certApplicationColumns = `uuid, order_uuid, user_uuid, subject_json, san_json, subject_info_uuid,
+	extension_info_uuids, renew_from_cert_uuid, key_type, csr_pem, applicant_email, card_uuid, status,
+	approved_by, approved_at, reject_reason, cert_uuid, created_at, updated_at`
 
 func scanCertApplication(scan func(dest ...interface{}) error) (*storage.CertApplication, error) {
 	a := &storage.CertApplication{}
 	var approvedBy sql.NullString
 	var approvedAt sql.NullTime
-	if err := scan(&a.UUID, &a.OrderUUID, &a.UserUUID, &a.SubjectJSON, &a.SANJSON, &a.KeyType,
-		&a.CSRPEM, &a.ApplicantEmail, &a.CardUUID, &a.Status, &approvedBy, &approvedAt, &a.RejectReason,
-		&a.CertUUID, &a.CreatedAt, &a.UpdatedAt); err != nil {
+	var extensionInfoUUIDs string
+	if err := scan(&a.UUID, &a.OrderUUID, &a.UserUUID, &a.SubjectJSON, &a.SANJSON, &a.SubjectInfoUUID,
+		&extensionInfoUUIDs, &a.RenewFromCertUUID, &a.KeyType, &a.CSRPEM, &a.ApplicantEmail, &a.CardUUID,
+		&a.Status, &approvedBy, &approvedAt, &a.RejectReason, &a.CertUUID, &a.CreatedAt, &a.UpdatedAt); err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal([]byte(extensionInfoUUIDs), &a.ExtensionInfoUUIDs); err != nil {
+		return nil, fmt.Errorf("解析申请的扩展信息引用失败: %w", err)
 	}
 	if approvedBy.Valid {
 		a.ApprovedBy = approvedBy.String
@@ -536,9 +636,9 @@ func (s *Service) ListApplications(ctx context.Context, userUUID string, statusF
 
 	// 一次 JOIN 取出申请人、订单号与证书类型，避免逐条查询（N+1），
 	// 前端也不必再拿截断的 UUID 去猜"是谁申请的、买的什么"。
-	selectQuery := `SELECT a.uuid, a.order_uuid, a.user_uuid, a.subject_json, a.san_json, a.key_type,
-		 a.csr_pem, a.applicant_email, a.card_uuid, a.status, a.approved_by, a.approved_at, a.reject_reason,
-		 a.cert_uuid, a.created_at, a.updated_at,
+	selectQuery := `SELECT a.uuid, a.order_uuid, a.user_uuid, a.subject_json, a.san_json, a.subject_info_uuid,
+		 a.extension_info_uuids, a.renew_from_cert_uuid, a.key_type, a.csr_pem, a.applicant_email, a.card_uuid,
+		 a.status, a.approved_by, a.approved_at, a.reject_reason, a.cert_uuid, a.created_at, a.updated_at,
 		 COALESCE(u.username, ''), COALESCE(u.email, ''),
 		 COALESCE(o.order_no, ''), COALESCE(t.name, ''),
 		 COALESCE(a.created_by, ''), COALESCE(a.on_behalf, 0)
@@ -571,11 +671,15 @@ func (s *Service) ListApplications(ctx context.Context, userUUID string, statusF
 		var approvedBy sql.NullString
 		var approvedAt sql.NullTime
 		var onBehalf int
-		if err := rows.Scan(&a.UUID, &a.OrderUUID, &a.UserUUID, &a.SubjectJSON, &a.SANJSON, &a.KeyType,
-			&a.CSRPEM, &a.ApplicantEmail, &a.CardUUID, &a.Status, &approvedBy, &approvedAt, &a.RejectReason,
-			&a.CertUUID, &a.CreatedAt, &a.UpdatedAt,
+		var extensionInfoUUIDs string
+		if err := rows.Scan(&a.UUID, &a.OrderUUID, &a.UserUUID, &a.SubjectJSON, &a.SANJSON, &a.SubjectInfoUUID,
+			&extensionInfoUUIDs, &a.RenewFromCertUUID, &a.KeyType, &a.CSRPEM, &a.ApplicantEmail, &a.CardUUID,
+			&a.Status, &approvedBy, &approvedAt, &a.RejectReason, &a.CertUUID, &a.CreatedAt, &a.UpdatedAt,
 			&a.UserName, &a.UserEmail, &a.OrderNo, &a.TemplateName, &a.CreatedBy, &onBehalf); err != nil {
 			return nil, 0, err
+		}
+		if err := json.Unmarshal([]byte(extensionInfoUUIDs), &a.ExtensionInfoUUIDs); err != nil {
+			return nil, 0, fmt.Errorf("解析申请的扩展信息引用失败: %w", err)
 		}
 		if approvedBy.Valid {
 			a.ApprovedBy = approvedBy.String
@@ -655,22 +759,50 @@ func (s *Service) ApproveApplication(ctx context.Context, appUUID, adminUUID str
 		return fmt.Errorf("只能审批待处理的申请，当前状态: %s", app.Status)
 	}
 
+	// 原子认领申请，避免多个管理员并发对同一申请重复签发。
+	claim, err := s.db.ExecContext(ctx,
+		`UPDATE cert_applications SET status = 'issuing', updated_at = ? WHERE uuid = ? AND status = 'pending'`,
+		now, appUUID,
+	)
+	if err != nil {
+		return fmt.Errorf("认领待审批申请失败: %w", err)
+	}
+	if changed, _ := claim.RowsAffected(); changed != 1 {
+		return fmt.Errorf("申请已被其他审批操作认领或状态已变化")
+	}
+
+	// 签发失败时进入人工核对状态，不回到 pending 自动重试：签发与本地记录不是同一事务，
+	// 自动重试可能重复签出另一个序列号。操作人应先核对 CA 与证书记录后再恢复。
+	markIssuanceFailed := func(issueErr error) error {
+		_, stateErr := s.db.ExecContext(ctx,
+			`UPDATE cert_applications SET status = 'issuance_failed', reject_reason = ?, updated_at = ? WHERE uuid = ? AND status = 'issuing'`,
+			issueErr.Error(), time.Now(), appUUID,
+		)
+		if stateErr != nil {
+			return fmt.Errorf("自动签发失败: %v; 同步失败状态也失败: %w", issueErr, stateErr)
+		}
+		return fmt.Errorf("自动签发失败，申请已进入人工核对状态: %w", issueErr)
+	}
+
 	// 尝试自动签发证书
 	var certUUID string
 	if s.caSvc != nil && s.issuanceSvc != nil {
 		certUUID, err = s.issueCertForApplication(ctx, app)
 		if err != nil {
-			return fmt.Errorf("自动签发证书失败: %w", err)
+			return markIssuanceFailed(err)
 		}
 	}
 
 	// 更新申请状态为 approved，并回填 cert_uuid
-	_, err = s.db.ExecContext(ctx,
-		`UPDATE cert_applications SET status = 'approved', approved_by = ?, approved_at = ?, cert_uuid = ?, updated_at = ? WHERE uuid = ?`,
+	approved, err := s.db.ExecContext(ctx,
+		`UPDATE cert_applications SET status = 'approved', approved_by = ?, approved_at = ?, cert_uuid = ?, updated_at = ? WHERE uuid = ? AND status = 'issuing'`,
 		adminUUID, now, certUUID, now, appUUID,
 	)
 	if err != nil {
-		return fmt.Errorf("更新申请状态失败: %w", err)
+		return fmt.Errorf("更新申请状态失败（申请保持 issuing，禁止自动重签）: %w", err)
+	}
+	if changed, _ := approved.RowsAffected(); changed != 1 {
+		return fmt.Errorf("签发已完成但申请状态无法确认（保持 issuing，禁止自动重签）")
 	}
 
 	// 更新关联订单状态：全部份数签发完成后订单才算完成
@@ -850,8 +982,9 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 			}
 		}
 		keyStorage = policy.KeyStorage
-		if keyStorage != nil && keyStorage.KeyGenLocation == storage.KeyGenCSR && csrPubKey == nil {
-			return "", fmt.Errorf("该证书类型要求自带 CSR，请上传 CSR 后再提交")
+		if keyStorage != nil &&
+			(keyStorage.KeyGenLocation == storage.KeyGenCSR || keyStorage.KeyGenLocation == storage.KeyGenCard) && csrPubKey == nil {
+			return "", fmt.Errorf("该密钥存储策略要求申请方提交 CSR")
 		}
 	} else {
 		// 没有颁发模板（历史订单）：维持旧行为，由订单快照 / 兜底值决定
@@ -900,7 +1033,18 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		issueReq.KeyZoneUUID = keyStorage.StorageZoneUUID
 	}
 
-	// 先校验交付目标和云卡服务权益，避免证书已签发后才发现目标卡已到期、暂停或容量用尽。
+	deliveryMode := storage.DeliveryMode(SpecDeliveryMode(orderSpec))
+	externalKeyDelivery := deliveryMode == storage.DeliveryCSR ||
+		deliveryMode == storage.DeliveryPhysical || deliveryMode == storage.DeliveryVirtual
+	if externalKeyDelivery && csrPubKey == nil {
+		return "", fmt.Errorf("所选本地交付目标需要由申请设备生成 CSR")
+	}
+	if (deliveryMode == storage.DeliveryPhysical || deliveryMode == storage.DeliveryVirtual) && app.CardUUID != "" {
+		return "", fmt.Errorf("本地设备交付不能绑定服务端卡片 UUID")
+	}
+
+	// 证书表的 CardUUID 外键要求每条记录归属一个容器。无远程卡目标时，hosting 仅作索引容器；
+	// 实际 delivery_mode 保存在订单快照中，不把该容器视为实体/虚拟设备，也不套用云卡权益和容量。
 	cardRepo := storage.NewCardRepo(s.db)
 	var targetCard *storage.Card
 	if app.CardUUID != "" {
@@ -916,11 +1060,13 @@ func (s *Service) issueCertForApplication(ctx context.Context, app *storage.Cert
 		}
 		targetCard = hosting
 	}
-	if targetCard.ServiceState(time.Now()) != "active" {
-		return "", storage.ErrCardServiceUnavailable
-	}
-	if targetCard.CertificateLimit >= 0 && targetCard.CertificateCount >= targetCard.CertificateLimit {
-		return "", storage.ErrCardCertificateLimit
+	if !targetCard.IsHosting() {
+		if targetCard.ServiceState(time.Now()) != "active" {
+			return "", storage.ErrCardServiceUnavailable
+		}
+		if targetCard.CertificateLimit >= 0 && targetCard.CertificateCount >= targetCard.CertificateLimit {
+			return "", storage.ErrCardCertificateLimit
+		}
 	}
 
 	// 调用签发引擎；证书入库仍由后续证书事务校验一次容量，防止并发超额。
@@ -1269,6 +1415,43 @@ func (s *Service) CreateSubscriptionOrder(ctx context.Context, userUUID, subUUID
 	}
 	order.Status, order.PaidAt = storage.CertOrderPaid, &now
 	return order, nil
+}
+
+// SetOrderDeliveryMode 设置自助/订阅订单的交付目标快照。
+func (s *Service) SetOrderDeliveryMode(ctx context.Context, orderUUID, deliveryMode string) error {
+	if strings.TrimSpace(orderUUID) == "" || strings.TrimSpace(deliveryMode) == "" {
+		return fmt.Errorf("订单与交付目标不能为空")
+	}
+	var specJSON string
+	if err := s.db.QueryRowContext(ctx, `SELECT spec_json FROM cert_orders WHERE uuid = ?`, orderUUID).Scan(&specJSON); err != nil {
+		return fmt.Errorf("读取申请订单规格失败: %w", err)
+	}
+	var spec map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return fmt.Errorf("解析申请订单规格失败: %w", err)
+	}
+	if spec == nil {
+		spec = make(map[string]json.RawMessage)
+	}
+	modeJSON, err := json.Marshal(deliveryMode)
+	if err != nil {
+		return fmt.Errorf("序列化交付目标失败: %w", err)
+	}
+	spec["delivery_mode"] = modeJSON
+	updatedSpec, err := json.Marshal(spec)
+	if err != nil {
+		return fmt.Errorf("序列化申请订单规格失败: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE cert_orders SET spec_json = ?, updated_at = ? WHERE uuid = ? AND status = ?`,
+		string(updatedSpec), time.Now(), orderUUID, storage.CertOrderPaid)
+	if err != nil {
+		return fmt.Errorf("保存交付目标快照失败: %w", err)
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return fmt.Errorf("订单状态已变化，无法更新交付目标")
+	}
+	return nil
 }
 
 // SpecValidDays 读取规格快照中的证书有效期覆盖值（订阅套餐设置）。

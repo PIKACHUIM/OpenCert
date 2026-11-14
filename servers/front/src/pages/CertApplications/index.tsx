@@ -17,10 +17,12 @@ import ApplyWizard from '../../components/ApplyWizard';
 const { Title, Text } = Typography;
 
 const statusColors: Record<string, string> = {
-  pending: 'processing', approved: 'success', rejected: 'error', issued: 'cyan', cancelled: 'default',
+  pending: 'processing', issuing: 'processing', issuance_failed: 'warning',
+  approved: 'success', rejected: 'error', issued: 'cyan', cancelled: 'default',
 };
 const statusTexts: Record<string, string> = {
-  pending: '待审核', approved: '已通过', rejected: '已拒绝', issued: '已签发', cancelled: '已取消',
+  pending: '待审核', issuing: '签发处理中', issuance_failed: '签发失败（需人工核对）',
+  approved: '已通过', rejected: '已拒绝', issued: '已签发', cancelled: '已取消',
 };
 
 const CertApplicationsPage: React.FC = () => {
@@ -142,7 +144,7 @@ const CertApplicationsPage: React.FC = () => {
         }
       >
         <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-          通过前请核对主体与域名信息；通过后系统会自动签发证书。
+          通过前请核对主体与域名信息；通过后系统会自动签发证书。若签发失败，申请会进入人工核对状态，不会自动重试以避免重复签发。
         </Text>
         <Table
           rowKey="uuid" loading={loading} dataSource={data} columns={columns as any}

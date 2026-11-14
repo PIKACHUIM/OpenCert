@@ -28,6 +28,8 @@ const CATEGORY_OPTIONS = [
 const DELIVERY_OPTIONS: { value: DeliveryMode; label: string }[] = [
   { value: 'cloud_card', label: '云端智能卡' },
   { value: 'download', label: '文件下载' },
+  { value: 'physical_card', label: '实体智能卡（设备 CSR）' },
+  { value: 'virtual_card', label: '本地虚拟卡（设备 CSR）' },
   { value: 'csr', label: '自备 CSR' },
 ];
 
@@ -264,7 +266,7 @@ const ConsoleProducts: React.FC = () => {
       });
     } else {
       skuForm.setFieldsValue({
-        delivery_mode: 'cloud_card',
+        delivery_mode: skuProduct?.category === 'cloudcard' ? 'cloud_card' : 'download',
         currency: 'CNY',
         stock: -1,
         min_qty: 1,
@@ -702,8 +704,14 @@ const ConsoleProducts: React.FC = () => {
           </Space>
 
           <Space size={12} style={{ display: 'flex' }} align="start">
-            <Form.Item name="delivery_mode" label="交付方式" style={{ flex: 1 }}>
-              <Select options={DELIVERY_OPTIONS} />
+            <Form.Item
+              name="delivery_mode" label="交付方式" style={{ flex: 1 }}
+              extra={skuProduct?.category === 'cloudcard'
+                ? '云卡商品只用于开通或续费云端智能卡。'
+                : '本地实体/虚拟卡规格要求设备生成 CSR；SKU 只收证书费用，不包含卡片或 TPM 硬件。'}
+            >
+              <Select options={skuProduct?.category === 'cloudcard'
+                ? DELIVERY_OPTIONS.filter((option) => option.value === 'cloud_card') : DELIVERY_OPTIONS} />
             </Form.Item>
             <Form.Item name="sort_weight" label="排序权重" style={{ flex: 1 }}>
               <InputNumber min={0} max={9999} style={{ width: '100%' }} />

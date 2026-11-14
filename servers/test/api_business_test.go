@@ -13,6 +13,8 @@ package test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -588,7 +590,7 @@ func TestAPIBusinessFlow(t *testing.T) {
 	}
 	env.mustCall(http.MethodPost, "/api/portal/admin/skus", admin, map[string]interface{}{
 		"product_uuid": product.UUID, "code": "it-ssl-1y", "name": "标准版", "price_cents": 10000,
-		"currency": "CNY", "stock": 5, "min_qty": 1, "max_qty": 2, "duration_months": 12,
+		"currency": "CNY", "stock": 10, "min_qty": 1, "max_qty": 2, "duration_months": 12,
 		"delivery_mode": "download", "key_types": `["ec256"]`, "san_included": 1,
 		"san_policy":           `{"max_dns":2,"max_email":0,"max_ip":0,"allow_wildcard":false,"ip_versions":["v4","v6"]}`,
 		"cert_apply_tmpl_uuid": applyTmpl.UUID, "enabled": true,
@@ -738,6 +740,429 @@ func TestAPIBusinessFlow(t *testing.T) {
 	if !applyResp.AutoIssued || applyResp.Application.CertUUID == "" || applyResp.Application.Status != "approved" {
 		t.Fatalf("应自动签发并回填证书: %+v", applyResp)
 	}
+
+	// 多证书订单的剩余额度不能代替一笔独立续期订单。
+	var partialOrder struct {
+		OrderNo string `json:"order_no"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/orders", buyer, map[string]interface{}{
+		"sku_code": sku.Code, "quantity": 2, "applicant_email": "buyer@test.local",
+	}, &partialOrder)
+	env.mustCall(http.MethodPost, "/api/portal/admin/orders/"+partialOrder.OrderNo+"/confirm-payment", admin,
+		map[string]string{"reference": "IT-RENEW-ORIGINAL-ORDER"}, nil)
+	var partialApply struct {
+		AutoIssued  bool `json:"auto_issued"`
+		Application struct {
+			CertUUID string `json:"cert_uuid"`
+		} `json:"application"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/applications", buyer, map[string]interface{}{
+		"order_no": partialOrder.OrderNo, "subject_info_uuid": subject.UUID,
+		"extension_info_uuids": []string{ext.ExtensionInfo.UUID}, "key_type": "ec256",
+	}, &partialApply)
+	if !partialApply.AutoIssued || partialApply.Application.CertUUID == "" {
+		t.Fatalf("多份订单的首次申请应签发成功: %+v", partialApply)
+	}
+	var partialRenewalContext struct {
+		Orders []struct {
+			OrderNo string `json:"order_no"`
+		} `json:"orders"`
+	}
+	env.mustCall(http.MethodGet, "/api/certs/"+partialApply.Application.CertUUID+"/renewal-context", buyer, nil, &partialRenewalContext)
+	for _, availableOrder := range partialRenewalContext.Orders {
+		if availableOrder.OrderNo == partialOrder.OrderNo {
+			t.Fatal("续期上下文不能将原签发订单的剩余数量作为新续期订单")
+		}
+	}
+	env.mustFail(http.MethodPost, "/api/certs/"+partialApply.Application.CertUUID+"/renew", buyer,
+		map[string]string{"order_no": partialOrder.OrderNo})
+
+	// 续期必须绑定新订单，复用仍有效的验证资料，并签发新的公钥；原证书保持不变。
+	certRepo := storage.NewCertRepo(env.db)
+	originalCert, err := certRepo.GetByUUID(context.Background(), applyResp.Application.CertUUID)
+	if err != nil {
+		t.Fatalf("读取原证书失败: %v", err)
+	}
+	originalPEM := append([]byte(nil), originalCert.CertContent...)
+	parseIssuedCert := func(content []byte) *x509.Certificate {
+		t.Helper()
+		block, _ := pem.Decode(content)
+		if block == nil {
+			t.Fatal("证书内容不是 PEM")
+		}
+		parsed, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			t.Fatalf("解析签发证书失败: %v", err)
+		}
+		return parsed
+	}
+	originalX509 := parseIssuedCert(originalPEM)
+
+	var renewalOrder struct {
+		UUID    string `json:"uuid"`
+		OrderNo string `json:"order_no"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/orders", buyer, map[string]interface{}{
+		"sku_code": sku.Code, "quantity": 1, "applicant_email": "buyer@test.local",
+	}, &renewalOrder)
+	env.mustCall(http.MethodPost, "/api/portal/admin/orders/"+renewalOrder.OrderNo+"/confirm-payment", admin,
+		map[string]string{"reference": "IT-RENEW-001"}, nil)
+	var renewalContext struct {
+		RenewalAllowed bool `json:"renewal_allowed"`
+		Orders         []struct {
+			OrderNo string `json:"order_no"`
+		} `json:"orders"`
+	}
+	env.mustCall(http.MethodGet, "/api/certs/"+applyResp.Application.CertUUID+"/renewal-context", buyer, nil, &renewalContext)
+	if !renewalContext.RenewalAllowed || len(renewalContext.Orders) == 0 || renewalContext.Orders[0].OrderNo != renewalOrder.OrderNo {
+		t.Fatalf("续期上下文应返回相同证书类型的有效付费订单: %+v", renewalContext)
+	}
+	var renewed struct {
+		AutoIssued  bool `json:"auto_issued"`
+		Application struct {
+			UUID              string `json:"uuid"`
+			CertUUID          string `json:"cert_uuid"`
+			RenewFromCertUUID string `json:"renew_from_cert_uuid"`
+		} `json:"application"`
+	}
+	env.mustCall(http.MethodPost, "/api/certs/"+applyResp.Application.CertUUID+"/renew", buyer,
+		map[string]string{"order_no": renewalOrder.OrderNo}, &renewed)
+	if !renewed.AutoIssued || renewed.Application.CertUUID == "" || renewed.Application.RenewFromCertUUID != applyResp.Application.CertUUID {
+		t.Fatalf("续期应通过统一审批工作流生成可追溯的新证书: %+v", renewed)
+	}
+	if renewed.Application.CertUUID == applyResp.Application.CertUUID {
+		t.Fatal("续期必须保留原证书并建立新的证书记录")
+	}
+	newCert, err := certRepo.GetByUUID(context.Background(), renewed.Application.CertUUID)
+	if err != nil {
+		t.Fatalf("续期后的新证书记录未入库: %v", err)
+	}
+	if bytes.Equal(originalX509.RawSubjectPublicKeyInfo, parseIssuedCert(newCert.CertContent).RawSubjectPublicKeyInfo) {
+		t.Fatal("平台生成密钥的续期应产生新公钥")
+	}
+	originalAfterRenewal, err := certRepo.GetByUUID(context.Background(), applyResp.Application.CertUUID)
+	if err != nil || !bytes.Equal(originalPEM, originalAfterRenewal.CertContent) {
+		t.Fatalf("续期不能覆盖原证书: cert=%v err=%v", originalAfterRenewal, err)
+	}
+	env.mustFail(http.MethodPost, "/api/certs/"+applyResp.Application.CertUUID+"/renew", buyer,
+		map[string]string{"order_no": renewalOrder.OrderNo})
+
+	updateApplyTemplate := func(requireApproval, allowRenewal bool) {
+		t.Helper()
+		env.mustCall(http.MethodPut, "/api/templates/cert-apply/"+applyTmpl.UUID, admin, map[string]interface{}{
+			"name": "集成开通模板", "issuance_tmpl_uuid": issuance.UUID, "enabled": true,
+			"require_approval": requireApproval, "allow_renewal": allowRenewal,
+			"apply_modes": `["order","self","subscription"]`,
+		}, nil)
+	}
+
+	// 需要人工审批的续期必须走原有审批/拒绝流程，拒绝不触及旧证书。
+	var reviewOrder struct {
+		OrderNo string `json:"order_no"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/orders", buyer, map[string]interface{}{
+		"sku_code": sku.Code, "quantity": 1, "applicant_email": "buyer@test.local",
+	}, &reviewOrder)
+	env.mustCall(http.MethodPost, "/api/portal/admin/orders/"+reviewOrder.OrderNo+"/confirm-payment", admin,
+		map[string]string{"reference": "IT-RENEW-REVIEW"}, nil)
+	updateApplyTemplate(true, true)
+	var pendingRenewal struct {
+		AutoIssued  bool `json:"auto_issued"`
+		Application struct {
+			UUID              string `json:"uuid"`
+			CertUUID          string `json:"cert_uuid"`
+			RenewFromCertUUID string `json:"renew_from_cert_uuid"`
+			Status            string `json:"status"`
+		} `json:"application"`
+	}
+	env.mustCall(http.MethodPost, "/api/certs/"+applyResp.Application.CertUUID+"/renew", buyer,
+		map[string]string{"order_no": reviewOrder.OrderNo}, &pendingRenewal)
+	if pendingRenewal.AutoIssued || pendingRenewal.Application.Status != "pending" || pendingRenewal.Application.CertUUID != "" ||
+		pendingRenewal.Application.RenewFromCertUUID != applyResp.Application.CertUUID {
+		t.Fatalf("开启审批时续期应保持待审并保留来源引用: %+v", pendingRenewal)
+	}
+	env.mustCall(http.MethodPost, "/api/cert-applications/"+pendingRenewal.Application.UUID+"/reject", admin,
+		map[string]string{"reason": "integration test rejection"}, nil)
+	originalAfterRejection, err := certRepo.GetByUUID(context.Background(), applyResp.Application.CertUUID)
+	if err != nil || !bytes.Equal(originalPEM, originalAfterRejection.CertContent) {
+		t.Fatalf("拒绝续期申请不能修改原证书: cert=%v err=%v", originalAfterRejection, err)
+	}
+
+	// 证书模板关闭续期后，即使存在新付款订单也必须拒绝续期。
+	var policyOrder struct {
+		OrderNo string `json:"order_no"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/orders", buyer, map[string]interface{}{
+		"sku_code": sku.Code, "quantity": 1, "applicant_email": "buyer@test.local",
+	}, &policyOrder)
+	env.mustCall(http.MethodPost, "/api/portal/admin/orders/"+policyOrder.OrderNo+"/confirm-payment", admin,
+		map[string]string{"reference": "IT-RENEW-POLICY"}, nil)
+	updateApplyTemplate(false, false)
+	env.mustFail(http.MethodGet, "/api/certs/"+applyResp.Application.CertUUID+"/renewal-context", buyer, nil)
+	env.mustFail(http.MethodPost, "/api/certs/"+applyResp.Application.CertUUID+"/renew", buyer,
+		map[string]string{"order_no": policyOrder.OrderNo})
+	updateApplyTemplate(false, true)
+
+	// 同一张已付款订单并发提交时，数量为 1 的额度只能消耗一次。
+	var concurrentOrder struct {
+		UUID    string `json:"uuid"`
+		OrderNo string `json:"order_no"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/orders", buyer, map[string]interface{}{
+		"sku_code": sku.Code, "quantity": 1, "applicant_email": "buyer@test.local",
+	}, &concurrentOrder)
+	env.mustCall(http.MethodPost, "/api/portal/admin/orders/"+concurrentOrder.OrderNo+"/confirm-payment", admin,
+		map[string]string{"reference": "IT-RENEW-CONCURRENT"}, nil)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			results <- env.call(http.MethodPost, "/api/certs/"+applyResp.Application.CertUUID+"/renew", buyer,
+				map[string]string{"order_no": concurrentOrder.OrderNo}, nil)
+		}()
+	}
+	close(start)
+	succeeded := 0
+	for range 2 {
+		if err := <-results; err == nil {
+			succeeded++
+		}
+	}
+	var concurrentApplications int
+	if err := env.db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM cert_applications WHERE order_uuid = ? AND status <> 'rejected'`, concurrentOrder.UUID,
+	).Scan(&concurrentApplications); err != nil {
+		t.Fatalf("查询并发续期申请数失败: %v", err)
+	}
+	if succeeded != 1 || concurrentApplications != 1 {
+		t.Fatalf("并发续期必须仅成功一次并消耗一份额度: success=%d applications=%d", succeeded, concurrentApplications)
+	}
+
+	// 未在颁发模板启用本地设备目标前，不得创建实体/虚拟卡交付 SKU。
+	env.mustFail(http.MethodPost, "/api/portal/admin/skus", admin, map[string]interface{}{
+		"product_uuid": product.UUID, "code": "it-ssl-physical-invalid", "name": "未授权实体卡", "price_cents": 10000,
+		"currency": "CNY", "stock": 2, "min_qty": 1, "max_qty": 1, "duration_months": 12,
+		"delivery_mode": "physical_card", "key_types": `["ec256"]`,
+		"cert_apply_tmpl_uuid": applyTmpl.UUID, "enabled": true,
+	})
+
+	// 本地设备 CSR 续期须按公钥匹配签发结果；虚拟卡 SKU 的报价仍只有证书费用。
+	var csrStorage struct {
+		UUID string `json:"uuid"`
+	}
+	env.mustCall(http.MethodPost, "/api/templates/key-storage", admin, map[string]interface{}{
+		"name": "集成 CSR 存储策略", "storage_methods": uint32(storage.StoragePhysicalCard | storage.StorageVirtualCard),
+		"security_level": storage.SecurityMedium, "key_gen_location": storage.KeyGenCSR,
+	}, &csrStorage)
+	env.mustCall(http.MethodPut, "/api/templates/issuance/"+issuance.UUID, admin, map[string]interface{}{
+		"name": "集成颁发模板", "category": "ssl", "enabled": true, "valid_days": "[365]",
+		"default_valid_days": 365, "allowed_key_types": `["ec256"]`,
+		"allowed_ca_uuids": fmt.Sprintf(`["%s"]`, caResp.UUID), "default_ca_uuid": caResp.UUID,
+		"subject_tmpl_uuid": subjectTmpl.UUID, "extension_tmpl_uuid": extTmpl.UUID,
+		"key_storage_tmpl_uuid": csrStorage.UUID,
+	}, nil)
+	csrPrivateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("生成续期 CSR 密钥失败: %v", err)
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader,
+		&x509.CertificateRequest{Subject: pkix.Name{CommonName: "a.example.com"}}, csrPrivateKey)
+	if err != nil {
+		t.Fatalf("创建续期 CSR 失败: %v", err)
+	}
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+	if keyType, err := workflow.CSRKeyType(string(csrPEM)); err != nil || keyType != "ec256" {
+		t.Fatalf("CSR 算法识别错误: key_type=%s err=%v", keyType, err)
+	}
+	var csrSKU struct {
+		Code string `json:"code"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/admin/skus", admin, map[string]interface{}{
+		"product_uuid": product.UUID, "code": "it-ssl-physical", "name": "实体卡 CSR 版", "price_cents": 10000,
+		"currency": "CNY", "stock": 2, "min_qty": 1, "max_qty": 1, "duration_months": 12,
+		"delivery_mode": "physical_card", "key_types": `["ec256"]`, "san_included": 1,
+		"san_policy":           `{"max_dns":2,"max_email":0,"max_ip":0,"allow_wildcard":false,"ip_versions":["v4","v6"]}`,
+		"cert_apply_tmpl_uuid": applyTmpl.UUID, "enabled": true,
+	}, &csrSKU)
+	var virtualSKU struct {
+		Code string `json:"code"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/admin/skus", admin, map[string]interface{}{
+		"product_uuid": product.UUID, "code": "it-ssl-virtual", "name": "本地虚拟卡 CSR 版", "price_cents": 10000,
+		"currency": "CNY", "stock": 2, "min_qty": 1, "max_qty": 1, "duration_months": 12,
+		"delivery_mode": "virtual_card", "key_types": `["ec256"]`, "san_included": 1,
+		"san_policy":           `{"max_dns":2,"max_email":0,"max_ip":0,"allow_wildcard":false,"ip_versions":["v4","v6"]}`,
+		"cert_apply_tmpl_uuid": applyTmpl.UUID, "enabled": true,
+	}, &virtualSKU)
+	var virtualQuote struct {
+		DeliveryMode string `json:"delivery_mode"`
+		PayableCents int64  `json:"payable_cents"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/quotes", buyer,
+		map[string]interface{}{"sku_code": virtualSKU.Code, "quantity": 1}, &virtualQuote)
+	if virtualQuote.DeliveryMode != "virtual_card" || virtualQuote.PayableCents != 10000 {
+		t.Fatalf("本地虚拟卡目标报价应只包含证书 SKU 价格: %+v", virtualQuote)
+	}
+	var csrOrder struct {
+		OrderNo string `json:"order_no"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/orders", buyer, map[string]interface{}{
+		"sku_code": csrSKU.Code, "quantity": 1, "applicant_email": "buyer@test.local",
+	}, &csrOrder)
+	env.mustCall(http.MethodPost, "/api/portal/admin/orders/"+csrOrder.OrderNo+"/confirm-payment", admin,
+		map[string]string{"reference": "IT-RENEW-CSR"}, nil)
+	var localApplyContext struct {
+		Source struct {
+			DeliveryMode  string   `json:"delivery_mode"`
+			DeliveryModes []string `json:"delivery_modes"`
+		} `json:"source"`
+	}
+	env.mustCall(http.MethodGet, "/api/portal/apply-context?order_no="+csrOrder.OrderNo, buyer, nil, &localApplyContext)
+	if localApplyContext.Source.DeliveryMode != "physical_card" || len(localApplyContext.Source.DeliveryModes) != 1 ||
+		localApplyContext.Source.DeliveryModes[0] != "physical_card" {
+		t.Fatalf("已购实体卡规格应固定交付目标并透出 CSR 要求: %+v", localApplyContext.Source)
+	}
+	env.mustFail(http.MethodPost, "/api/certs/"+applyResp.Application.CertUUID+"/renew", buyer,
+		map[string]string{"order_no": csrOrder.OrderNo})
+	var csrRenewal struct {
+		AutoIssued  bool `json:"auto_issued"`
+		Application struct {
+			CertUUID string `json:"cert_uuid"`
+		} `json:"application"`
+	}
+	env.mustCall(http.MethodPost, "/api/certs/"+applyResp.Application.CertUUID+"/renew", buyer,
+		map[string]string{"order_no": csrOrder.OrderNo, "csr_pem": string(csrPEM)}, &csrRenewal)
+	if !csrRenewal.AutoIssued || csrRenewal.Application.CertUUID == "" {
+		t.Fatalf("CSR 续期应自动签发新证书: %+v", csrRenewal)
+	}
+	csrIssuedCert, err := certRepo.GetByUUID(context.Background(), csrRenewal.Application.CertUUID)
+	if err != nil {
+		t.Fatalf("读取 CSR 续期证书失败: %v", err)
+	}
+	csrBlock, _ := pem.Decode(csrIssuedCert.CertContent)
+	if csrBlock == nil {
+		t.Fatal("CSR 续期证书内容不是 PEM")
+	}
+	csrIssuedX509, err := x509.ParseCertificate(csrBlock.Bytes)
+	if err != nil {
+		t.Fatalf("解析 CSR 续期证书失败: %v", err)
+	}
+	csrRequest, err := workflow.ParseCSR(string(csrPEM))
+	if err != nil || !bytes.Equal(csrRequest.RawSubjectPublicKeyInfo, csrIssuedX509.RawSubjectPublicKeyInfo) {
+		t.Fatalf("续期签发公钥必须与 CSR 一致: err=%v", err)
+	}
+	if len(csrIssuedCert.PrivateData) != 0 {
+		t.Fatal("CSR 续期的私钥不应存入服务端")
+	}
+	if csrIssuedCert.OrderNo != csrOrder.OrderNo {
+		t.Fatalf("签发证书必须关联本地设备目标订单: cert_order=%q order=%q", csrIssuedCert.OrderNo, csrOrder.OrderNo)
+	}
+	var physicalOrderSpec string
+	if err := env.db.QueryRowContext(context.Background(), `SELECT spec_json FROM cert_orders WHERE order_no = ?`, csrOrder.OrderNo).Scan(&physicalOrderSpec); err != nil {
+		t.Fatalf("读取实体设备交付订单快照失败: %v", err)
+	}
+	if workflow.SpecDeliveryMode(physicalOrderSpec) != string(storage.DeliveryPhysical) {
+		t.Fatalf("签发证书订单交付目标丢失: %q", workflow.SpecDeliveryMode(physicalOrderSpec))
+	}
+	// certificates.card_uuid 指向系统索引容器；它不是实体设备，也不消耗云卡权益。
+	hostingContainer, err := storage.NewCardRepo(env.db).GetByUUID(context.Background(), csrIssuedCert.CardUUID)
+	if err != nil || hostingContainer == nil || !hostingContainer.IsHosting() || hostingContainer.CertificateLimit != -1 {
+		t.Fatalf("CSR 证书应归属无限量的系统托管容器: card=%+v err=%v", hostingContainer, err)
+	}
+
+	// 自助来源也允许在申请时选择本地虚拟卡，并将目标写入零金额订单快照。
+	env.mustCall(http.MethodPut, "/api/site-settings", admin, map[string]string{
+		"cert_apply_mode": "self", "card_apply_mode": "self", "card_self_limit": "2",
+		"self_san_policy": `{"max_dns":5,"max_email":1,"max_ip":0,"allow_wildcard":false,"ip_versions":["v4","v6"]}`,
+	}, nil)
+	virtualKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("生成虚拟卡 CSR 密钥失败: %v", err)
+	}
+	virtualCSRDER, err := x509.CreateCertificateRequest(rand.Reader,
+		&x509.CertificateRequest{Subject: pkix.Name{CommonName: "a.example.com"}}, virtualKey)
+	if err != nil {
+		t.Fatalf("创建虚拟卡 CSR 失败: %v", err)
+	}
+	virtualCSR := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: virtualCSRDER})
+	var selfApply struct {
+		AutoIssued  bool `json:"auto_issued"`
+		Application struct {
+			UUID     string `json:"uuid"`
+			CertUUID string `json:"cert_uuid"`
+		} `json:"application"`
+	}
+	env.mustCall(http.MethodPost, "/api/portal/applications", buyer, map[string]interface{}{
+		"cert_apply_tmpl_uuid": applyTmpl.UUID, "delivery_mode": "virtual_card",
+		"subject_info_uuid": subject.UUID, "extension_info_uuids": []string{ext.ExtensionInfo.UUID},
+		"csr_pem": string(virtualCSR),
+	}, &selfApply)
+	if !selfApply.AutoIssued || selfApply.Application.CertUUID == "" {
+		t.Fatalf("自助虚拟卡 CSR 申请应签发成功: %+v", selfApply)
+	}
+	var selfSpecJSON string
+	var selfAmount int64
+	if err := env.db.QueryRowContext(context.Background(),
+		`SELECT o.spec_json, o.amount_cents FROM cert_applications a JOIN cert_orders o ON o.uuid = a.order_uuid WHERE a.uuid = ?`,
+		selfApply.Application.UUID).Scan(&selfSpecJSON, &selfAmount); err != nil {
+		t.Fatalf("读取自助申请订单快照失败: %v", err)
+	}
+	var selfSpec struct {
+		DeliveryMode string `json:"delivery_mode"`
+	}
+	if err := json.Unmarshal([]byte(selfSpecJSON), &selfSpec); err != nil || selfSpec.DeliveryMode != "virtual_card" || selfAmount != 0 {
+		t.Fatalf("自助订单须记录本地目标且不收硬件费: mode=%s amount=%d err=%v", selfSpec.DeliveryMode, selfAmount, err)
+	}
+	var targetBuyer struct {
+		UUID string `json:"uuid"`
+	}
+	env.mustCall(http.MethodGet, "/api/users/me", buyer, nil, &targetBuyer)
+	var proxyApply struct {
+		AutoIssued  bool `json:"auto_issued"`
+		Application struct {
+			UUID     string `json:"uuid"`
+			CertUUID string `json:"cert_uuid"`
+		} `json:"application"`
+	}
+	env.mustCall(http.MethodPost, "/api/admin/cert-applications", admin, map[string]interface{}{
+		"user_uuid": targetBuyer.UUID, "cert_apply_tmpl_uuid": applyTmpl.UUID, "delivery_mode": "virtual_card",
+		"subject_info_uuid": subject.UUID, "extension_info_uuids": []string{ext.ExtensionInfo.UUID},
+		"csr_pem": string(virtualCSR),
+	}, &proxyApply)
+	if !proxyApply.AutoIssued || proxyApply.Application.CertUUID == "" {
+		t.Fatalf("管理员代办应沿用同一交付目标与 CSR 策略: %+v", proxyApply)
+	}
+	var proxySpecJSON string
+	var proxyAmount int64
+	if err := env.db.QueryRowContext(context.Background(),
+		`SELECT o.spec_json, o.amount_cents FROM cert_applications a JOIN cert_orders o ON o.uuid = a.order_uuid WHERE a.uuid = ?`,
+		proxyApply.Application.UUID).Scan(&proxySpecJSON, &proxyAmount); err != nil {
+		t.Fatalf("读取代办申请订单快照失败: %v", err)
+	}
+	var proxySpec struct {
+		DeliveryMode string `json:"delivery_mode"`
+	}
+	if err := json.Unmarshal([]byte(proxySpecJSON), &proxySpec); err != nil || proxySpec.DeliveryMode != "virtual_card" || proxyAmount != 0 {
+		t.Fatalf("代办本地目标不应另收硬件费: mode=%s amount=%d err=%v", proxySpec.DeliveryMode, proxyAmount, err)
+	}
+	var serverMode string
+	env.mustCall(http.MethodPut, "/api/site-settings", admin, map[string]string{
+		"cert_apply_mode": "sales", "card_apply_mode": "self", "card_self_limit": "2",
+		"self_san_policy": `{"max_dns":5,"max_email":1,"max_ip":0,"allow_wildcard":false,"ip_versions":["v4","v6"]}`,
+	}, nil)
+	if err := env.db.QueryRowContext(context.Background(), `SELECT value FROM site_settings WHERE key = 'cert_apply_mode'`).Scan(&serverMode); err != nil || serverMode != "sales" {
+		t.Fatalf("恢复销售模式失败: mode=%s err=%v", serverMode, err)
+	}
+
+	// 恢复原签发策略，避免影响本测试后续的下载型订阅商品场景。
+	env.mustCall(http.MethodPut, "/api/templates/issuance/"+issuance.UUID, admin, map[string]interface{}{
+		"name": "集成颁发模板", "category": "ssl", "enabled": true, "valid_days": "[365]",
+		"default_valid_days": 365, "allowed_key_types": `["ec256"]`,
+		"allowed_ca_uuids": fmt.Sprintf(`["%s"]`, caResp.UUID), "default_ca_uuid": caResp.UUID,
+		"subject_tmpl_uuid": subjectTmpl.UUID, "extension_tmpl_uuid": extTmpl.UUID,
+		"key_storage_tmpl_uuid": "",
+	}, nil)
 
 	// ---- SAN 限制：超出 2 个域名被拒绝 ----
 	var order2 struct {

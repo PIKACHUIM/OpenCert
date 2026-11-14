@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/globaltrusts/client-card/internal/card/local"
@@ -48,4 +49,13 @@ func validateSlotType(t string) error {
 	default:
 		return fmt.Errorf("不支持的 slot_type: %s（支持 local/tpm2/tpmsc/cloud）", t)
 	}
+}
+
+func rejectUnsupportedTPMSC(w http.ResponseWriter, slotType storage.SlotType, operation string) bool {
+	if slotType != storage.SlotTypeTPMSC {
+		return false
+	}
+	writeError(w, http.StatusNotImplemented,
+		fmt.Sprintf("Windows TPM VSC 的 Smart Card/CNG/CAPI Provider 尚未接入；%s 未执行", operation))
+	return true
 }

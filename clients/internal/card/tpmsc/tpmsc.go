@@ -1,7 +1,6 @@
-// Package tpmsc 封装 Microsoft TPM Virtual Smart Card（tpmvscmgr.exe）的管理操作。
-//
-// Microsoft TPM Virtual Smart Card 利用 Windows TPM 芯片创建虚拟智能卡，
-// 密钥由 TPM 硬件保护，永远不可导出。
+// Package tpmsc 提供 Microsoft TPM Virtual Smart Card（tpmvscmgr.exe）的受限管理帮助。
+// 当前版本未实现安全交互凭据创建与 Windows CNG/CAPI 密码学 Provider，
+// 因此不会创建或宣称可用的 TPM VSC。
 //
 // 参考文档：
 //   - https://learn.microsoft.com/en-us/windows/security/identity-protection/virtual-smart-cards/virtual-smart-card-deploy-virtual-smart-cards
@@ -10,12 +9,11 @@ package tpmsc
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"os/exec"
 	"runtime"
 	"strings"
-	"time"
 )
 
 // PINPolicy 定义 PIN 策略配置。
@@ -47,20 +45,10 @@ type CreateCardArgs struct {
 	Name string
 }
 
-// CreateCardResult 是创建结果。
+// CreateCardResult 是虚拟智能卡创建结果，不包含 PIN、PUK 或 AdminKey。
 type CreateCardResult struct {
-	// ReaderName 是创建的虚拟智能卡读卡器名称
 	ReaderName string
-	// AdminKey 是管理密钥（DEFAULT 模式为 48 字节全 0x01-0x08 循环）
-	AdminKey string
-	// PUK 是 PUK 解锁码（DEFAULT 模式为 12345678）
-	PUK string
-	// PIN 是初始 PIN 码（DEFAULT 模式为 12345678）
-	PIN string
-	// InstanceID 是虚拟智能卡实例 ID（从 tpmvscmgr 输出解析）
 	InstanceID string
-	// Output 是 tpmvscmgr.exe 的命令行输出（用于调试）
-	Output string
 }
 
 // ValidatePIN 验证 PIN 是否符合策略要求。
@@ -74,83 +62,27 @@ func ValidatePIN(pin string, policy PINPolicy) error {
 	return nil
 }
 
-// CreateCard 调用 tpmvscmgr.exe 创建 Microsoft TPM Virtual Smart Card。
-// 仅在 Windows 平台可用，且需要管理员权限。
-//
-// 注意：tpmvscmgr.exe 的 PROMPT 模式会弹出 Windows GUI 对话框，不支持 stdin pipe。
-// 因此使用 DEFAULT 模式创建（PIN=12345678, AdminKey=48个FF, PUK=12345678），
-// 创建成功后用户需要通过 Windows 智能卡管理修改 PIN。
-//
-// 命令格式：
-//
-//	tpmvscmgr.exe create /name <name> /AdminKey DEFAULT /PIN DEFAULT /PUK DEFAULT /generate
-func CreateCard(ctx context.Context, args CreateCardArgs) (*CreateCardResult, error) {
-	if runtime.GOOS != "windows" {
-		return nil, fmt.Errorf("TPM Virtual Smart Card 仅支持 Windows 平台")
-	}
-	if !IsRunningAsAdmin() {
-		return nil, fmt.Errorf("创建 TPM Virtual Smart Card 需要管理员权限，请以管理员身份运行程序")
-	}
+// ErrProvisioningNotImplemented 表示尚未实现安全的 VSC 凭据初始化与密码学接入。
+var ErrProvisioningNotImplemented = errors.New("TPM VSC 安全创建尚未实现；未执行创建")
 
-	if args.Name == "" {
+// CreateCard 在安全交互式 PIN/PUK/AdminKey 和 CNG/CAPI Provider 接入前拒绝创建。
+func CreateCard(_ context.Context, args CreateCardArgs) (*CreateCardResult, error) {
+	if strings.TrimSpace(args.Name) == "" {
 		return nil, fmt.Errorf("虚拟智能卡名称不能为空")
 	}
-
-	result := &CreateCardResult{
-		ReaderName: args.Name,
-		// DEFAULT 模式的默认值
-		AdminKey: "010203040506070801020304050607080102030405060708010203040506070801020304050607080102030405060708", // 48 字节默认 AdminKey
-		PUK:      "12345678",
-		PIN:      "12345678",
-	}
-
-	// 为命令执行设置 120 秒超时（tpmvscmgr.exe 可能需要较长时间）
-	cmdCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	defer cancel()
-
-	// 直接调用 tpmvscmgr.exe，由 Go 的 os/exec 负责将含空格的 name 参数正确转义。
-	// 不再使用 `cmd /c "chcp 65001 && tpmvscmgr ..."`，因为 cmd /c 在嵌套引号场景下
-	// 会吞掉内层引号，导致 `/name "My Card"` 变成 `/name My Card`，从而出现类似
-	// "Unknown parameter: Card" 的错误。
-	cmdArgs := []string{
-		"create",
-		"/name", args.Name,
-		"/AdminKey", "DEFAULT",
-		"/PIN", "DEFAULT",
-		"/PUK", "DEFAULT",
-		"/generate",
-	}
-	cmd := exec.CommandContext(cmdCtx, "tpmvscmgr.exe", cmdArgs...)
-
-	log.Printf("[TPMSC] 执行命令: tpmvscmgr.exe %s", strings.Join(cmdArgs, " "))
-
-	// 直接获取输出（DEFAULT 模式无需 stdin 交互）
-	output, err := cmd.CombinedOutput()
-	combinedOutput := string(output)
-	log.Printf("[TPMSC] 命令输出:\n%s", combinedOutput)
-
-	if err != nil {
-		if cmdCtx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("执行 tpmvscmgr.exe 超时（120秒）\n输出: %s", combinedOutput)
-		}
-		return nil, fmt.Errorf("执行 tpmvscmgr.exe 失败: %w\n输出: %s", err, combinedOutput)
-	}
-
-	// 解析输出获取实例 ID
-	result.InstanceID = parseInstanceID(combinedOutput)
-	result.Output = combinedOutput
-
-	log.Printf("[TPMSC] 创建成功: ReaderName=%s, InstanceID=%s", result.ReaderName, result.InstanceID)
-	return result, nil
+	return nil, ErrProvisioningNotImplemented
 }
 
-// DeleteCard 删除 TPM Virtual Smart Card。
+// DeleteCard 不可恢复地销毁指定 TPM VSC；只能由获得明确用户确认的管理流程调用。
+// OpenCert 不会自动调用此函数，删除本地卡片记录也不会触发硬件销毁。
 func DeleteCard(ctx context.Context, instanceID string) error {
 	if runtime.GOOS != "windows" {
 		return fmt.Errorf("TPM Virtual Smart Card 仅支持 Windows 平台")
 	}
-	if instanceID == "" {
-		return fmt.Errorf("实例 ID 不能为空")
+	instanceID = strings.TrimSpace(instanceID)
+	if !strings.HasPrefix(strings.ToUpper(instanceID), "ROOT\\SMARTCARDREADER\\") ||
+		strings.Count(instanceID, "\\") != 2 {
+		return fmt.Errorf("无效的 TPM VSC 实例 ID")
 	}
 
 	cmd := exec.CommandContext(ctx, "tpmvscmgr.exe", "destroy", "/instance", instanceID)
@@ -161,8 +93,7 @@ func DeleteCard(ctx context.Context, instanceID string) error {
 	return nil
 }
 
-// IsAvailable 检查当前系统是否支持 TPM Virtual Smart Card。
-// 需要 Windows 平台且 tpmvscmgr.exe 可用。
+// IsAvailable 仅检查 tpmvscmgr.exe 是否可执行，不代表 TPM 就绪或 VSC 密码学能力已接入。
 func IsAvailable() bool {
 	if runtime.GOOS != "windows" {
 		return false
@@ -180,24 +111,4 @@ func IsRunningAsAdmin() bool {
 	cmd := exec.Command("net", "session")
 	err := cmd.Run()
 	return err == nil
-}
-
-// parseInstanceID 从 tpmvscmgr.exe 输出中解析实例 ID。
-// 输出格式示例：
-//
-//	TpmVscMgr.exe: Successfully created virtual smart card.
-//	Device Instance ID: ROOT\SMARTCARDREADER\0000
-func parseInstanceID(output string) string {
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.Contains(strings.ToLower(line), "device instance id") ||
-			strings.Contains(strings.ToLower(line), "instance id") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				return strings.TrimSpace(parts[1])
-			}
-		}
-	}
-	return ""
 }

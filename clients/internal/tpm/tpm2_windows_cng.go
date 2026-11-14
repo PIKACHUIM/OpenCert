@@ -1,20 +1,18 @@
 //go:build windows
 
-// Package tpm - Windows CNG 后端：通过 ncrypt.dll 调用 Microsoft Platform Crypto Provider（PCP）
-// 或 Microsoft Software Key Storage Provider（软件回退）实现 Provider 接口。
+// Package tpm - Windows CNG 后端：通过 ncrypt.dll 调用 Microsoft Platform Crypto Provider（PCP）。
+// 不回退到 Microsoft Software Key Storage Provider；PCP 不可用时默认 Provider 返回错误。
 //
 // 设计：
-//   - CreateKey / LoadKey / Sign / Decrypt → NCrypt 持久化非对称密钥，私钥由 TPM（或 SWKSP）保护
-//   - NVDefine / NVWrite / NVRead / NVUndefine → DPAPI 保护的本地文件模拟（NCrypt 不支持对称密钥持久化）
-//   - Seal / Unseal → DPAPI CryptProtectData / CryptUnprotectData
+//   - CreateKey / LoadKey / Sign / Decrypt → NCrypt 持久化非对称密钥，由 TPM PCP 管理
+//   - NVDefine / NVWrite / NVRead / NVUndefine → DPAPI 保护的本地文件模拟（并非 TPM NV）
+//   - Seal / Unseal → DPAPI CryptProtectData / CryptUnprotectData（并非 TPM Seal）
 //
 // 密钥命名约定：
 //   - 非对称密钥容器名："GlobalTrusts/<NVHandle或UUID>"
 //   - NV 文件路径：%APPDATA%\GlobalTrusts\client-card\tpm\nv\<handle>.dpapi
 //
-// 真实 TPM 保护：
-//   - 使用 PCP 时密钥由 TPM 硬件生成，私钥永不出芯片
-//   - 使用 SWKSP（无 TPM 回退）时密钥由 DPAPI + 用户凭据保护
+// 仅经 PCP 成功创建的非对称密钥受 TPM 硬件保护；DPAPI 的 Seal/NV 模拟不具备该保证。
 package tpm
 
 import (
@@ -45,7 +43,6 @@ var cryptoRandReader io.Reader = cryptorand.Reader
 // Windows CNG 常量（部分未在 x/sys/windows 中暴露）
 const (
 	ncryptPlatformProvider = "Microsoft Platform Crypto Provider"
-	ncryptSoftwareProvider = "Microsoft Software Key Storage Provider"
 
 	bcryptRSAAlg       = "RSA"
 	bcryptECDSAP256Alg = "ECDSA_P256"
@@ -119,20 +116,13 @@ type cngProvider struct {
 	nextLoadH uint32
 }
 
-// newPlatformProvider Windows 平台工厂：优先使用 PCP，回退到 SWKSP，最终回退 sw-stub。
+// newPlatformProvider 仅打开 Microsoft Platform Crypto Provider（PCP）。
 func newPlatformProvider() (Provider, error) {
-	// 尝试 Platform Crypto Provider（需要 TPM 硬件）
 	p, err := newCNGProvider(ncryptPlatformProvider)
-	if err == nil {
-		return p, nil
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNotAvailable, err)
 	}
-	// 回退到软件 KSP（无 TPM 硬件时）
-	p, err = newCNGProvider(ncryptSoftwareProvider)
-	if err == nil {
-		return p, nil
-	}
-	// 最终回退到 sw-stub
-	return NewSoftwareStub()
+	return p, nil
 }
 
 func newCNGProvider(provName string) (*cngProvider, error) {
@@ -167,11 +157,14 @@ func newCNGProvider(provName string) (*cngProvider, error) {
 
 func (p *cngProvider) Available() bool { return p.hProv != 0 }
 
+// HardwareNVStorageAvailable 为 false：此 CNG 实现的 NV API 实际由 DPAPI 文件承载。
+func (p *cngProvider) HardwareNVStorageAvailable() bool { return false }
+
 func (p *cngProvider) PlatformName() string {
 	if p.provName == ncryptPlatformProvider {
 		return string(TPMPlatformWinCNG)
 	}
-	return "windows-swksp"
+	return "windows-non-tpm-ksp"
 }
 
 // ===== Seal / Unseal (DPAPI) =====
@@ -424,120 +417,9 @@ func (p *cngProvider) CreateKey(alg KeyAlg, authValue []byte) (*WrappedKey, cryp
 	return wk, pub, nil
 }
 
-// ImportKey 将外部 PKCS#8 DER 私钥导入 CNG，设为不可导出的持久化密钥。
-//
-// 注意：Microsoft Platform Crypto Provider (PCP/TPM) 不支持 NCryptImportKey（返回 NTE_NOT_SUPPORTED），
-// 因为 TPM 的设计原则是"密钥只能在芯片内部生成"。
-// 因此导入操作固定使用 Microsoft Software Key Storage Provider（DPAPI 保护），仍然设为不可导出。
-// 导入后签名/解密走 SWKSP 的 NCryptSignHash/NCryptDecrypt，私钥由 DPAPI + Windows 用户凭据保护。
-//
-// 如果需要 TPM 级别保护，应使用 CreateKey（在 TPM 内部生成），然后通过证书链机制信任。
-func (p *cngProvider) ImportKey(privKeyDER []byte, authValue []byte) (*WrappedKey, crypto.PublicKey, error) {
-	// 解析私钥获取算法信息
-	priv, err := x509.ParsePKCS8PrivateKey(privKeyDER)
-	if err != nil {
-		return nil, nil, fmt.Errorf("解析导入私钥失败: %w", err)
-	}
-	_, alg, err := extractPubAndAlg(priv)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// 生成唯一容器名
-	var rndBuf [4]byte
-	io.ReadFull(cryptoRandReader, rndBuf[:])
-	keyName := fmt.Sprintf("GlobalTrusts/%08x", binary.LittleEndian.Uint32(rndBuf[:]))
-
-	slog.Info("[TPM/CNG] ImportKey 开始（使用 Software KSP）",
-		"alg", string(alg), "key_name", keyName)
-
-	// 打开 Software KSP（PCP 不支持 ImportKey）
-	swkspName, _ := windows.UTF16PtrFromString(ncryptSoftwareProvider)
-	var hSwProv uintptr
-	r, _, _ := procNCryptOpenStorageProvider.Call(
-		uintptr(unsafe.Pointer(&hSwProv)),
-		uintptr(unsafe.Pointer(swkspName)),
-		0,
-	)
-	if r != 0 {
-		return nil, nil, fmt.Errorf("打开 Software KSP 失败: 0x%08X", r)
-	}
-	defer procNCryptFreeObject.Call(hSwProv)
-
-	// NCryptImportKey with PKCS8_PRIVATEKEY_BLOB
-	blobType := "PKCS8_PRIVATEKEY_BLOB"
-	blobTypeUTF16, _ := windows.UTF16PtrFromString(blobType)
-
-	var hKey uintptr
-	procImport := ncryptDll.NewProc("NCryptImportKey")
-	r, _, _ = procImport.Call(
-		hSwProv,
-		0, // hImportKey (NULL)
-		uintptr(unsafe.Pointer(blobTypeUTF16)),
-		0, // pParameterList (NULL)
-		uintptr(unsafe.Pointer(&hKey)),
-		uintptr(unsafe.Pointer(&privKeyDER[0])),
-		uintptr(len(privKeyDER)),
-		0x80, // NCRYPT_OVERWRITE_KEY_FLAG
-	)
-	if r != 0 {
-		return nil, nil, fmt.Errorf("NCryptImportKey(SWKSP) failed: 0x%08X", r)
-	}
-
-	// 设置不可导出
-	setNCryptProperty(hKey, ncryptExportPolicyProperty, ncryptAllowNothingExport)
-
-	// 获取 CNG 分配的实际密钥名称
-	nameBytes := make([]byte, 512)
-	var nameLen uint32
-	propNameUTF16, _ := windows.UTF16PtrFromString("Unique Name")
-	procGetProp := ncryptDll.NewProc("NCryptGetProperty")
-	r2, _, _ := procGetProp.Call(
-		hKey,
-		uintptr(unsafe.Pointer(propNameUTF16)),
-		uintptr(unsafe.Pointer(&nameBytes[0])),
-		uintptr(len(nameBytes)),
-		uintptr(unsafe.Pointer(&nameLen)),
-		0,
-	)
-	if r2 == 0 && nameLen > 0 {
-		actualName := windows.UTF16PtrToString((*uint16)(unsafe.Pointer(&nameBytes[0])))
-		if actualName != "" {
-			keyName = actualName
-		}
-	}
-
-	// 导出公钥
-	pubDER, err := exportPublicKey(hKey, alg)
-	if err != nil {
-		procNCryptFreeObject.Call(hKey)
-		return nil, nil, fmt.Errorf("导出公钥失败: %w", err)
-	}
-	procNCryptFreeObject.Call(hKey)
-
-	slog.Info("[TPM/CNG] ImportKey 完成 — 私钥已导入 Software KSP（DPAPI 保护，不可导出）",
-		"key_name", keyName, "alg", string(alg))
-
-	importedPub, err := x509.ParsePKIXPublicKey(pubDER)
-	if err != nil {
-		return nil, nil, fmt.Errorf("解析导入后公钥失败: %w", err)
-	}
-
-	// WrappedKey 记录使用 Software KSP（LoadKey 时需要用 SWKSP 打开）
-	privJSON, _ := json.Marshal(cngWrappedKey{
-		KeyName:  keyName,
-		Alg:      alg,
-		Provider: ncryptSoftwareProvider, // 固定为 SWKSP
-	})
-
-	wk := &WrappedKey{
-		Alg:        alg,
-		Backend:    "windows-swksp-import",
-		Public:     pubDER,
-		Private:    privJSON,
-		AuthDigest: nvAuthDigest(authValue, []byte(keyName)),
-	}
-	return wk, importedPub, nil
+// ImportKey 拒绝把外部私钥导入到软件 KSP 后冒充 TPM 密钥。
+func (p *cngProvider) ImportKey(_ []byte, _ []byte) (*WrappedKey, crypto.PublicKey, error) {
+	return nil, nil, ErrImportNotSupported
 }
 
 func (p *cngProvider) LoadKey(wrapped *WrappedKey, authValue []byte) (LoadedHandle, error) {
@@ -554,36 +436,22 @@ func (p *cngProvider) LoadKey(wrapped *WrappedKey, authValue []byte) (LoadedHand
 		return 0, ErrKeyAuthFailed
 	}
 
-	slog.Info("[TPM/CNG] LoadKey", "key_name", cw.KeyName, "alg", string(cw.Alg), "provider", cw.Provider)
-
-	// 根据 wrapped key 中记录的 Provider 选择打开哪个 KSP
-	hProv := p.hProv
-	var tempProv uintptr
-	if cw.Provider != "" && cw.Provider != p.provName {
-		provUTF16, _ := windows.UTF16PtrFromString(cw.Provider)
-		ret, _, _ := procNCryptOpenStorageProvider.Call(
-			uintptr(unsafe.Pointer(&tempProv)),
-			uintptr(unsafe.Pointer(provUTF16)),
-			0,
-		)
-		if ret != 0 {
-			return 0, fmt.Errorf("打开 Provider(%s) 失败: 0x%08X", cw.Provider, ret)
-		}
-		hProv = tempProv
+	if p.provName != ncryptPlatformProvider ||
+		(cw.Provider != "" && cw.Provider != ncryptPlatformProvider) {
+		return 0, fmt.Errorf("%w: wrapped key provider is not Microsoft Platform Crypto Provider", ErrNotAvailable)
 	}
+
+	slog.Info("[TPM/CNG] LoadKey", "key_name", cw.KeyName, "alg", string(cw.Alg), "provider", cw.Provider)
 
 	keyNameUTF16, _ := windows.UTF16PtrFromString(cw.KeyName)
 	var hKey uintptr
 	r, _, _ := procNCryptOpenKey.Call(
-		hProv,
+		p.hProv,
 		uintptr(unsafe.Pointer(&hKey)),
 		uintptr(unsafe.Pointer(keyNameUTF16)),
 		0, // dwLegacyKeySpec
 		0, // dwFlags
 	)
-	if tempProv != 0 {
-		procNCryptFreeObject.Call(tempProv)
-	}
 	if r != 0 {
 		return 0, fmt.Errorf("NCryptOpenKey(%s) failed: 0x%08X", cw.KeyName, r)
 	}

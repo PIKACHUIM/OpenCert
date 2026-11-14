@@ -141,6 +141,9 @@ func (s *Service) Quote(ctx context.Context, skuCode string, quantity int) (*Quo
 	if err := s.validateCloudCardSKU(ctx, product, sku); err != nil {
 		return nil, err
 	}
+	if err := s.validateLocalCardSKU(ctx, product, sku); err != nil {
+		return nil, err
+	}
 
 	if quantity <= 0 {
 		quantity = sku.MinQty
@@ -572,6 +575,9 @@ func (s *Service) CreateSKU(ctx context.Context, sku *storage.PortalProductSKU) 
 	if err := s.validateCloudCardSKU(ctx, product, sku); err != nil {
 		return err
 	}
+	if err := s.validateLocalCardSKU(ctx, product, sku); err != nil {
+		return err
+	}
 	return s.repo.CreateSKU(ctx, sku)
 }
 
@@ -588,6 +594,9 @@ func (s *Service) UpdateSKU(ctx context.Context, sku *storage.PortalProductSKU) 
 		return err
 	}
 	if err := s.validateCloudCardSKU(ctx, product, sku); err != nil {
+		return err
+	}
+	if err := s.validateLocalCardSKU(ctx, product, sku); err != nil {
 		return err
 	}
 	return s.repo.UpdateSKU(ctx, sku)
@@ -701,6 +710,9 @@ func (s *Service) validateCloudCardSKU(ctx context.Context, product *storage.Por
 	if sku.CloudCardTmplUUID == "" {
 		return fmt.Errorf("云卡商品规格必须关联云卡开通模板")
 	}
+	if sku.DeliveryMode != storage.DeliveryCloudCard {
+		return fmt.Errorf("云卡商品规格的交付方式必须为 cloud_card")
+	}
 	if sku.DurationMonths <= 0 || sku.DurationMonths > 120 {
 		return fmt.Errorf("云卡服务期需配置在 1 到 120 个月之间")
 	}
@@ -722,6 +734,23 @@ func (s *Service) validateCloudCardSKU(ctx context.Context, product *storage.Por
 		return fmt.Errorf("云卡开通模板的存储区域不存在或未启用")
 	}
 	return nil
+}
+
+// validateLocalCardSKU 限制本地设备 SKU 为模板明确允许的证书 CSR 交付。
+func (s *Service) validateLocalCardSKU(ctx context.Context, product *storage.PortalProduct, sku *storage.PortalProductSKU) error {
+	if product.Category == storage.ProductCategoryCloudCard {
+		if sku.DeliveryMode != storage.DeliveryCloudCard {
+			return fmt.Errorf("云卡商品规格的交付方式必须为 cloud_card")
+		}
+		return nil
+	}
+	if sku.DeliveryMode != storage.DeliveryPhysical && sku.DeliveryMode != storage.DeliveryVirtual {
+		return nil
+	}
+	if sku.CertApplyTmplUUID == "" || s.workflowSvc == nil {
+		return fmt.Errorf("本地设备交付必须关联有效的证书申请模板")
+	}
+	return s.workflowSvc.ValidateDeliveryMode(ctx, sku.CertApplyTmplUUID, string(sku.DeliveryMode))
 }
 
 // ---- 校验 ----
@@ -775,7 +804,8 @@ func validateSKU(s *storage.PortalProductSKU) error {
 		s.Stock = -1
 	}
 	switch s.DeliveryMode {
-	case storage.DeliveryDownload, storage.DeliveryCloudCard, storage.DeliveryCSR:
+	case storage.DeliveryDownload, storage.DeliveryCloudCard, storage.DeliveryCSR,
+		storage.DeliveryPhysical, storage.DeliveryVirtual:
 	case "":
 		s.DeliveryMode = storage.DeliveryCloudCard
 	default:

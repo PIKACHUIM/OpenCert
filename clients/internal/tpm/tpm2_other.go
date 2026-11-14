@@ -1,8 +1,8 @@
 //go:build !linux && !windows && !darwin
 
-// Package tpm - 其它平台：复用 SoftwareStub，保证可用。
+// Package tpm - 其它平台尚未接入真实 TPM Provider。
 package tpm
 
 func newPlatformProvider() (Provider, error) {
-	return NewSoftwareStub()
+	return nil, ErrNotAvailable
 }

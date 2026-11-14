@@ -333,8 +333,8 @@ export const exportPKICert = (uuid: string, format: ExportCertFormat, password: 
     });
 };
 
-export const importPKICertToCard = (uuid: string, cardUUID: string) =>
-  http.post(`/api/pki/certs/${uuid}/import-to-card`, { card_uuid: cardUUID }).then((r) => r.data);
+export const importPKICertToCard = (uuid: string, cardUUID: string, cardPassword: string) =>
+  http.post(`/api/pki/certs/${uuid}/import-to-card`, { card_uuid: cardUUID, card_password: cardPassword }).then((r) => r.data);
 
 export const revokePKICert = (uuid: string) =>
   http.post(`/api/pki/certs/${uuid}/revoke`).then((r) => r.data);

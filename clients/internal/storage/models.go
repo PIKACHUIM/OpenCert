@@ -53,8 +53,8 @@ const (
 type SecurityLevel string
 
 const (
-	SecurityLevelHigh   SecurityLevel = "high"   // 高安全性：密钥存储于 TPM，不可导出
-	SecurityLevelMedium SecurityLevel = "medium" // 中安全性：TPM 证书密钥加密 + 主密钥加密，ADMINKEY 可导出
+	SecurityLevelHigh   SecurityLevel = "high"   // 高安全性：仅硬件 Provider 内生成的密钥具备不可导出保证
+	SecurityLevelMedium SecurityLevel = "medium" // 中安全性：要求真实硬件 TPM NV + 主密钥加密；不支持时必须拒绝创建
 	SecurityLevelLow    SecurityLevel = "low"    // 低安全性：仅主密钥加密，PIN/密码可导出
 )
 
@@ -117,15 +117,16 @@ type Card struct {
 type CertType string
 
 const (
-	CertTypeX509    CertType = "x509"
-	CertTypeSSH     CertType = "ssh"
-	CertTypeGPG     CertType = "gpg"
-	CertTypeTOTP    CertType = "totp"
-	CertTypeFIDO    CertType = "fido-umdf"
-	CertTypeLogin   CertType = "login"
-	CertTypeText    CertType = "text"
-	CertTypeNote    CertType = "note"
-	CertTypePayment CertType = "payment"
+	CertTypeInternal CertType = "internal" // 隐藏的待绑定密钥/内部密钥记录
+	CertTypeX509     CertType = "x509"
+	CertTypeSSH      CertType = "ssh"
+	CertTypeGPG      CertType = "gpg"
+	CertTypeTOTP     CertType = "totp"
+	CertTypeFIDO     CertType = "fido-umdf"
+	CertTypeLogin    CertType = "login"
+	CertTypeText     CertType = "text"
+	CertTypeNote     CertType = "note"
+	CertTypePayment  CertType = "payment"
 )
 
 // TPMPlatform 是 TPM 平台类型。

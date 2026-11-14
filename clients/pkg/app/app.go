@@ -25,7 +25,6 @@ import (
 	"github.com/globaltrusts/client-card/internal/card/cloud"
 	"github.com/globaltrusts/client-card/internal/card/local"
 	tpm2card "github.com/globaltrusts/client-card/internal/card/tpm2"
-	"github.com/globaltrusts/client-card/internal/card/tpmsc"
 	"github.com/globaltrusts/client-card/internal/certprop"
 	"github.com/globaltrusts/client-card/internal/fido"
 	"github.com/globaltrusts/client-card/internal/ipc"
@@ -105,18 +104,12 @@ func Start(ctx context.Context, opts Options) (*Instance, error) {
 	// 初始化卡片管理器
 	manager := card.NewManager()
 
-	// 初始化 TPM Provider（失败时退化为软件 stub，保证 medium/high 仍可使用统一接口）
+	// 默认只启用平台硬件 Provider；不可用时 medium/high 必须失败关闭。
 	tpmProv, tpmErr := tpm.NewProvider()
 	if tpmErr != nil {
-		slog.Warn("TPM Provider 不可用，将退化为软件 stub", "error", tpmErr)
-		fallback, fbErr := tpm.NewSoftwareStub()
-		if fbErr != nil {
-			slog.Error("软件 stub 初始化失败，medium/high 安全等级将无法使用", "error", fbErr)
-		} else {
-			tpmProv = fallback
-		}
-	}
-	if tpmProv != nil {
+		slog.Warn("真实 TPM Provider 不可用，medium/high 安全等级将不可用", "error", tpmErr)
+		tpmProv = nil
+	} else {
 		slog.Info("TPM Provider 已就绪", "platform", tpmProv.PlatformName())
 	}
 
@@ -307,13 +300,9 @@ func loadLocalSlots(manager *card.Manager, db *storage.DB, tpmProv tpm.Provider)
 			manager.RegisterSlot(slot)
 			slog.Info("已注册 Cloud Slot", "slot_id", slotID, "card", c.CardName, "url", c.CloudURL)
 		case storage.SlotTypeTPMSC:
-			if !tpmsc.IsAvailable() {
-				slog.Warn("跳过 TPMSC 卡片（tpmvscmgr.exe 不可用）", "card", c.CardName)
-				continue
-			}
-			slot := tpmsc.New(slotID, c, certRepo)
-			manager.RegisterSlot(slot)
-			slog.Info("已注册 TPM-VSC Slot", "slot_id", slotID, "card", c.CardName)
+			// 保留记录供后续恢复/审计；未接入 CNG/CAPI 前不注册伪 Slot。
+			slog.Warn("保留 TPMSC 卡片记录，但不注册 PKCS#11 Slot（Provider 未实现）", "card", c.CardName)
+			continue
 		default:
 			continue
 		}

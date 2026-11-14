@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Table, Button, Space, Tag, Typography, Modal, Form, Input, Select,
-  Popconfirm, message, Tooltip, Card, Drawer, Divider, Row, Col, Checkbox, Collapse,
+  Popconfirm, message, Tooltip, Card, Drawer, Divider, Row, Col, Checkbox, Collapse, Alert,
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, ReloadOutlined, DownloadOutlined,
@@ -432,20 +432,29 @@ const CSRPage: React.FC = () => {
               <Form.Item name="key_storage" label="密钥存储位置" rules={[{ required: true }]}>
                 <Select onChange={(v) => setKeyStorage(v)} options={[
                   { label: '数据库（可被导出）', value: 'database' },
-                  { label: '智能卡（依据策略）', value: 'smartcard' },
+                  { label: '低安全级别本地卡（软件生成后加密存储）', value: 'smartcard' },
                 ]} />
               </Form.Item>
             </Col>
           </Row>
           {keyStorage === 'smartcard' && (
             <>
+              <Alert
+                message="当前仅支持低安全级别本地卡"
+                description="CSR 密钥由客户端软件生成后加密存储；TPM2、TPM VSC 和实体卡的硬件 CSR Provider 尚未接入。"
+                type="info" showIcon style={{ marginBottom: 16 }}
+              />
               <Form.Item name="card_uuid" label="目标智能卡" rules={[{ required: true, message: '请选择智能卡' }]}>
                 <Select
-                  placeholder="选择智能卡（密钥将在卡上生成）"
-                  options={cards.map((c) => ({
-                    value: c.uuid,
-                    label: `${c.card_name} (${c.slot_type})${c.security_level === 'high' ? ' [高安全]' : ''}`,
-                  }))}
+                  placeholder="选择低安全级别本地卡（CSR 密钥使用软件生成后加密存储）"
+                  options={cards.map((c) => {
+                    const supported = c.slot_type === 'local' && (!c.security_level || c.security_level === 'low');
+                    return {
+                      value: c.uuid,
+                      label: `${c.card_name} (${c.slot_type})${supported ? '' : ' [硬件 CSR Provider 未接入]'}`,
+                      disabled: !supported,
+                    };
+                  })}
                   onChange={(uuid: string) => {
                     setSelectedCardUUID(uuid);
                     const card = cards.find((c) => c.uuid === uuid);
