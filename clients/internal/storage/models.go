@@ -45,8 +45,17 @@ type SlotType string
 const (
 	SlotTypeLocal SlotType = "local"
 	SlotTypeTPM2  SlotType = "tpm2"
-	SlotTypeTPMSC SlotType = "tpmsc" // Microsoft TPM Virtual Smart Card（tpmvscmgr.exe）
+	SlotTypeTPMSC SlotType = "tpmsc" // Microsoft TPM Virtual Smart Card
 	SlotTypeCloud SlotType = "cloud"
+)
+
+const (
+	TPMSCStateProvisioning         = "provisioning"
+	TPMSCStateProvisioningUnknown  = "provisioning_unknown"
+	TPMSCStateReady                = "ready"
+	TPMSCStatePendingReboot        = "pending_reboot"
+	TPMSCStateReaderUnavailable    = "reader_unavailable"
+	TPMSCStateDestroyPendingReboot = "destroy_pending_reboot"
 )
 
 // SecurityLevel 是智能卡安全等级。
@@ -96,6 +105,10 @@ type Card struct {
 	TPMCertKeyNVHandle uint32 `json:"-"`
 	// medium/high：TPM Provider 平台名（sw-stub / windows-cng / linux-tpm2 / mock 等）
 	TPMProvider string `json:"tpm_provider,omitempty"`
+	// TPM VSC metadata. Credentials are never stored in the Card model.
+	TPMSCInstanceID string `json:"tpmsc_instance_id,omitempty"`
+	TPMSCReaderName string `json:"tpmsc_reader_name,omitempty"`
+	TPMSCState      string `json:"tpmsc_state,omitempty"`
 	// PIN 安全字段
 	PINRetries     int  `json:"pin_retries"`      // PIN 错误最大次数（默认 3）
 	PINFailedCount int  `json:"pin_failed_count"` // 当前连续错误次数

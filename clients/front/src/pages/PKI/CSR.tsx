@@ -432,7 +432,7 @@ const CSRPage: React.FC = () => {
               <Form.Item name="key_storage" label="密钥存储位置" rules={[{ required: true }]}>
                 <Select onChange={(v) => setKeyStorage(v)} options={[
                   { label: '数据库（可被导出）', value: 'database' },
-                  { label: '低安全级别本地卡（软件生成后加密存储）', value: 'smartcard' },
+                  { label: '智能卡（本地卡 / Windows TPM / TPM VSC）', value: 'smartcard' },
                 ]} />
               </Form.Item>
             </Col>
@@ -440,18 +440,24 @@ const CSRPage: React.FC = () => {
           {keyStorage === 'smartcard' && (
             <>
               <Alert
-                message="当前仅支持低安全级别本地卡"
-                description="CSR 密钥由客户端软件生成后加密存储；TPM2、TPM VSC 和实体卡的硬件 CSR Provider 尚未接入。"
+                message={selectedCard?.slot_type === 'tpmsc' ? 'Windows TPM VSC / Smart Card KSP' : isHighSecurity ? 'Windows TPM 高安全本地卡' : '低安全级别本地卡'}
+                description={selectedCard?.slot_type === 'tpmsc'
+                  ? 'CSR 使用 Microsoft Smart Card KSP 在 VSC 容器中创建并签名，私钥不会写入数据库；KSP 可能显示 Windows PIN 对话框。普通 PKCS#11 Slot 与证书枚举尚未接入。'
+                  : isHighSecurity
+                    ? 'CSR 密钥由 Microsoft Platform Crypto Provider 创建并签名，私钥不导出；需要 Windows TPM Provider 可用。'
+                    : 'CSR 密钥由客户端软件生成后加密存储。'}
                 type="info" showIcon style={{ marginBottom: 16 }}
               />
               <Form.Item name="card_uuid" label="目标智能卡" rules={[{ required: true, message: '请选择智能卡' }]}>
                 <Select
-                  placeholder="选择低安全级别本地卡（CSR 密钥使用软件生成后加密存储）"
+                  placeholder="选择受支持的本地卡或已就绪的 TPM VSC"
                   options={cards.map((c) => {
-                    const supported = c.slot_type === 'local' && (!c.security_level || c.security_level === 'low');
+                    const localSupported = c.slot_type === 'local' && (!c.security_level || c.security_level === 'low' || c.security_level === 'high');
+                    const vscSupported = c.slot_type === 'tpmsc' && c.tpmsc_state === 'ready' && !!c.tpmsc_reader_name;
+                    const supported = localSupported || vscSupported;
                     return {
                       value: c.uuid,
-                      label: `${c.card_name} (${c.slot_type})${supported ? '' : ' [硬件 CSR Provider 未接入]'}`,
+                      label: `${c.card_name} (${c.slot_type}${c.security_level ? `/${c.security_level}` : ''})${c.slot_type === 'tpmsc' && !vscSupported ? ' [reader unavailable]' : ''}${supported ? '' : c.slot_type === 'tpmsc' ? '' : ' [硬件 CSR Provider 未接入]'}`,
                       disabled: !supported,
                     };
                   })}
@@ -474,9 +480,11 @@ const CSRPage: React.FC = () => {
                   }}
                 />
               </Form.Item>
-              <Form.Item name="card_password" label="卡片密码" rules={[{ required: true, message: '请输入卡片密码以解锁主密钥' }]}>
-                <Input.Password placeholder="输入卡片密码（用于加密存储密钥）" />
-              </Form.Item>
+              {selectedCard?.slot_type !== 'tpmsc' && (
+                <Form.Item name="card_password" label="卡片密码" rules={[{ required: true, message: '请输入卡片密码以解锁本地主密钥' }]}>
+                  <Input.Password placeholder="输入本地卡片密码" />
+                </Form.Item>
+              )}
             </>
           )}
 

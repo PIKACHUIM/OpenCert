@@ -21,3 +21,23 @@ func TestHardwareNVRequiresExplicitBackendCapability(t *testing.T) {
 		t.Fatal("provider without hardware NV must not be accepted")
 	}
 }
+
+type hardwareKeyCapabilityProvider struct {
+	Provider
+	available bool
+}
+
+func (p hardwareKeyCapabilityProvider) HardwareKeyGenerationAvailable() bool { return p.available }
+
+func TestHardwareKeyGenerationRequiresExplicitBackendCapability(t *testing.T) {
+	provider := NewMock()
+	if SupportsHardwareKeyGeneration(provider) {
+		t.Fatal("mock provider must not claim hardware key generation")
+	}
+	if !SupportsHardwareKeyGeneration(hardwareKeyCapabilityProvider{Provider: provider, available: true}) {
+		t.Fatal("explicitly declared hardware key capability was ignored")
+	}
+	if SupportsHardwareKeyGeneration(hardwareKeyCapabilityProvider{Provider: provider}) {
+		t.Fatal("provider without hardware key generation must not be accepted")
+	}
+}

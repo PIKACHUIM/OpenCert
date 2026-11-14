@@ -37,8 +37,11 @@ func IsSM2Cert(der []byte) bool {
 // ContainerPrefix 是密钥容器名称前缀。
 const ContainerPrefix = "OpenCert_"
 
-// CSPName 是注册到 Windows 的 KSP 名称（OpenCert 自定义 KSP）。
+// CSPName is the OpenCert KSP used for local application-managed keys.
 const CSPName = "OpenCert Key Storage Provider"
+
+// SmartCardKSPName is the Microsoft KSP used for VSC-backed keys.
+const SmartCardKSPName = "Microsoft Smart Card Key Storage Provider"
 
 // PropagateResult 是单个证书传播的结果。
 type PropagateResult struct {
@@ -60,17 +63,22 @@ type SyncResult struct {
 
 // CertInfo 是传递给平台实现的证书信息。
 type CertInfo struct {
-	UUID       string // 证书 UUID（用于生成容器名）
-	CardUUID   string // 所属卡片 UUID
-	CommonName string // 证书 CN
-	CertPEM    string // 证书 PEM 内容
-	CertDER    []byte // 证书 DER 编码
-	HasKey     bool   // 是否有关联私钥
-	KeyType    string // 密钥类型 (rsa2048, ec256, ...)
+	UUID         string // 证书 UUID（用于生成容器名）
+	CardUUID     string // 所属卡片 UUID
+	CommonName   string // 证书 CN
+	CertPEM      string // 证书 PEM 内容
+	CertDER      []byte // 证书 DER 编码
+	HasKey       bool   // 是否有关联私钥
+	KeyType      string // 密钥类型 (rsa2048, ec256, ...)
+	KeyProvider  string // 空值使用 OpenCert KSP；否则使用指定的 KSP
+	KeyContainer string // 空值由 ContainerName 推导
 }
 
-// ContainerName 生成密钥容器名称。
+// ContainerName returns an explicit provider container or an OpenCert default container.
 func (c *CertInfo) ContainerName() string {
+	if c.KeyContainer != "" {
+		return c.KeyContainer
+	}
 	if c.CardUUID != "" {
 		return ContainerPrefix + c.CardUUID + "_" + c.UUID
 	}

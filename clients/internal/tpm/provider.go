@@ -87,6 +87,23 @@ func SupportsHardwareNV(provider Provider) bool {
 	return provider != nil && ok && capability.HardwareNVStorageAvailable()
 }
 
+// HardwareKeyGenerationCapability 是后端对硬件内生成非导出密钥能力的声明。
+type HardwareKeyGenerationCapability interface {
+	HardwareKeyGenerationAvailable() bool
+}
+
+// SupportsHardwareKeyGeneration 判断 Provider 是否声明支持硬件密钥生成。
+func SupportsHardwareKeyGeneration(provider Provider) bool {
+	capability, ok := provider.(HardwareKeyGenerationCapability)
+	return provider != nil && ok && provider.Available() && capability.HardwareKeyGenerationAvailable()
+}
+
+// PersistentKeyDeleter 删除 Provider 持久化的非对称密钥。
+// 不能删除密钥的 Provider 不应实现此接口；调用方必须保留对应记录并报告错误。
+type PersistentKeyDeleter interface {
+	DeleteKey(wrapped *WrappedKey) error
+}
+
 // Provider 是 TPM/SE 的抽象接口。
 type Provider interface {
 	// ---- 基础 ----
@@ -128,16 +145,17 @@ type Provider interface {
 
 // 错误集合。
 var (
-	ErrNotAvailable          = fmt.Errorf("TPM/Secure Enclave 不可用")
-	ErrUnsealFailed          = fmt.Errorf("TPM 解封失败")
-	ErrNVNotFound            = fmt.Errorf("TPM NV 槽不存在")
-	ErrNVAuthFailed          = fmt.Errorf("TPM NV 授权值校验失败")
-	ErrKeyAuthFailed         = fmt.Errorf("TPM 密钥授权值校验失败")
-	ErrUnknownAlg            = fmt.Errorf("TPM 不支持的密钥算法")
-	ErrUnknownScheme         = fmt.Errorf("TPM 不支持的签名方案")
-	ErrHandleNotLoaded       = fmt.Errorf("TPM 密钥句柄无效")
-	ErrImportNotSupported    = fmt.Errorf("当前 TPM Provider 不支持导入外部私钥；请在硬件 TPM 中生成密钥")
-	ErrHardwareNVUnavailable = fmt.Errorf("当前 TPM Provider 未实现硬件 NV 存储；medium 安全级别不可用")
+	ErrNotAvailable                      = fmt.Errorf("TPM/Secure Enclave 不可用")
+	ErrUnsealFailed                      = fmt.Errorf("TPM 解封失败")
+	ErrNVNotFound                        = fmt.Errorf("TPM NV 槽不存在")
+	ErrNVAuthFailed                      = fmt.Errorf("TPM NV 授权值校验失败")
+	ErrKeyAuthFailed                     = fmt.Errorf("TPM 密钥授权值校验失败")
+	ErrUnknownAlg                        = fmt.Errorf("TPM 不支持的密钥算法")
+	ErrUnknownScheme                     = fmt.Errorf("TPM 不支持的签名方案")
+	ErrHandleNotLoaded                   = fmt.Errorf("TPM 密钥句柄无效")
+	ErrImportNotSupported                = fmt.Errorf("当前 TPM Provider 不支持导入外部私钥；请在硬件 TPM 中生成密钥")
+	ErrHardwareNVUnavailable             = fmt.Errorf("当前 TPM Provider 未实现硬件 NV 存储；medium 安全级别不可用")
+	ErrHardwareKeyGenerationNotAvailable = fmt.Errorf("当前 TPM Provider 未声明硬件密钥生成能力；high 安全级别不可用")
 )
 
 // NewProvider 创建当前平台默认的硬件 TPM Provider。

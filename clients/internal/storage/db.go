@@ -168,6 +168,10 @@ func (db *DB) migrate() error {
 	// medium 真 TPM 集成：NV 句柄 + Provider 平台标识
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_cert_key_nv_handle INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_provider TEXT NOT NULL DEFAULT ''`)
+	// TPM VSC 生命周期元数据；凭据不进入数据库
+	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpmsc_instance_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpmsc_reader_name TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpmsc_state TEXT NOT NULL DEFAULT ''`)
 	// high 模式：证书表新增 wrapped key blob 字段、TPM 证书密钥盐值
 	_, _ = db.conn.Exec(`ALTER TABLE certificates ADD COLUMN tpm_wrapped_blob TEXT`)
 	_, _ = db.conn.Exec(`ALTER TABLE certificates ADD COLUMN tpm_cert_key_salt TEXT`)
@@ -323,6 +327,9 @@ CREATE TABLE IF NOT EXISTS cards (
     tpm_cert_key_salt TEXT,                         -- medium：应急恢复副本盐值
     tpm_cert_key_nv_handle INTEGER NOT NULL DEFAULT 0, -- medium：TPM NV 句柄（0=未启用）
     tpm_provider    TEXT NOT NULL DEFAULT '',       -- medium/high：TPM Provider 平台名
+    tpmsc_instance_id TEXT NOT NULL DEFAULT '',     -- TPM VSC 设备实例 ID
+    tpmsc_reader_name TEXT NOT NULL DEFAULT '',     -- 最近发现的 Smart Card reader 名称
+    tpmsc_state     TEXT NOT NULL DEFAULT '',       -- provisioning / ready / pending_reboot / unavailable
     cloud_url       TEXT NOT NULL DEFAULT '',       -- Cloud Slot: servers 服务地址
     cloud_card_uuid TEXT NOT NULL DEFAULT '',       -- Cloud Slot: 在 servers 中的卡片 UUID
     FOREIGN KEY (user_uuid) REFERENCES users(uuid) ON DELETE CASCADE

@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/globaltrusts/client-card/internal/card/local"
+	"github.com/globaltrusts/client-card/internal/card/tpmsc"
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/internal/tpm"
 )
@@ -248,7 +251,12 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if rejectUnsupportedTPMSC(w, storage.SlotType(req.SlotType), "创建卡片") {
+	if storage.SlotType(req.SlotType) == storage.SlotTypeTPMSC {
+		if strings.TrimSpace(req.SecurityLevel) != "" && secLevel != storage.SecurityLevelHigh {
+			writeError(w, http.StatusBadRequest, "TPM VSC 固定使用 high 安全等级")
+			return
+		}
+		s.handleCreateTPMSCCard(w, r, req.UserUUID, req.CardName, req.PIN, req.PUK, req.AdminKey, req.Remark, req.ExpiresAt)
 		return
 	}
 
@@ -257,8 +265,8 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, tpm.ErrHardwareNVUnavailable.Error())
 		return
 	}
-	if secLevel == storage.SecurityLevelHigh && (s.tpmProvider == nil || !s.tpmProvider.Available()) {
-		writeError(w, http.StatusServiceUnavailable, "high 安全等级需要可用的硬件 TPM Provider")
+	if secLevel == storage.SecurityLevelHigh && !tpm.SupportsHardwareKeyGeneration(s.tpmProvider) {
+		writeError(w, http.StatusNotImplemented, tpm.ErrHardwareKeyGenerationNotAvailable.Error())
 		return
 	}
 
@@ -299,6 +307,69 @@ func (s *Server) handleCreateCard(w http.ResponseWriter, r *http.Request) {
 		"puk":       result.PUK,      // 仅自动生成时非空
 		"admin_key": result.AdminKey, // 仅自动生成时非空
 		"pin":       result.PIN,      // 仅自动生成时非空
+	}})
+}
+
+func (s *Server) handleCreateTPMSCCard(w http.ResponseWriter, r *http.Request, userUUID, cardName, pin, puk, adminKey, remark, expiresAt string) {
+	if !tpmsc.IsAvailable() {
+		writeError(w, http.StatusNotImplemented, "当前系统没有 TPM VSC 管理工具")
+		return
+	}
+	args := tpmsc.CreateCardArgs{Name: cardName, PIN: pin, PUK: puk, AdminKey: adminKey}
+	if err := tpmsc.ValidateCreateCardArgs(args); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	card := &storage.Card{
+		UUID: newUUID(), SlotType: storage.SlotTypeTPMSC, CardName: cardName,
+		UserUUID: userUUID, Enabled: true, SecurityLevel: storage.SecurityLevelHigh,
+		Remark: remark, TPMSCState: storage.TPMSCStateProvisioning,
+	}
+	if expiresAt != "" {
+		expiry, err := time.Parse(time.RFC3339, expiresAt)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "expires_at 必须为 RFC3339 格式")
+			return
+		}
+		card.ExpiresAt = &expiry
+	}
+	if err := s.cardRepo.Create(r.Context(), card); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存 VSC 创建意图失败: "+err.Error())
+		return
+	}
+
+	result, err := tpmsc.CreateCard(r.Context(), args)
+	if err != nil {
+		if err == tpmsc.ErrProvisioningNotImplemented {
+			_ = s.cardRepo.Delete(context.WithoutCancel(r.Context()), card.UUID)
+			writeError(w, http.StatusNotImplemented, err.Error())
+			return
+		}
+		card.TPMSCState = storage.TPMSCStateProvisioningUnknown
+		_ = s.cardRepo.Update(context.WithoutCancel(r.Context()), card)
+		writeError(w, http.StatusServiceUnavailable, "VSC 创建结果待核实；请勿重试创建。卡片记录 UUID: "+card.UUID+"; "+err.Error())
+		return
+	}
+
+	card.TPMSCInstanceID = result.InstanceID
+	card.TPMSCReaderName = result.ReaderName
+	switch {
+	case result.NeedReboot:
+		card.TPMSCState = storage.TPMSCStatePendingReboot
+	case result.ReaderName == "":
+		card.TPMSCState = storage.TPMSCStateReaderUnavailable
+	default:
+		card.TPMSCState = storage.TPMSCStateReady
+	}
+	if err := s.cardRepo.Update(context.WithoutCancel(r.Context()), card); err != nil {
+		writeError(w, http.StatusInternalServerError, "TPM VSC 已创建但保存设备实例 ID 失败；请保存 InstanceID 并联系管理员: "+result.InstanceID)
+		return
+	}
+	s.notifySlotChanged("create")
+	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: map[string]interface{}{
+		"card": card, "instance_id": result.InstanceID, "reader_name": result.ReaderName,
+		"need_reboot": result.NeedReboot,
 	}})
 }
 
@@ -423,8 +494,45 @@ func (s *Server) handleDeleteCard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "卡片不存在")
 		return
 	}
-	if rejectUnsupportedTPMSC(w, card.SlotType, "删除卡片记录") {
+	if card.UserUUID != req.UserUUID {
+		writeError(w, http.StatusForbidden, "无权删除其他用户的卡片")
 		return
+	}
+	if card.SlotType == storage.SlotTypeTPMSC {
+		if card.TPMSCInstanceID == "" {
+			writeError(w, http.StatusConflict, "VSC 实例 ID 缺失或创建状态待核实；拒绝删除本地记录")
+			return
+		}
+		if card.TPMSCState == storage.TPMSCStateDestroyPendingReboot {
+			_, discoverErr := tpmsc.DiscoverReaderName(r.Context(), card.TPMSCInstanceID)
+			if errors.Is(discoverErr, tpmsc.ErrReaderUnavailable) {
+				if err := s.cardRepo.Delete(context.WithoutCancel(r.Context()), cardUUID); err != nil {
+					writeError(w, http.StatusInternalServerError, "清理已销毁的 VSC 记录失败: "+err.Error())
+					return
+				}
+				s.notifySlotChanged("delete")
+				writeOK(w, nil)
+				return
+			}
+			if discoverErr != nil {
+				writeError(w, http.StatusServiceUnavailable, "重启后无法确认 TPM VSC 状态: "+discoverErr.Error())
+				return
+			}
+		}
+		needReboot, destroyErr := tpmsc.DestroyCard(r.Context(), card.TPMSCInstanceID)
+		if destroyErr != nil {
+			writeError(w, http.StatusInternalServerError, "销毁 TPM VSC 失败: "+destroyErr.Error())
+			return
+		}
+		if needReboot {
+			card.TPMSCState = storage.TPMSCStateDestroyPendingReboot
+			if err := s.cardRepo.Update(context.WithoutCancel(r.Context()), card); err != nil {
+				writeError(w, http.StatusInternalServerError, "销毁已提交但保存重启状态失败: "+err.Error())
+				return
+			}
+			writeJSON(w, http.StatusAccepted, Response{Code: 0, Message: "需要重启后完成 VSC 销毁", Data: map[string]bool{"need_reboot": true}})
+			return
+		}
 	}
 
 	if err := s.cardRepo.Delete(r.Context(), cardUUID); err != nil {

@@ -200,6 +200,13 @@ func (m *MockProvider) ImportKey(privKeyDER []byte, authValue []byte) (*WrappedK
 	}, pub, nil
 }
 
+func (m *MockProvider) DeleteKey(wrapped *WrappedKey) error {
+	if wrapped == nil || wrapped.Backend != string(TPMPlatformMock) {
+		return fmt.Errorf("wrapped key does not belong to mock provider")
+	}
+	return nil
+}
+
 func (m *MockProvider) LoadKey(wrapped *WrappedKey, authValue []byte) (LoadedHandle, error) {
 	if wrapped == nil {
 		return 0, fmt.Errorf("wrapped 为空")

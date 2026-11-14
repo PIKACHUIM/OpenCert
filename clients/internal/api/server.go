@@ -13,6 +13,7 @@ import (
 	"github.com/globaltrusts/client-card/internal/api/middleware"
 	"github.com/globaltrusts/client-card/internal/card"
 	"github.com/globaltrusts/client-card/internal/card/local"
+	"github.com/globaltrusts/client-card/internal/card/tpmsc"
 	"github.com/globaltrusts/client-card/internal/certprop"
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/internal/totp"
@@ -519,14 +520,27 @@ func (s *Server) propagateCertAdd(certPEM, certUUID, cardUUID, commonName, keyTy
 			containerUUID = keyCertUUID
 		}
 	}
+	keyProvider, keyContainer := "", ""
+	if hasKey && containerUUID != "" {
+		keyRecord, keyErr := s.certRepo.GetByUUID(context.Background(), containerUUID)
+		if keyErr == nil && keyRecord != nil && keyRecord.SlotType == storage.SlotTypeTPMSC {
+			keyProvider = certprop.SmartCardKSPName
+			keyContainer = containerUUID
+			if card, cardErr := s.cardRepo.GetByUUID(context.Background(), cardUUID); cardErr == nil && card != nil && card.TPMSCReaderName != "" {
+				keyContainer = tpmsc.SmartCardKSPContainerName(card.TPMSCReaderName, containerUUID)
+			}
+		}
+	}
 	go func() {
 		err := s.certPropagator.Add(context.Background(), certprop.CertInfo{
-			UUID:       containerUUID,
-			CardUUID:   cardUUID,
-			CommonName: commonName,
-			CertPEM:    certPEM,
-			HasKey:     hasKey,
-			KeyType:    keyType,
+			UUID:         containerUUID,
+			CardUUID:     cardUUID,
+			CommonName:   commonName,
+			CertPEM:      certPEM,
+			HasKey:       hasKey,
+			KeyType:      keyType,
+			KeyProvider:  keyProvider,
+			KeyContainer: keyContainer,
 		})
 		if err != nil {
 			slog.Warn("证书传播到系统存储失败", "uuid", containerUUID, "error", err)

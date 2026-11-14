@@ -281,6 +281,13 @@ func (p *swStubProvider) ImportKey(privKeyDER []byte, authValue []byte) (*Wrappe
 	}, pub, nil
 }
 
+func (p *swStubProvider) DeleteKey(wrapped *WrappedKey) error {
+	if wrapped == nil || wrapped.Backend != string(TPMPlatformSWStub) {
+		return fmt.Errorf("wrapped key does not belong to software stub provider")
+	}
+	return nil
+}
+
 func (p *swStubProvider) LoadKey(wrapped *WrappedKey, authValue []byte) (LoadedHandle, error) {
 	if wrapped == nil {
 		return 0, fmt.Errorf("wrapped 为空")

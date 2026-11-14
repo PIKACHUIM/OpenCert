@@ -14,6 +14,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"github.com/globaltrusts/client-card/internal/card/cloud"
 	"github.com/globaltrusts/client-card/internal/card/local"
 	tpm2card "github.com/globaltrusts/client-card/internal/card/tpm2"
+	"github.com/globaltrusts/client-card/internal/card/tpmsc"
 	"github.com/globaltrusts/client-card/internal/certprop"
 	"github.com/globaltrusts/client-card/internal/fido"
 	"github.com/globaltrusts/client-card/internal/ipc"
@@ -300,8 +302,31 @@ func loadLocalSlots(manager *card.Manager, db *storage.DB, tpmProv tpm.Provider)
 			manager.RegisterSlot(slot)
 			slog.Info("已注册 Cloud Slot", "slot_id", slotID, "card", c.CardName, "url", c.CloudURL)
 		case storage.SlotTypeTPMSC:
-			// 保留记录供后续恢复/审计；未接入 CNG/CAPI 前不注册伪 Slot。
-			slog.Warn("保留 TPMSC 卡片记录，但不注册 PKCS#11 Slot（Provider 未实现）", "card", c.CardName)
+			// Re-discover the Windows reader from its persisted device instance ID; never infer token support from metadata.
+			if c.TPMSCState != storage.TPMSCStateDestroyPendingReboot && c.TPMSCInstanceID != "" {
+				readerName, discoverErr := tpmsc.DiscoverReaderName(ctx, c.TPMSCInstanceID)
+				switch {
+				case discoverErr == nil:
+					if c.TPMSCReaderName != readerName || c.TPMSCState != storage.TPMSCStateReady {
+						c.TPMSCReaderName = readerName
+						c.TPMSCState = storage.TPMSCStateReady
+						if err := cardRepo.Update(ctx, c); err != nil {
+							slog.Warn("更新 TPMSC reader 元数据失败", "card", c.CardName, "error", err)
+						}
+					}
+				case errors.Is(discoverErr, tpmsc.ErrReaderUnavailable):
+					if c.TPMSCState != storage.TPMSCStateReaderUnavailable && c.TPMSCState != storage.TPMSCStatePendingReboot {
+						c.TPMSCState = storage.TPMSCStateReaderUnavailable
+						if err := cardRepo.Update(ctx, c); err != nil {
+							slog.Warn("记录 TPMSC reader 离线状态失败", "card", c.CardName, "error", err)
+						}
+					}
+				default:
+					slog.Warn("TPMSC reader 发现失败", "card", c.CardName, "error", discoverErr)
+				}
+			}
+			// PKI CSR uses the Smart Card KSP directly; PKCS#11 token/session operations remain fail-closed.
+			slog.Warn("保留 TPMSC 卡片记录，但不注册 PKCS#11 Slot（PIN 会话语义未实现）", "card", c.CardName)
 			continue
 		default:
 			continue
@@ -341,6 +366,7 @@ func syncCertsToSystem(db *storage.DB, propagator certprop.Propagator) {
 	ctx := context.Background()
 	pkiCertRepo := storage.NewPKICertRepo(db)
 	certRepo := storage.NewCertRepo(db)
+	cardRepo := storage.NewCardRepo(db)
 
 	var certInfos []certprop.CertInfo
 
@@ -353,14 +379,21 @@ func syncCertsToSystem(db *storage.DB, propagator certprop.Propagator) {
 			if c.Revoked || c.CertPEM == "" {
 				continue
 			}
-			certInfos = append(certInfos, certprop.CertInfo{
+			info := certprop.CertInfo{
 				UUID:       c.UUID,
 				CardUUID:   c.CardUUID,
 				CommonName: c.CommonName,
 				CertPEM:    c.CertPEM,
 				HasKey:     c.HasPrivateKey,
 				KeyType:    c.KeyType,
-			})
+			}
+			if c.HasPrivateKey && c.KeyStorage == storage.KeyStorageSmartcard {
+				if err := setTPMSCProvider(ctx, cardRepo, c.CardUUID, string(c.PrivateKeyEnc), &info); err != nil {
+					slog.Warn("证书传播：解析 PKI VSC key provider 失败", "cert", c.UUID, "error", err)
+					continue
+				}
+			}
+			certInfos = append(certInfos, info)
 		}
 	}
 
@@ -373,14 +406,21 @@ func syncCertsToSystem(db *storage.DB, propagator certprop.Propagator) {
 			if len(c.CertContent) == 0 {
 				continue
 			}
-			hasKey := len(c.PrivateData) > 0
-			certInfos = append(certInfos, certprop.CertInfo{
+			hasKey := len(c.PrivateData) > 0 || c.SlotType == storage.SlotTypeTPMSC
+			info := certprop.CertInfo{
 				UUID:     c.UUID,
 				CardUUID: c.CardUUID,
 				CertDER:  c.DERContent(),
 				HasKey:   hasKey,
 				KeyType:  c.KeyType,
-			})
+			}
+			if hasKey && c.SlotType == storage.SlotTypeTPMSC {
+				if err := setTPMSCProvider(ctx, cardRepo, c.CardUUID, c.UUID, &info); err != nil {
+					slog.Warn("证书传播：解析 VSC key provider 失败", "cert", c.UUID, "error", err)
+					continue
+				}
+			}
+			certInfos = append(certInfos, info)
 		}
 	}
 
@@ -406,4 +446,26 @@ func syncCertsToSystem(db *storage.DB, propagator certprop.Propagator) {
 	} else {
 		slog.Debug("证书传播：同步完成，无变更", "skipped", result.Skipped)
 	}
+}
+
+func setTPMSCProvider(ctx context.Context, cardRepo *storage.CardRepo, cardUUID, keyUUID string, info *certprop.CertInfo) error {
+	card, err := cardRepo.GetByUUID(ctx, cardUUID)
+	if err != nil {
+		return fmt.Errorf("load key card: %w", err)
+	}
+	if card == nil {
+		return fmt.Errorf("key card does not exist")
+	}
+	if card.SlotType != storage.SlotTypeTPMSC {
+		return nil
+	}
+	if keyUUID == "" {
+		return fmt.Errorf("VSC key container UUID is empty")
+	}
+	info.KeyProvider = certprop.SmartCardKSPName
+	info.KeyContainer = keyUUID
+	if card.TPMSCReaderName != "" {
+		info.KeyContainer = tpmsc.SmartCardKSPContainerName(card.TPMSCReaderName, keyUUID)
+	}
+	return nil
 }

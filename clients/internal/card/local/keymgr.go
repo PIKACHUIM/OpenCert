@@ -128,6 +128,9 @@ func CreateCardWithCredsAndTPM(ctx context.Context, cardRepo *storage.CardRepo, 
 		(tpmProv == nil || !tpmProv.Available()) {
 		return nil, fmt.Errorf("%s 安全等级需要可用的 TPM Provider", secLevel)
 	}
+	if secLevel == storage.SecurityLevelHigh && !tpm.SupportsHardwareKeyGeneration(tpmProv) {
+		return nil, tpm.ErrHardwareKeyGenerationNotAvailable
+	}
 	if secLevel == storage.SecurityLevelMedium && !tpm.SupportsHardwareNV(tpmProv) {
 		return nil, tpm.ErrHardwareNVUnavailable
 	}
@@ -440,8 +443,11 @@ func (m *KeyManager) GenerateKeyPair(ctx context.Context, req KeyGenRequest, mas
 	switch secLevel {
 	case storage.SecurityLevelHigh:
 		// 高安全等级：在 TPM 内生成非对称密钥对，私钥永不出 TPM。
-		if m.tpmProvider == nil || !m.tpmProvider.Available() {
-			return nil, fmt.Errorf("high 安全等级需要可用的 TPM Provider")
+		if !tpm.SupportsHardwareKeyGeneration(m.tpmProvider) {
+			return nil, tpm.ErrHardwareKeyGenerationNotAvailable
+		}
+		if card.TPMProvider == "" || card.TPMProvider != m.tpmProvider.PlatformName() {
+			return nil, fmt.Errorf("卡片 Provider 与当前 TPM Provider 不匹配")
 		}
 		cert, err := encryptAndStoreCertWithTPMHigh(ctx, m.certRepo, m.tpmProvider, req, masterKey)
 		if err != nil {
@@ -479,6 +485,136 @@ func (m *KeyManager) GenerateKeyPair(ctx context.Context, req KeyGenRequest, mas
 		}
 		return &KeyGenResult{CertUUID: cert.UUID, PublicKeyDER: pubDER}, nil
 	}
+}
+
+// CreateCSRKey creates an internal non-exportable TPM key for a certificate request.
+func (m *KeyManager) CreateCSRKey(ctx context.Context, card *storage.Card, masterKey []byte, keyType string) (string, crypto.Signer, error) {
+	if card == nil || card.SlotType != storage.SlotTypeLocal || card.SecurityLevel != storage.SecurityLevelHigh {
+		return "", nil, fmt.Errorf("CSR TPM key requires a local high-security card")
+	}
+	if m.tpmProvider == nil || !m.tpmProvider.Available() || card.TPMProvider != m.tpmProvider.PlatformName() {
+		return "", nil, fmt.Errorf("card TPM provider is unavailable or does not match")
+	}
+	result, err := m.GenerateKeyPair(ctx, KeyGenRequest{
+		CardUUID: card.UUID,
+		CertType: storage.CertTypeInternal,
+		KeyType:  keyType,
+	}, masterKey, card)
+	if err != nil {
+		return "", nil, err
+	}
+	signer, err := m.NewTPMSigner(ctx, result.CertUUID, masterKey)
+	if err != nil {
+		cleanupErr := m.DeleteCSRKey(ctx, result.CertUUID)
+		if cleanupErr != nil {
+			return "", nil, fmt.Errorf("create TPM CSR signer: %w (key cleanup failed: %v)", err, cleanupErr)
+		}
+		return "", nil, fmt.Errorf("create TPM CSR signer: %w", err)
+	}
+	return result.CertUUID, signer, nil
+}
+
+// NewTPMSigner opens the persisted wrapped key as a crypto.Signer.
+func (m *KeyManager) NewTPMSigner(ctx context.Context, certUUID string, masterKey []byte) (*tpm.Signer, error) {
+	if !tpm.SupportsHardwareKeyGeneration(m.tpmProvider) || m.certRepo == nil || m.cardRepo == nil {
+		return nil, fmt.Errorf("TPM signer dependencies are unavailable")
+	}
+	cert, err := m.certRepo.GetByUUID(ctx, certUUID)
+	if err != nil {
+		return nil, fmt.Errorf("load TPM key record: %w", err)
+	}
+	if cert == nil || string(cert.TPMPlatform) != tpmPlatformHighV1 || len(cert.TPMWrappedBlob) == 0 ||
+		(cert.CertType != storage.CertTypeInternal && cert.CertType != storage.CertTypeX509) {
+		return nil, fmt.Errorf("certificate record is not a wrapped high-security TPM key")
+	}
+	card, err := m.cardRepo.GetByUUID(ctx, cert.CardUUID)
+	if err != nil {
+		return nil, fmt.Errorf("load TPM card: %w", err)
+	}
+	if card == nil || card.SlotType != storage.SlotTypeLocal || card.SecurityLevel != storage.SecurityLevelHigh ||
+		card.TPMProvider != m.tpmProvider.PlatformName() {
+		return nil, fmt.Errorf("TPM key card does not match the active provider")
+	}
+	wrapped, err := unmarshalWrappedKey(cert.TPMWrappedBlob)
+	if err != nil {
+		return nil, err
+	}
+	auth := deriveTPMHighKeyAuth(masterKey, cert.UUID)
+	defer zeroBytes(auth)
+	return tpm.NewSigner(m.tpmProvider, wrapped, auth)
+}
+
+// DeleteCSRKey deletes an unissued internal TPM key record and its persistent key.
+func (m *KeyManager) DeleteCSRKey(ctx context.Context, certUUID string) error {
+	cert, err := m.getTPMKeyRecord(ctx, certUUID)
+	if err != nil || cert == nil {
+		return err
+	}
+	if cert.CertType != storage.CertTypeInternal {
+		return fmt.Errorf("refusing to remove a non-internal CSR key record")
+	}
+	return m.deleteTPMKeyRecord(ctx, cert, cert.CardUUID)
+}
+
+// DeleteTPMKeyRecord deletes a high-security card key and its persisted TPM key.
+func (m *KeyManager) DeleteTPMKeyRecord(ctx context.Context, cardUUID, certUUID string) error {
+	cert, err := m.getTPMKeyRecord(ctx, certUUID)
+	if err != nil || cert == nil {
+		return err
+	}
+	if cert.CertType != storage.CertTypeInternal && cert.CertType != storage.CertTypeX509 {
+		return fmt.Errorf("refusing to remove a non-certificate TPM key record")
+	}
+	return m.deleteTPMKeyRecord(ctx, cert, cardUUID)
+}
+
+func (m *KeyManager) getTPMKeyRecord(ctx context.Context, certUUID string) (*storage.Certificate, error) {
+	if m.certRepo == nil || m.tpmProvider == nil || !m.tpmProvider.Available() {
+		return nil, fmt.Errorf("TPM key cleanup dependencies are unavailable")
+	}
+	cert, err := m.certRepo.GetByUUID(ctx, certUUID)
+	if err != nil {
+		return nil, fmt.Errorf("load TPM key record: %w", err)
+	}
+	if cert == nil {
+		return nil, nil
+	}
+	if string(cert.TPMPlatform) != tpmPlatformHighV1 || len(cert.TPMWrappedBlob) == 0 {
+		return nil, fmt.Errorf("record is not a wrapped high-security TPM key")
+	}
+	return cert, nil
+}
+
+func (m *KeyManager) deleteTPMKeyRecord(ctx context.Context, cert *storage.Certificate, cardUUID string) error {
+	if cert.CardUUID != cardUUID || m.cardRepo == nil {
+		return fmt.Errorf("TPM key record does not belong to the requested card")
+	}
+	card, err := m.cardRepo.GetByUUID(ctx, cardUUID)
+	if err != nil {
+		return fmt.Errorf("load TPM card for key deletion: %w", err)
+	}
+	if card == nil {
+		return fmt.Errorf("TPM card for key deletion does not exist")
+	}
+	if card.SlotType != storage.SlotTypeLocal || card.SecurityLevel != storage.SecurityLevelHigh ||
+		card.TPMProvider != m.tpmProvider.PlatformName() {
+		return fmt.Errorf("card TPM provider or security level does not match this key")
+	}
+	wrapped, err := unmarshalWrappedKey(cert.TPMWrappedBlob)
+	if err != nil {
+		return err
+	}
+	deleter, ok := m.tpmProvider.(tpm.PersistentKeyDeleter)
+	if !ok {
+		return fmt.Errorf("TPM Provider cannot delete persistent keys; record retained")
+	}
+	if err := deleter.DeleteKey(wrapped); err != nil {
+		return fmt.Errorf("delete persistent TPM key: %w", err)
+	}
+	if err := m.certRepo.Delete(ctx, cert.UUID); err != nil {
+		return fmt.Errorf("delete TPM key record: %w", err)
+	}
+	return nil
 }
 
 // derFromPEM 从 PEM 块中提取 DER；若已是 DER 则原样返回。
@@ -1024,9 +1160,19 @@ func encryptAndStoreCertWithTPMHigh(ctx context.Context, certRepo *storage.CertR
 	if err != nil {
 		return nil, fmt.Errorf("TPM CreateKey 失败: %w", err)
 	}
+	cleanupKey := func(cause error) error {
+		deleter, ok := tp.(tpm.PersistentKeyDeleter)
+		if !ok {
+			return fmt.Errorf("%w (provider cannot delete the newly created persistent key)", cause)
+		}
+		if deleteErr := deleter.DeleteKey(wrapped); deleteErr != nil {
+			return fmt.Errorf("%w (persistent TPM key cleanup failed: %v)", cause, deleteErr)
+		}
+		return cause
+	}
 	wrappedJSON, err := marshalWrappedKey(wrapped)
 	if err != nil {
-		return nil, err
+		return nil, cleanupKey(err)
 	}
 
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: wrapped.Public})
@@ -1043,7 +1189,7 @@ func encryptAndStoreCertWithTPMHigh(ctx context.Context, certRepo *storage.CertR
 		Remark:         req.Remark,
 	}
 	if err := certRepo.Create(ctx, cert); err != nil {
-		return nil, fmt.Errorf("保存证书失败: %w", err)
+		return nil, cleanupKey(fmt.Errorf("保存证书失败: %w", err))
 	}
 	return cert, nil
 }

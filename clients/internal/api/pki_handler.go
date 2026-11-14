@@ -10,8 +10,10 @@ import (
 
 	"github.com/globaltrusts/client-card/internal/card/local"
 	"github.com/globaltrusts/client-card/internal/card/tpm2"
+	"github.com/globaltrusts/client-card/internal/card/tpmsc"
 	"github.com/globaltrusts/client-card/internal/pki"
 	"github.com/globaltrusts/client-card/internal/storage"
+	"github.com/globaltrusts/client-card/internal/tpm"
 )
 
 // ---- 自签名证书（保留原有功能）----
@@ -30,6 +32,10 @@ func (s *Server) handleSelfSignFromCSR(w http.ResponseWriter, r *http.Request) {
 	}
 	cert, err := pki.SelfSignFromCSR(r.Context(), s.csrRepo, s.pkiCertRepo, s.cardRepo, s.certRepo, &req)
 	if err != nil {
+		if errors.Is(err, pki.ErrHardwareSelfSignUnavailable) {
+			writeError(w, http.StatusNotImplemented, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "生成自签名证书失败: "+err.Error())
 		return
 	}
@@ -93,13 +99,35 @@ func (s *Server) handleCreateCSR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "common_name 不能为空")
 		return
 	}
-	record, err := pki.CreateAndSaveCSR(r.Context(), s.csrRepo, s.certRepo, s.cardRepo, &req)
-	if err != nil {
-		if errors.Is(err, pki.ErrHardwareCSRProviderUnavailable) {
-			writeError(w, http.StatusNotImplemented, err.Error())
+	var keyManager pki.HardwareCSRKeyManager
+	if req.KeyStorage == storage.KeyStorageSmartcard && req.CardUUID != "" {
+		card, err := s.cardRepo.GetByUUID(r.Context(), req.CardUUID)
+		if err != nil || card == nil {
+			writeError(w, http.StatusNotFound, "目标卡片不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "生成 CSR 失败: "+err.Error())
+		switch card.SlotType {
+		case storage.SlotTypeTPMSC:
+			keyManager = tpmsc.NewCSRKeyManager(s.certRepo, s.cardRepo)
+		case storage.SlotTypeLocal:
+			if tpm.SupportsHardwareKeyGeneration(s.tpmProvider) {
+				keyManager = local.NewKeyManagerWithTPM(s.certRepo, s.cardRepo, s.tpmProvider)
+			}
+		}
+	}
+	record, err := pki.CreateAndSaveCSRWithHardwareKeyManager(r.Context(), s.csrRepo, s.certRepo, s.cardRepo, keyManager, &req)
+	if err != nil {
+		switch {
+		case errors.Is(err, pki.ErrHardwareCSRProviderUnavailable),
+			errors.Is(err, tpm.ErrHardwareKeyGenerationNotAvailable),
+			errors.Is(err, tpmsc.ErrSmartCardKSPUnavailable),
+			errors.Is(err, tpmsc.ErrProvisioningNotImplemented):
+			writeError(w, http.StatusNotImplemented, err.Error())
+		case errors.Is(err, tpmsc.ErrReaderUnavailable):
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "生成 CSR 失败: "+err.Error())
+		}
 		return
 	}
 	writeJSON(w, http.StatusCreated, Response{Code: 0, Message: "ok", Data: record})
@@ -123,6 +151,40 @@ func (s *Server) handleGetCSR(w http.ResponseWriter, r *http.Request) {
 // handleDeleteCSR DELETE /api/pki/csr/{uuid}
 func (s *Server) handleDeleteCSR(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("uuid")
+	record, err := s.csrRepo.GetByUUID(r.Context(), id)
+	if err != nil || record == nil {
+		writeError(w, http.StatusNotFound, "CSR 不存在")
+		return
+	}
+	if record.KeyStorage == storage.KeyStorageSmartcard && record.HasPrivateKey && len(record.PrivateKeyEnc) > 0 {
+		keyUUID := string(record.PrivateKeyEnc)
+		keyRecord, keyErr := s.certRepo.GetByUUID(r.Context(), keyUUID)
+		if keyErr != nil {
+			writeError(w, http.StatusInternalServerError, "查询 CSR 密钥记录失败: "+keyErr.Error())
+			return
+		}
+		if keyRecord != nil && keyRecord.CertType == storage.CertTypeInternal {
+			switch {
+			case keyRecord.SlotType == storage.SlotTypeTPMSC:
+				keyManager := tpmsc.NewCSRKeyManager(s.certRepo, s.cardRepo)
+				if err := keyManager.DeleteCSRKey(r.Context(), keyUUID); err != nil {
+					writeError(w, http.StatusInternalServerError, "删除待签发 VSC 密钥失败: "+err.Error())
+					return
+				}
+			case string(keyRecord.TPMPlatform) == "high-v1":
+				keyManager := local.NewKeyManagerWithTPM(s.certRepo, s.cardRepo, s.tpmProvider)
+				if err := keyManager.DeleteCSRKey(r.Context(), keyUUID); err != nil {
+					writeError(w, http.StatusInternalServerError, "删除待签发 TPM 密钥失败: "+err.Error())
+					return
+				}
+			default:
+				if err := s.certRepo.Delete(r.Context(), keyUUID); err != nil {
+					writeError(w, http.StatusInternalServerError, "删除待签发密钥记录失败: "+err.Error())
+					return
+				}
+			}
+		}
+	}
 	if err := s.csrRepo.Delete(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, "删除 CSR 失败: "+err.Error())
 		return
@@ -382,12 +444,21 @@ func (s *Server) handleGetPKICert(w http.ResponseWriter, r *http.Request) {
 // handleDeletePKICert DELETE /api/pki/certs/{uuid}
 func (s *Server) handleDeletePKICert(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("uuid")
+	cert, err := s.pkiCertRepo.GetByUUID(r.Context(), id)
+	if err != nil || cert == nil {
+		writeError(w, http.StatusNotFound, "证书不存在")
+		return
+	}
+	removeContainer := id
+	if cert.KeyStorage == storage.KeyStorageSmartcard && len(cert.PrivateKeyEnc) > 0 {
+		removeContainer = string(cert.PrivateKeyEnc)
+	}
 	if err := s.pkiCertRepo.Delete(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, "删除证书失败: "+err.Error())
 		return
 	}
-	// 删除后，从系统证书存储中移除
-	s.propagateCertRemove(id)
+	// 删除后，从系统证书存储中移除。
+	s.propagateCertRemove(removeContainer)
 	writeOK(w, nil)
 }
 
@@ -416,6 +487,11 @@ func (s *Server) handleExportPKICert(w http.ResponseWriter, r *http.Request) {
 	cert, err := s.pkiCertRepo.GetByUUID(r.Context(), id)
 	if err != nil || cert == nil {
 		writeError(w, http.StatusNotFound, "证书不存在")
+		return
+	}
+	if cert.KeyStorage == storage.KeyStorageSmartcard &&
+		(req.Format == string(pki.ExportFormatPKCS12) || req.Format == string(pki.ExportFormatKeyPEM)) {
+		writeError(w, http.StatusNotImplemented, "智能卡 CSR 私钥由卡片 Provider 管理，当前不能从 PKI 页面导出")
 		return
 	}
 

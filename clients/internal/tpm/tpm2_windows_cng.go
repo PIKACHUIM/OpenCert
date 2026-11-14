@@ -157,6 +157,11 @@ func newCNGProvider(provName string) (*cngProvider, error) {
 
 func (p *cngProvider) Available() bool { return p.hProv != 0 }
 
+// HardwareKeyGenerationAvailable is true only for keys created through Microsoft's TPM Platform Crypto Provider.
+func (p *cngProvider) HardwareKeyGenerationAvailable() bool {
+	return p.Available() && p.provName == ncryptPlatformProvider
+}
+
 // HardwareNVStorageAvailable 为 false：此 CNG 实现的 NV API 实际由 DPAPI 文件承载。
 func (p *cngProvider) HardwareNVStorageAvailable() bool { return false }
 
@@ -342,17 +347,25 @@ func (p *cngProvider) CreateKey(alg KeyAlg, authValue []byte) (*WrappedKey, cryp
 		return nil, nil, err
 	}
 
-	// 生成唯一容器名
-	var rndBuf [4]byte
-	io.ReadFull(cryptoRandReader, rndBuf[:])
-	keyName := fmt.Sprintf("GlobalTrusts/%08x", binary.LittleEndian.Uint32(rndBuf[:]))
+	// 使用 128 位随机容器名，降低持久密钥命名冲突概率。
+	var rndBuf [16]byte
+	if _, err := io.ReadFull(cryptoRandReader, rndBuf[:]); err != nil {
+		return nil, nil, fmt.Errorf("生成 TPM 密钥名称失败: %w", err)
+	}
+	keyName := fmt.Sprintf("GlobalTrusts/%x", rndBuf[:])
 
 	slog.Info("[TPM/CNG] CreateKey 开始",
 		"alg", string(alg), "cng_alg", algId, "bits", bits,
 		"key_name", keyName, "provider", p.provName)
 
-	keyNameUTF16, _ := windows.UTF16PtrFromString(keyName)
-	algUTF16, _ := windows.UTF16PtrFromString(algId)
+	keyNameUTF16, err := windows.UTF16PtrFromString(keyName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("编码 TPM 密钥名称失败: %w", err)
+	}
+	algUTF16, err := windows.UTF16PtrFromString(algId)
+	if err != nil {
+		return nil, nil, fmt.Errorf("编码 TPM 密钥算法失败: %w", err)
+	}
 
 	var hKey uintptr
 	r, _, _ := procNCryptCreatePersistedKey.Call(
@@ -366,46 +379,56 @@ func (p *cngProvider) CreateKey(alg KeyAlg, authValue []byte) (*WrappedKey, cryp
 	if r != 0 {
 		return nil, nil, fmt.Errorf("NCryptCreatePersistedKey failed: 0x%08X", r)
 	}
-
-	// 设置密钥长度
-	if bits > 0 {
-		setNCryptProperty(hKey, ncryptLengthProperty, bits)
+	cleanupKey := func(cause error) error {
+		deleteResult, _, _ := procNCryptDeleteKey.Call(hKey, 0)
+		hKey = 0
+		if deleteResult != 0 {
+			return fmt.Errorf("%w (also failed to delete incomplete TPM key: 0x%08X)", cause, deleteResult)
+		}
+		return cause
 	}
-	// 设置不可导出
-	setNCryptProperty(hKey, ncryptExportPolicyProperty, ncryptAllowNothingExport)
-	// 设置用途
-	setNCryptProperty(hKey, ncryptKeyUsageProperty, ncryptSigningFlag|ncryptDecryptFlag)
+
+	// 高安全等级要求长度和禁止导出策略全部成功应用，否则删除密钥并拒绝。
+	if bits > 0 {
+		if err := setNCryptProperty(hKey, ncryptLengthProperty, bits); err != nil {
+			return nil, nil, cleanupKey(err)
+		}
+	}
+	if err := setNCryptProperty(hKey, ncryptExportPolicyProperty, ncryptAllowNothingExport); err != nil {
+		return nil, nil, cleanupKey(err)
+	}
+	if err := setNCryptProperty(hKey, ncryptKeyUsageProperty, ncryptSigningFlag|ncryptDecryptFlag); err != nil {
+		return nil, nil, cleanupKey(err)
+	}
 
 	// 完成密钥创建（实际生成密钥对）
 	r, _, _ = procNCryptFinalizeKey.Call(hKey, 0)
 	if r != 0 {
-		procNCryptFreeObject.Call(hKey)
-		return nil, nil, fmt.Errorf("NCryptFinalizeKey failed: 0x%08X", r)
+		return nil, nil, cleanupKey(fmt.Errorf("NCryptFinalizeKey failed: 0x%08X", r))
 	}
 
-	slog.Info("[TPM/CNG] CreateKey 完成 — 密钥已在 TPM 中生成",
+	slog.Info("[TPM/CNG] CreateKey 完成 — 密钥已由 Microsoft Platform Crypto Provider 创建",
 		"key_name", keyName, "alg", string(alg), "provider", p.provName)
 
 	// 导出公钥
 	pubDER, err := exportPublicKey(hKey, alg)
 	if err != nil {
-		procNCryptDeleteKey.Call(hKey, 0)
-		return nil, nil, fmt.Errorf("导出公钥失败: %w", err)
+		return nil, nil, cleanupKey(fmt.Errorf("导出公钥失败: %w", err))
 	}
-
-	procNCryptFreeObject.Call(hKey)
-
 	pub, err := x509.ParsePKIXPublicKey(pubDER)
 	if err != nil {
-		return nil, nil, fmt.Errorf("解析公钥 DER 失败: %w", err)
+		return nil, nil, cleanupKey(fmt.Errorf("解析公钥 DER 失败: %w", err))
 	}
 
 	// 构造 WrappedKey
-	privJSON, _ := json.Marshal(cngWrappedKey{
+	privJSON, err := json.Marshal(cngWrappedKey{
 		KeyName:  keyName,
 		Alg:      alg,
 		Provider: p.provName,
 	})
+	if err != nil {
+		return nil, nil, cleanupKey(fmt.Errorf("序列化 TPM wrapped key 失败: %w", err))
+	}
 
 	wk := &WrappedKey{
 		Alg:        alg,
@@ -414,12 +437,52 @@ func (p *cngProvider) CreateKey(alg KeyAlg, authValue []byte) (*WrappedKey, cryp
 		Private:    privJSON,
 		AuthDigest: nvAuthDigest(authValue, []byte(keyName)), // 绑定 authValue
 	}
+	procNCryptFreeObject.Call(hKey)
+	hKey = 0
 	return wk, pub, nil
 }
 
 // ImportKey 拒绝把外部私钥导入到软件 KSP 后冒充 TPM 密钥。
 func (p *cngProvider) ImportKey(_ []byte, _ []byte) (*WrappedKey, crypto.PublicKey, error) {
 	return nil, nil, ErrImportNotSupported
+}
+
+// DeleteKey 删除由此 PCP Provider 创建的持久密钥。
+func (p *cngProvider) DeleteKey(wrapped *WrappedKey) error {
+	if wrapped == nil || wrapped.Backend != p.PlatformName() {
+		return fmt.Errorf("wrapped TPM key backend does not match this provider")
+	}
+	var key cngWrappedKey
+	if err := json.Unmarshal(wrapped.Private, &key); err != nil {
+		return fmt.Errorf("parse wrapped TPM key: %w", err)
+	}
+	if key.KeyName == "" || key.Provider != ncryptPlatformProvider {
+		return fmt.Errorf("wrapped TPM key is not a Microsoft Platform Crypto Provider key")
+	}
+	keyNameUTF16, err := windows.UTF16PtrFromString(key.KeyName)
+	if err != nil {
+		return fmt.Errorf("encode TPM key name: %w", err)
+	}
+	var hKey uintptr
+	result, _, _ := procNCryptOpenKey.Call(
+		p.hProv,
+		uintptr(unsafe.Pointer(&hKey)),
+		uintptr(unsafe.Pointer(keyNameUTF16)),
+		0,
+		0,
+	)
+	if result == nteNotFound {
+		return nil
+	}
+	if result != 0 {
+		return fmt.Errorf("NCryptOpenKey(%s) failed: 0x%08X", key.KeyName, result)
+	}
+	result, _, _ = procNCryptDeleteKey.Call(hKey, 0)
+	if result != 0 {
+		procNCryptFreeObject.Call(hKey)
+		return fmt.Errorf("NCryptDeleteKey(%s) failed: 0x%08X", key.KeyName, result)
+	}
+	return nil
 }
 
 func (p *cngProvider) LoadKey(wrapped *WrappedKey, authValue []byte) (LoadedHandle, error) {
@@ -644,17 +707,29 @@ func keyAlgToCNG(alg KeyAlg) (algId string, bits uint32, err error) {
 	}
 }
 
-func setNCryptProperty(hKey uintptr, propName string, value uint32) {
-	propUTF16, _ := windows.UTF16PtrFromString(propName)
+func setNCryptProperty(hKey uintptr, propName string, value uint32) error {
+	propUTF16, err := windows.UTF16PtrFromString(propName)
+	if err != nil {
+		return fmt.Errorf("encode NCrypt property %q: %w", propName, err)
+	}
 	var buf [4]byte
 	binary.LittleEndian.PutUint32(buf[:], value)
-	procNCryptSetProperty.Call(
+	result, _, _ := procNCryptSetProperty.Call(
 		hKey,
 		uintptr(unsafe.Pointer(propUTF16)),
 		uintptr(unsafe.Pointer(&buf[0])),
-		4,
+		uintptr(len(buf)),
 		0,
 	)
+	if result != 0 {
+		return fmt.Errorf("NCryptSetProperty(%s) failed: 0x%08X", propName, result)
+	}
+	return nil
+}
+
+// ExportCNGPublicKey exports a CNG key handle's public half as SubjectPublicKeyInfo DER.
+func ExportCNGPublicKey(hKey uintptr, alg KeyAlg) ([]byte, error) {
+	return exportPublicKey(hKey, alg)
 }
 
 func exportPublicKey(hKey uintptr, alg KeyAlg) ([]byte, error) {

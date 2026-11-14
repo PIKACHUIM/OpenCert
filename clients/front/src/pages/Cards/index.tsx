@@ -31,7 +31,7 @@ const KEY_TYPE_OPTIONS = [
 
 // 安全等级颜色和标签。仅硬件 Provider 内生成的密钥具备不可导出保证。
 const securityLevelConfig: Record<string, { color: string; label: string; desc: string }> = {
-  high: { color: 'red', label: '高', desc: '可用 TPM Provider 内生成并使用的密钥具备硬件不可导出保证' },
+  high: { color: 'red', label: '高', desc: '仅已接入并验证的硬件 Provider 内生成、使用的密钥具有硬件不可导出保证' },
   medium: { color: 'orange', label: '中', desc: '软件加密与 AdminKey 校验，不等同 TPM NV 硬件保护' },
   low: { color: 'green', label: '低', desc: '仅 PIN/卡密码软件加密，可凭密码导出' },
 };
@@ -45,7 +45,7 @@ const slotLabel = (t: string) => {
   switch (t) {
     case 'cloud': return '云端智能卡';
     case 'tpm2': return 'TPM2 硬件卡';
-    case 'tpmsc': return 'Windows TPM VSC（Provider 未接入）';
+    case 'tpmsc': return 'Windows TPM VSC';
     default: return '本地智能卡';
   }
 };
@@ -160,9 +160,14 @@ const Cards: React.FC = () => {
       const values = await createForm.validateFields();
       setCreating(true);
       const result: any = await createCard(values as CreateCardRequest);
-      message.success('卡片已创建');
+      if (values.slot_type === 'tpmsc') {
+        message.success(result?.need_reboot ? 'VSC 已提交，需重启后完成' : 'VSC 已创建；卡片密钥操作尚未接入');
+      } else {
+        message.success('卡片已创建');
+      }
       setCreateOpen(false);
       createForm.resetFields();
+      setCreateSlotType('local');
       // 一次性显示自动生成的 PUK / AdminKey
       if (result?.puk || result?.admin_key) {
         setCredsModal({
@@ -269,11 +274,15 @@ const Cards: React.FC = () => {
     try {
       const values = await deleteForm.validateFields();
       setDeleting(true);
-      await deleteCard(uuid, {
+      const result: any = await deleteCard(uuid, {
         user_uuid: activeAccount.user_uuid,
         user_password: values.user_password,
       });
-      message.success('卡片已删除');
+      if (deleteCard2.slot_type === 'tpmsc' && result?.need_reboot) {
+        message.warning('VSC 销毁已提交；重启后再次删除本地记录以完成清理');
+      } else {
+        message.success(deleteCard2.slot_type === 'tpmsc' ? 'VSC 与本地记录已删除' : '卡片已删除');
+      }
       setDeleteOpen(false);
       deleteForm.resetFields();
       load();
@@ -373,17 +382,23 @@ const Cards: React.FC = () => {
       title: '凭据状态',
       width:140,
       render: (_: any, record: CardType) => {
+        if (record.slot_type === 'tpmsc') {
+          const stateLabel: Record<string, string> = {
+            provisioning: '创建中', provisioning_unknown: '创建状态待核实', ready: '设备已发现',
+            pending_reboot: '需重启', reader_unavailable: '读卡器不可用', destroy_pending_reboot: '销毁待重启',
+          };
+          return <Tag color={record.tpmsc_state === 'ready' ? 'green' : 'orange'}>{stateLabel[record.tpmsc_state || ''] || '状态未知'}</Tag>;
+        }
         const canExport = record.security_level !== 'high';
         const canRestore = record.slot_type === 'local';
-        const user = users.find((u) => u.uuid === record.user_uuid);
         return (
           <Space size={[4, 4]} wrap>
             <Tooltip title="PIN 密钥"><Tag icon={<CheckCircleOutlined />} color="green" style={{ fontSize: 10 }}>PIN</Tag></Tooltip>
             <Tooltip title="PUK 密钥"><Tag icon={<CheckCircleOutlined />} color="green" style={{ fontSize: 10 }}>PUK</Tag></Tooltip>
-            <Tooltip title={record.security_level === 'low' ? '有AdminKey' : '有AdminKey'}>
+            <Tooltip title="有 AdminKey">
               <Tag icon={record.security_level === 'low' ? <CloseCircleOutlined /> : <CheckCircleOutlined />} color={record.security_level === 'low' ? 'default' : 'purple'} style={{ fontSize: 10 }}>ADK</Tag>
             </Tooltip>
-            <Tooltip title={record.security_level === 'low' ? '无TPM保护' : 'TPM保护中'}>
+            <Tooltip title={record.security_level === 'low' ? '无 TPM 保护' : 'TPM 保护中'}>
               <Tag icon={record.security_level === 'low' ? <CloseCircleOutlined /> : <CheckCircleOutlined />} color={record.security_level === 'low' ? 'default' : 'purple'} style={{ fontSize: 10 }}>TPM</Tag>
             </Tooltip>
             <Tag color={canExport ? 'green' : 'default'} style={{ fontSize: 10 }}>
@@ -392,7 +407,6 @@ const Cards: React.FC = () => {
             <Tag color={canRestore ? 'blue' : 'default'} style={{ fontSize: 10 }}>
               {canRestore ? '可恢复' : '不可恢复'}
             </Tag>
-
           </Space>
         );
       },
@@ -534,6 +548,8 @@ const Cards: React.FC = () => {
           </Button>
           <Button
             type="link" size="small" icon={<LockOutlined />}
+            disabled={record.slot_type === 'tpmsc'}
+            title={record.slot_type === 'tpmsc' ? 'TPMSC PIN/PUK 管理尚未接入' : undefined}
             onClick={() => { setPinResetCard(record); setPinResetOpen(true); }}
           >
             密码
@@ -660,21 +676,21 @@ const Cards: React.FC = () => {
             <Select
               options={[
                 { value: 'local', label: '本地 (本地数据库)' },
-                { value: 'tpmsc', label: 'Windows TPM VSC（暂不可用：Provider 未接入）', disabled: true },
+                { value: 'tpmsc', label: 'Windows TPM Virtual Smart Card' },
                 // { value: 'cloud', label: '云端 (云端数据库)' },
               ]}
               onChange={(val) => {
                 setCreateSlotType(val);
-                if (val === 'tpmsc') {
-                  createForm.setFieldsValue({ security_level: 'high' });
-                }
+                createForm.setFieldsValue(val === 'tpmsc'
+                  ? { security_level: 'high' }
+                  : { security_level: 'low', puk: undefined, admin_key: undefined });
               }}
             />
           </Form.Item>
           {createSlotType === 'tpmsc' && (
             <Alert
-              message="Windows TPM VSC 当前不可用"
-              description="安全交互式 PIN/PUK/AdminKey 初始化、证书枚举及 CNG/CAPI Provider 尚未接入。OpenCert 不会使用默认凭据创建卡片。"
+              message="TPM VSC 生命周期已接入"
+              description="Windows 将请求管理员确认。PIN、可选 PUK 和 48 位十六进制 AdminKey 只用于硬件初始化，不会写入数据库。AdminKey 请自行保管；PKI CSR 使用 Smart Card KSP 创建/签名，PKCS#11 Slot 与 PIN/PUK 管理尚未接入。"
               type="warning" showIcon style={{ marginBottom: 16 }}
             />
           )}
@@ -696,12 +712,34 @@ const Cards: React.FC = () => {
               ]}
             />
           </Form.Item>
-          <Form.Item name="pin" label="卡片 PIN" rules={[
-            { required: true, message: '请输入 PIN 码' },
-            { min: 8, message: 'PIN 最少 8 位（Microsoft TPM 要求）' },
-          ]} tooltip="PIN 用于加密保护卡片主密钥，是日常使用卡片的核心凭据。TPM 虚拟智能卡要求最少 8 位">
-            <Input.Password placeholder="设置卡片密码" />
+          <Form.Item
+            name="pin"
+            label={createSlotType === 'tpmsc' ? 'VSC PIN' : '卡片 PIN'}
+            rules={[
+              { required: true, message: '请输入 PIN 码' },
+              { min: 8, message: 'PIN 最少 8 位' },
+              { max: 127, message: 'PIN 最多 127 位' },
+            ]}
+            tooltip={createSlotType === 'tpmsc' ? '此 PIN 设置在 TPM Virtual Smart Card 上，不会用于 OpenCert 本地主密钥。' : 'PIN 用于加密保护卡片主密钥。'}
+          >
+            <Input.Password placeholder={createSlotType === 'tpmsc' ? '设置 VSC PIN（8–127 个 ASCII 字符）' : '设置卡片 PIN'} maxLength={127} />
           </Form.Item>
+          {createSlotType === 'tpmsc' && (
+            <>
+              <Form.Item name="puk" label="VSC PUK（可选）" rules={[
+                { min: 8, message: 'PUK 最少 8 位' },
+                { max: 127, message: 'PUK 最多 127 位' },
+              ]} tooltip="留空则使用 AdminKey 的 challenge-response PIN 重置路径。">
+                <Input.Password placeholder="可选：设置 PUK" maxLength={127} />
+              </Form.Item>
+              <Form.Item name="admin_key" label="VSC AdminKey（48 位十六进制）" rules={[
+                { required: true, message: '请输入 48 位十六进制 AdminKey' },
+                { pattern: /^[0-9a-fA-F]{48}$/, message: 'AdminKey 必须为 48 位十六进制字符' },
+              ]} tooltip="24 字节 TDEA 管理密钥。OpenCert 不保存此值；请在提交前自行保管。">
+                <Input.Password placeholder="输入 48 位十六进制 AdminKey" maxLength={48} />
+              </Form.Item>
+            </>
+          )}
           <Form.Item name="user_password" label="用户密码" rules={[{ required: true, message: '请输入用户密码' }]} tooltip="验证用户身份">
             <Input.Password placeholder="输入当前用户密码" />
           </Form.Item>
@@ -729,7 +767,7 @@ const Cards: React.FC = () => {
           <Button
             type="primary" size="small" icon={<KeyOutlined />}
             disabled={selectedCard?.slot_type === 'tpmsc'}
-            title={selectedCard?.slot_type === 'tpmsc' ? 'TPM VSC Provider 尚未接入' : undefined}
+            title={selectedCard?.slot_type === 'tpmsc' ? 'Smart Card KSP 密钥操作尚未接入' : undefined}
             onClick={() => setKeygenOpen(true)}
           >
             生成密钥对
@@ -748,8 +786,8 @@ const Cards: React.FC = () => {
             )}
             {selectedCard.slot_type === 'tpmsc' && (
               <Alert
-                message="Windows TPM VSC Provider 未接入"
-                description="此记录已保留，但当前不能枚举证书、创建密钥、重置 PIN 或删除硬件卡片。OpenCert 不会伪报操作成功。"
+                message="VSC 设备管理与 PKI CSR 已接入，PKCS#11 Slot 尚未接入"
+                description="PKI CSR 可通过 Microsoft Smart Card KSP 在 VSC 内创建密钥并签名。下方证书列表来自本地数据库，不是实时卡片枚举；普通 PKCS#11 密钥操作及 PIN/PUK 管理尚未接入。删除会实际销毁 VSC，且不可恢复。"
                 type="warning" showIcon style={{ marginBottom: 16 }}
               />
             )}
@@ -765,8 +803,21 @@ const Cards: React.FC = () => {
                 })()}
               </Descriptions.Item>
               <Descriptions.Item label="卡片类型">
-<Tag color={slotColor(selectedCard.slot_type)}>{slotLabel(selectedCard.slot_type)}</Tag>
+                <Tag color={slotColor(selectedCard.slot_type)}>{slotLabel(selectedCard.slot_type)}</Tag>
               </Descriptions.Item>
+              {selectedCard.slot_type === 'tpmsc' && (
+                <>
+                  <Descriptions.Item label="VSC 状态">
+                    {selectedCard.tpmsc_state || '未知'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="读卡器">
+                    {selectedCard.tpmsc_reader_name || '尚未发现'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="设备实例 ID" span={2}>
+                    {selectedCard.tpmsc_instance_id ? <Text copyable>{selectedCard.tpmsc_instance_id}</Text> : '待核实'}
+                  </Descriptions.Item>
+                </>
+              )}
               <Descriptions.Item label="创建时间">
                 <Text style={{ fontSize: 12 }}>{dayjs(selectedCard.created_at).format('YYYY-MM-DD HH:mm:ss')}</Text>
               </Descriptions.Item>
@@ -1048,7 +1099,9 @@ const Cards: React.FC = () => {
         width={420}
       >
         <Alert
-          message={`确认删除卡片「${deleteCard2?.card_name}」？此操作将同时删除所有证书，不可恢复。`}
+          message={deleteCard2?.slot_type === 'tpmsc'
+            ? `确认销毁 TPM Virtual Smart Card「${deleteCard2.card_name}」？硬件操作不可恢复。`
+            : `确认删除卡片「${deleteCard2?.card_name}」？此操作将同时删除所有证书，不可恢复。`}
           type="error" showIcon style={{ marginBottom: 16 }}
         />
         <Form form={deleteForm} layout="vertical">

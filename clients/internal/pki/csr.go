@@ -37,13 +37,39 @@ type CSRResult struct {
 
 // GenerateCSR 使用客户端本地软件密钥生成并签名 CSR；此函数不调用 TPM/智能卡 Provider。
 func GenerateCSR(req *CSRRequest) (*CSRResult, error) {
-	// 生成密钥对
+	if req == nil {
+		return nil, fmt.Errorf("CSR 请求不能为空")
+	}
 	privKey, _, err := generateKeyPair(req.KeyType)
 	if err != nil {
 		return nil, fmt.Errorf("生成密钥对失败: %w", err)
 	}
+	signer, ok := privKey.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("私钥不支持签名操作")
+	}
+	result, err := GenerateCSRWithSigner(req, signer)
+	if err != nil {
+		return nil, err
+	}
+	keyDER, err := marshalPKCS8Any(privKey)
+	if err != nil {
+		return nil, fmt.Errorf("编码私钥失败: %w", err)
+	}
+	result.KeyDER = keyDER
+	result.KeyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	return result, nil
+}
 
-	// 构建主体
+// GenerateCSRWithSigner builds and signs a CSR using the supplied signer without exporting its private key.
+func GenerateCSRWithSigner(req *CSRRequest, signer crypto.Signer) (*CSRResult, error) {
+	if req == nil {
+		return nil, fmt.Errorf("CSR 请求不能为空")
+	}
+	if signer == nil {
+		return nil, fmt.Errorf("CSR 签名器不能为空")
+	}
+
 	subject := pkix.Name{CommonName: req.CommonName}
 	if req.Organization != "" {
 		subject.Organization = []string{req.Organization}
@@ -60,57 +86,32 @@ func GenerateCSR(req *CSRRequest) (*CSRResult, error) {
 	if req.Locality != "" {
 		subject.Locality = []string{req.Locality}
 	}
-
-	// 写入额外 DN 字段（serialNumber/givenName/surname 等 25 个标准字段）
 	if len(req.ExtraSubject) > 0 {
 		subject.ExtraNames = buildExtraNames(req.ExtraSubject)
 	}
 
-	// 构建 CSR 模板
 	template := &x509.CertificateRequest{
 		Subject:            subject,
 		SignatureAlgorithm: resolveSignatureAlgorithm(req.KeyType, req.DigestType),
 		DNSNames:           req.DNSNames,
 		EmailAddresses:     req.Emails,
 	}
-
-	// 解析 IP 地址
 	for _, ipStr := range req.IPAddresses {
 		if ip := net.ParseIP(ipStr); ip != nil {
 			template.IPAddresses = append(template.IPAddresses, ip)
 		}
 	}
 
-	// 使用私钥签名 CSR
-	signer, ok := privKey.(crypto.Signer)
-	if !ok {
-		return nil, fmt.Errorf("私钥不支持签名操作")
-	}
-
-	// 国密分派：SM2 密钥用 smx509 生成 SM2WithSM3 签名的 CSR
 	csrDER, err := createCSRAny(rand.Reader, template, signer)
 	if err != nil {
 		return nil, fmt.Errorf("创建 CSR 失败: %w", err)
 	}
-
-	// 验证 CSR 签名（SM2 请求由国密库校验）
 	if err := checkCSRSignatureAny(csrDER); err != nil {
 		return nil, fmt.Errorf("CSR 签名验证失败: %w", err)
 	}
-
-	// 编码 PEM
-	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
-	keyDER, err := marshalPKCS8Any(privKey)
-	if err != nil {
-		return nil, fmt.Errorf("编码私钥失败: %w", err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-
 	return &CSRResult{
-		CSRPEM: csrPEM,
+		CSRPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}),
 		CSRDER: csrDER,
-		KeyPEM: keyPEM,
-		KeyDER: keyDER,
 	}, nil
 }
 

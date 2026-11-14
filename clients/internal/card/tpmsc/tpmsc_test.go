@@ -3,19 +3,36 @@ package tpmsc
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 
 	"github.com/globaltrusts/client-card/internal/storage"
 	"github.com/globaltrusts/client-card/pkg/pkcs11types"
 )
 
-func TestCreateCardFailsClosedWithoutSecureProvisioning(t *testing.T) {
-	result, err := CreateCard(context.Background(), CreateCardArgs{Name: "test-vsc"})
+func TestCreateCardValidCredentialsRequireWindowsProvisioning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a VSC requires administrator approval and TPM hardware")
+	}
+	result, err := CreateCard(context.Background(), CreateCardArgs{
+		Name: "test-vsc", PIN: "pin-test-123", AdminKey: "0123456789abcdeffedcba98765432100011223344556677",
+	})
 	if !errors.Is(err, ErrProvisioningNotImplemented) {
 		t.Fatalf("CreateCard error = %v, want ErrProvisioningNotImplemented", err)
 	}
 	if result != nil {
-		t.Fatalf("CreateCard returned a result for an unimplemented operation: %#v", result)
+		t.Fatalf("CreateCard returned a result without a Windows provider: %#v", result)
+	}
+}
+
+func TestCreateCardRequiresHardwareCredentials(t *testing.T) {
+	if _, err := CreateCard(context.Background(), CreateCardArgs{Name: "test-vsc"}); err == nil {
+		t.Fatal("CreateCard accepted missing PIN and AdminKey")
+	}
+	if _, err := CreateCard(context.Background(), CreateCardArgs{
+		Name: "test-vsc", PIN: "pin-test-123", AdminKey: "not-an-admin-key",
+	}); err == nil {
+		t.Fatal("CreateCard accepted an invalid AdminKey")
 	}
 }
 

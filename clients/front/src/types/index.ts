@@ -31,6 +31,9 @@ export interface Card {
   user_uuid: string;
   remark?: string;
   security_level: SecurityLevel;
+  tpmsc_instance_id?: string;
+  tpmsc_reader_name?: string;
+  tpmsc_state?: string;
   cloud_url?: string;
   cloud_card_uuid?: string;
   enabled?: boolean;
@@ -101,6 +104,8 @@ export interface CreateCardRequest {
   user_uuid: string;
   user_password: string;
   pin: string;
+  puk?: string;
+  admin_key?: string;
   security_level: SecurityLevel;
   remark?: string;
   cloud_url?: string;

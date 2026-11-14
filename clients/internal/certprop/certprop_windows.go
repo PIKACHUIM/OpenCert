@@ -248,7 +248,7 @@ func (p *windowsPropagator) RemoveAll(ctx context.Context) error {
 		}
 
 		container := getCertContainerName(certCtx)
-		if strings.HasPrefix(container, ContainerPrefix) {
+		if strings.HasPrefix(container, ContainerPrefix) || strings.HasPrefix(getCertFriendlyName(certCtx), "OpenCert: ") {
 			dupCtx, _, _ := procCertDuplicateCertContext.Call(certCtx)
 			if dupCtx != 0 {
 				toDelete = append(toDelete, dupCtx)
@@ -301,7 +301,11 @@ func (p *windowsPropagator) addCert(cert CertInfo) error {
 	// OpenCert KSP DLL 会通过 IPC 将签名/解密请求转发给 client-card 后端。
 	if cert.HasKey {
 		containerName := cert.ContainerName()
-		if err := setCertKeyProvInfo(certCtx, containerName, cert.KeyType); err != nil {
+		providerName := cert.KeyProvider
+		if providerName == "" {
+			providerName = kspName
+		}
+		if err := setCertKeyProvInfo(certCtx, containerName, cert.KeyType, providerName); err != nil {
 			logger().Warn("设置密钥容器关联失败", "error", err, "container", containerName)
 		}
 	}
@@ -330,7 +334,7 @@ func (p *windowsPropagator) listManagedCerts() (map[string]string, error) {
 		}
 
 		container := getCertContainerName(certCtx)
-		if strings.HasPrefix(container, ContainerPrefix) {
+		if strings.HasPrefix(container, ContainerPrefix) || strings.HasPrefix(getCertFriendlyName(certCtx), "OpenCert: ") {
 			thumb := getCertThumbprint(certCtx)
 			if thumb != "" {
 				result[thumb] = container
@@ -417,16 +421,38 @@ func setCertFriendlyName(certCtx uintptr, name string) error {
 	return nil
 }
 
-// setCertKeyProvInfo 设置证书的密钥容器关联信息。
-// 使用 Microsoft Smart Card Key Storage Provider (KSP) 作为提供程序，
-// 这样 Windows 会通过 minidriver 架构来访问密钥。
-func setCertKeyProvInfo(certCtx uintptr, containerName string, keyType string) error {
-	containerUTF16, _ := syscall.UTF16PtrFromString(containerName)
+func getCertFriendlyName(certCtx uintptr) string {
+	var size uint32
+	ret, _, _ := procCertGetCertContextProperty.Call(certCtx, uintptr(certFriendlyNamePropID), 0, uintptr(unsafe.Pointer(&size)))
+	if ret == 0 || size < 2 {
+		return ""
+	}
+	buffer := make([]uint16, (size+1)/2)
+	ret, _, _ = procCertGetCertContextProperty.Call(
+		certCtx,
+		uintptr(certFriendlyNamePropID),
+		uintptr(unsafe.Pointer(&buffer[0])),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if ret == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buffer)
+}
 
-	// 根据密钥类型选择合适的提供程序和密钥规格
-	// 对于 CNG/KSP 模式，ProvType 必须为 0，KeySpec 使用 CERT_NCRYPT_KEY_SPEC
-	provName := kspName
-	provNameUTF16, _ := syscall.UTF16PtrFromString(provName)
+// setCertKeyProvInfo associates a system certificate with the selected CNG key provider.
+func setCertKeyProvInfo(certCtx uintptr, containerName, keyType, providerName string) error {
+	containerUTF16, err := syscall.UTF16PtrFromString(containerName)
+	if err != nil {
+		return fmt.Errorf("编码密钥容器名称失败: %w", err)
+	}
+	if providerName == "" {
+		providerName = kspName
+	}
+	provNameUTF16, err := syscall.UTF16PtrFromString(providerName)
+	if err != nil {
+		return fmt.Errorf("编码密钥 Provider 名称失败: %w", err)
+	}
 
 	info := cryptKeyProvInfo{
 		ContainerName: containerUTF16,

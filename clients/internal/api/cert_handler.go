@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/globaltrusts/client-card/internal/card/local"
+	"github.com/globaltrusts/client-card/internal/card/tpmsc"
 	"github.com/globaltrusts/client-card/internal/pki"
 	"github.com/globaltrusts/client-card/internal/storage"
 )
@@ -37,10 +38,6 @@ func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "卡片不存在")
 		return
 	}
-	if rejectUnsupportedTPMSC(w, card.SlotType, "证书枚举") {
-		return
-	}
-
 	certs, err := s.certRepo.ListByCardPublic(r.Context(), cardUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询证书列表失败: "+err.Error())
@@ -135,17 +132,13 @@ func (s *Server) handleGetCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "卡片不存在")
 		return
 	}
-	if rejectUnsupportedTPMSC(w, card.SlotType, "证书读取") {
-		return
-	}
-
 	certUUID := r.PathValue("uuid")
 	cert, err := s.certRepo.GetByUUID(r.Context(), certUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if cert == nil {
+	if cert == nil || cert.CardUUID != card.UUID || cert.CertType == storage.CertTypeInternal {
 		writeError(w, http.StatusNotFound, "证书不存在")
 		return
 	}
@@ -159,12 +152,25 @@ func (s *Server) handleDeleteCert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "卡片不存在")
 		return
 	}
-	if rejectUnsupportedTPMSC(w, card.SlotType, "证书删除") {
+	certUUID := r.PathValue("uuid")
+	cert, err := s.certRepo.GetByUUID(r.Context(), certUUID)
+	if err != nil || cert == nil || cert.CardUUID != card.UUID {
+		writeError(w, http.StatusNotFound, "证书不存在")
 		return
 	}
-
-	certUUID := r.PathValue("uuid")
-	if err := s.certRepo.Delete(r.Context(), certUUID); err != nil {
+	if card.SlotType == storage.SlotTypeTPMSC {
+		keyManager := tpmsc.NewCSRKeyManager(s.certRepo, s.cardRepo)
+		if err := keyManager.DeleteKeyRecord(r.Context(), card.UUID, certUUID); err != nil {
+			writeError(w, http.StatusInternalServerError, "删除 VSC 密钥失败: "+err.Error())
+			return
+		}
+	} else if string(cert.TPMPlatform) == "high-v1" {
+		keyManager := local.NewKeyManagerWithTPM(s.certRepo, s.cardRepo, s.tpmProvider)
+		if err := keyManager.DeleteTPMKeyRecord(r.Context(), card.UUID, certUUID); err != nil {
+			writeError(w, http.StatusInternalServerError, "删除 TPM 密钥失败: "+err.Error())
+			return
+		}
+	} else if err := s.certRepo.Delete(r.Context(), certUUID); err != nil {
 		writeError(w, http.StatusInternalServerError, "删除证书失败: "+err.Error())
 		return
 	}
@@ -458,13 +464,9 @@ func (s *Server) handleCertDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "卡片不存在")
 		return
 	}
-	if rejectUnsupportedTPMSC(w, card.SlotType, "证书详情读取") {
-		return
-	}
-
 	certUUID := r.PathValue("uuid")
 	cert, err := s.certRepo.GetByUUID(r.Context(), certUUID)
-	if err != nil || cert == nil {
+	if err != nil || cert == nil || cert.CardUUID != card.UUID {
 		writeError(w, http.StatusNotFound, "证书不存在")
 		return
 	}
