@@ -168,10 +168,19 @@ func (db *DB) migrate() error {
 	// medium 真 TPM 集成：NV 句柄 + Provider 平台标识
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_cert_key_nv_handle INTEGER NOT NULL DEFAULT 0`)
 	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpm_provider TEXT NOT NULL DEFAULT ''`)
-	// TPM VSC 生命周期元数据；凭据不进入数据库
-	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpmsc_instance_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpmsc_reader_name TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.conn.Exec(`ALTER TABLE cards ADD COLUMN tpmsc_state TEXT NOT NULL DEFAULT ''`)
+	// TPM VSC 生命周期元数据；凭据不进入数据库。
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "tpmsc_instance_id", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "tpmsc_reader_name", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "tpmsc_state", definition: "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := db.ensureColumn("cards", column.name, column.definition); err != nil {
+			return fmt.Errorf("迁移 TPM VSC 元数据列 %s 失败: %w", column.name, err)
+		}
+	}
 	// high 模式：证书表新增 wrapped key blob 字段、TPM 证书密钥盐值
 	_, _ = db.conn.Exec(`ALTER TABLE certificates ADD COLUMN tpm_wrapped_blob TEXT`)
 	_, _ = db.conn.Exec(`ALTER TABLE certificates ADD COLUMN tpm_cert_key_salt TEXT`)
@@ -196,6 +205,40 @@ func (db *DB) migrate() error {
 
 	// 迁移旧 BLOB 数据为 base64 TEXT
 	db.migrateBlobToBase64()
+	return nil
+}
+
+func (db *DB) ensureColumn(table, column, definition string) error {
+	rows, err := db.conn.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return fmt.Errorf("读取 %s 表结构失败: %w", table, err)
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("扫描 %s 表结构失败: %w", table, err)
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("读取 %s 表结构失败: %w", table, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("关闭 %s 表结构查询失败: %w", table, err)
+	}
+	if found {
+		return nil
+	}
+	if _, err := db.conn.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition); err != nil {
+		return fmt.Errorf("添加 %s.%s 列失败: %w", table, column, err)
+	}
 	return nil
 }
 

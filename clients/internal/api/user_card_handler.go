@@ -341,9 +341,13 @@ func (s *Server) handleCreateTPMSCCard(w http.ResponseWriter, r *http.Request, u
 
 	result, err := tpmsc.CreateCard(r.Context(), args)
 	if err != nil {
-		if err == tpmsc.ErrProvisioningNotImplemented {
+		if errors.Is(err, tpmsc.ErrProvisioningNotImplemented) || errors.Is(err, tpmsc.ErrUserCancelled) {
 			_ = s.cardRepo.Delete(context.WithoutCancel(r.Context()), card.UUID)
-			writeError(w, http.StatusNotImplemented, err.Error())
+			status := http.StatusNotImplemented
+			if errors.Is(err, tpmsc.ErrUserCancelled) {
+				status = http.StatusForbidden
+			}
+			writeError(w, status, err.Error())
 			return
 		}
 		card.TPMSCState = storage.TPMSCStateProvisioningUnknown

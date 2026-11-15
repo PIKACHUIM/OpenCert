@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/des"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -19,6 +20,7 @@ const (
 	vscManagerClassID        = "16A18E86-7F6E-4C20-AD89-4FFC0DB7A96A"
 	vscAdminAlgID            = 0x82
 	scardScopeUser           = 0
+	scardEReaderUnavailable  = 0x80100017
 	scardENoReadersAvailable = 0x8010002e
 )
 
@@ -164,7 +166,7 @@ func discoverReaderNamePlatform(ctx context.Context, instanceID string) (string,
 		uintptr(unsafe.Pointer(&charCount)),
 	)
 	runtime.KeepAlive(deviceID)
-	if uint32(result) == scardENoReadersAvailable || charCount == 0 {
+	if uint32(result) == scardENoReadersAvailable || uint32(result) == scardEReaderUnavailable || charCount == 0 {
 		return "", ErrReaderUnavailable
 	}
 	if result != 0 {
@@ -179,7 +181,7 @@ func discoverReaderNamePlatform(ctx context.Context, instanceID string) (string,
 	)
 	runtime.KeepAlive(deviceID)
 	runtime.KeepAlive(readers)
-	if uint32(result) == scardENoReadersAvailable {
+	if uint32(result) == scardENoReadersAvailable || uint32(result) == scardEReaderUnavailable {
 		return "", ErrReaderUnavailable
 	}
 	if result != 0 {
@@ -211,6 +213,9 @@ func withVSCManager(action func(manager unsafe.Pointer) error) error {
 	var manager unsafe.Pointer
 	managerOut := (**uintptr)(unsafe.Pointer(&manager))
 	if err := windows.CoGetObject(moniker, &bindOptions, &vscManagerInterface, managerOut); err != nil {
+		if errors.Is(err, windows.ERROR_CANCELLED) {
+			return ErrUserCancelled
+		}
 		return fmt.Errorf("激活 TPM VSC 管理器失败（需要管理员确认）: %w", err)
 	}
 	defer releaseVSCManager(manager)

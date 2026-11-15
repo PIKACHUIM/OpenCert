@@ -77,6 +77,7 @@ func ValidatePIN(pin string, policy PINPolicy) error {
 // ErrProvisioningNotImplemented indicates the current platform has no VSC management backend.
 var (
 	ErrProvisioningNotImplemented = errors.New("当前平台未实现 TPM VSC 管理接口")
+	ErrUserCancelled              = errors.New("TPM VSC 管理操作已取消")
 	ErrRebootRequired             = errors.New("TPM VSC 操作已提交，需重启后完成")
 	ErrReaderUnavailable          = errors.New("TPM VSC reader 当前不可用")
 )
@@ -180,13 +181,10 @@ func isValidInstanceID(value string) bool {
 		strings.Count(value, "\\") == 2
 }
 
-// IsAvailable 仅检查 tpmvscmgr.exe 是否可执行，不代表 TPM 就绪或 VSC 密码学能力已接入。
+// IsAvailable reports whether the Windows VSC management backend is compiled in.
+// It does not verify TPM readiness, administrator approval, or Smart Card KSP support.
 func IsAvailable() bool {
-	if runtime.GOOS != "windows" {
-		return false
-	}
-	_, err := exec.LookPath("tpmvscmgr.exe")
-	return err == nil
+	return runtime.GOOS == "windows"
 }
 
 // IsRunningAsAdmin 检查当前进程是否以管理员权限运行。

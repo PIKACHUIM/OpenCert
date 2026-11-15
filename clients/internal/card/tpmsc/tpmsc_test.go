@@ -26,13 +26,31 @@ func TestCreateCardValidCredentialsRequireWindowsProvisioning(t *testing.T) {
 }
 
 func TestCreateCardRequiresHardwareCredentials(t *testing.T) {
-	if _, err := CreateCard(context.Background(), CreateCardArgs{Name: "test-vsc"}); err == nil {
+	if err := ValidateCreateCardArgs(CreateCardArgs{Name: "test-vsc"}); err == nil {
 		t.Fatal("CreateCard accepted missing PIN and AdminKey")
 	}
-	if _, err := CreateCard(context.Background(), CreateCardArgs{
+	if err := ValidateCreateCardArgs(CreateCardArgs{
 		Name: "test-vsc", PIN: "pin-test-123", AdminKey: "not-an-admin-key",
 	}); err == nil {
 		t.Fatal("CreateCard accepted an invalid AdminKey")
+	}
+	if err := ValidateCreateCardArgs(CreateCardArgs{
+		Name: "test-vsc", PIN: "pin-test-123", AdminKey: "0123456789abcdef0123456789abcdef0123456789abcdef",
+	}); err == nil {
+		t.Fatal("CreateCard accepted a weak 3DES AdminKey with repeated components")
+	}
+	if err := ValidateCreateCardArgs(CreateCardArgs{
+		Name: "test-vsc", PIN: "pin-test-123", AdminKey: "0123456789abcdeffedcba98765432100011223344556677",
+	}); err != nil {
+		t.Fatalf("valid VSC credentials rejected: %v", err)
+	}
+}
+
+func TestSmartCardKSPContainerNameIncludesReaderAndContainer(t *testing.T) {
+	got := SmartCardKSPContainerName("Microsoft Virtual Smart Card 1", "container-id")
+	want := `\\.\Microsoft Virtual Smart Card 1\container-id`
+	if got != want {
+		t.Fatalf("SmartCardKSPContainerName() = %q, want %q", got, want)
 	}
 }
 
