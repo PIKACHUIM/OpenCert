@@ -88,10 +88,20 @@ func (s *Server) handleFIDOStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	go func() {
-		if err := fido.Listen(ctx, handler); err != nil {
-			fidoMu.Lock()
+		err := fido.Listen(ctx, handler)
+		fidoMu.Lock()
+		defer fidoMu.Unlock()
+		if ctx.Err() != nil {
+			return
+		}
+		// 监听失败（如管道被占用）必须把状态复位，否则界面会一直显示“运行中”。
+		fidoCancel = nil
+		if proc := fidoProc; proc != nil {
+			proc.Stop()
+			fidoProc = nil
+		}
+		if err != nil {
 			fidoErr = err.Error()
-			fidoMu.Unlock()
 		}
 	}()
 	proc, err := fido.StartProcess(ctx, status.ExePath)
