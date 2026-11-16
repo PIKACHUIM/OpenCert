@@ -57,11 +57,44 @@ func CollectCard(ctx context.Context, storeGUID string) (map[string][]byte, *Man
 	}
 	files["registry/smartcardreader.reg"] = regData
 
+	dpapi, err := collectDPAPIPlain(stores)
+	if err != nil {
+		return nil, nil, err
+	}
+	for name, data := range dpapi {
+		files["dpapi/"+name] = data
+	}
+
 	manifest := &Manifest{
 		CardID:        storeGUID,
-		IncludesDPAPI: false,
+		IncludesDPAPI: len(dpapi) > 0,
 	}
 	return files, manifest, nil
+}
+
+// collectDPAPIPlain 在 SYSTEM 身份下解开卡片数据中的 DPAPI blob。
+// 解不开任何一个文件就整体失败，避免产出“看起来完整、实际还原不了”的包。
+func collectDPAPIPlain(stores map[string][]byte) (map[string][]byte, error) {
+	out := make(map[string][]byte)
+	err := withSystemToken(func() error {
+		for name, data := range stores {
+			base := strings.ToLower(filepath.Base(name))
+			isBlob := strings.HasPrefix(strings.ToLower(name), "blobs/")
+			if base != "keymaps" && base != "pinmaps" && base != "pinpolicy" && !isBlob {
+				continue
+			}
+			plain, err := unprotectDPAPI(data)
+			if err != nil {
+				return fmt.Errorf("解密 %s 失败: %w", name, err)
+			}
+			out[name] = plain
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func collectStores(storeGUID string) (map[string][]byte, error) {
