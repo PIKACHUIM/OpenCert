@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sync"
 
@@ -51,12 +52,21 @@ func (s *Server) handleFIDOStart(w http.ResponseWriter, r *http.Request) {
 	fidoErr = ""
 	fidoMu.Unlock()
 
+	store := fido.NewKeyStore("")
 	handler := func(cmd uint32, payload []byte) (any, error) {
 		switch cmd {
 		case fido.CmdGetInfo:
 			return fido.GetInfoResponse(), nil
 		case fido.CmdCancel:
 			return map[string]any{"rv": 0}, nil
+		case fido.CmdMakeCredential, fido.CmdGetAssertion:
+			var body map[string]any
+			if len(payload) > 0 {
+				if err := json.Unmarshal(payload, &body); err != nil {
+					return map[string]any{"rv": 1}, nil
+				}
+			}
+			return fido.HandleCTAP(store, cmd, body)
 		default:
 			return map[string]any{"rv": 1}, nil
 		}
