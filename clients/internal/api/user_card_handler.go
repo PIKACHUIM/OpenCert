@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -563,9 +564,6 @@ func (s *Server) handleResetPIN(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "卡片不存在")
 		return
 	}
-	if rejectUnsupportedTPMSC(w, card.SlotType, "PIN 重置") {
-		return
-	}
 
 	var req struct {
 		PUK      string `json:"puk"`
@@ -576,6 +574,18 @@ func (s *Server) handleResetPIN(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
 		return
 	}
+	if card.SlotType == storage.SlotTypeTPMSC {
+		if req.AdminKey != "" || req.PUK == "" {
+			writeError(w, http.StatusBadRequest, "VSC 仅支持使用 PUK 解锁 PIN；AdminKey challenge-response 尚未接入")
+			return
+		}
+		s.resetTPMSCPIN(w, r, card, req.PUK, req.NewPIN)
+		return
+	}
+	if rejectUnsupportedTPMSC(w, card.SlotType, "PIN 重置") {
+		return
+	}
+
 	if req.NewPIN == "" {
 		writeError(w, http.StatusBadRequest, "new_pin 不能为空")
 		return
@@ -597,6 +607,69 @@ func (s *Server) handleResetPIN(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, map[string]string{"status": "pin_reset_ok"})
+}
+
+// handleChangePIN POST /api/cards/{uuid}/pin/change
+// 仅 TPM VSC 支持：使用当前 PIN 直接修改 PIN。请求体：{old_pin, new_pin}
+func (s *Server) handleChangePIN(w http.ResponseWriter, r *http.Request) {
+	cardUUID := r.PathValue("uuid")
+	card, err := s.cardRepo.GetByUUID(r.Context(), cardUUID)
+	if err != nil || card == nil {
+		writeError(w, http.StatusNotFound, "卡片不存在")
+		return
+	}
+	if card.SlotType != storage.SlotTypeTPMSC {
+		writeError(w, http.StatusBadRequest, "只有 Windows TPM VSC 支持直接修改 PIN；本地卡请使用 PIN 重置")
+		return
+	}
+	var req struct {
+		OldPIN string `json:"old_pin"`
+		NewPIN string `json:"new_pin"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
+		return
+	}
+	if req.OldPIN == "" || req.NewPIN == "" {
+		writeError(w, http.StatusBadRequest, "old_pin 和 new_pin 不能为空")
+		return
+	}
+	if err := s.ensureTPMSCReady(card); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err := tpmsc.ChangePIN(r.Context(), card.TPMSCReaderName, req.OldPIN, req.NewPIN); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeOK(w, map[string]string{"status": "pin_changed"})
+}
+
+func (s *Server) resetTPMSCPIN(w http.ResponseWriter, r *http.Request, card *storage.Card, puk, newPIN string) {
+	if newPIN == "" {
+		writeError(w, http.StatusBadRequest, "new_pin 不能为空")
+		return
+	}
+	if err := s.ensureTPMSCReady(card); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err := tpmsc.UnblockPIN(r.Context(), card.TPMSCReaderName, puk, newPIN); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeOK(w, map[string]string{"status": "pin_unblocked"})
+}
+
+// ensureTPMSCReady 确认 VSC 已创建且读卡器可用，避免把不可用状态误报成 PIN 错误。
+func (s *Server) ensureTPMSCReady(card *storage.Card) error {
+	if card.TPMSCInstanceID == "" {
+		return fmt.Errorf("该卡片没有可用的 VSC 实例，无法执行 PIN 操作")
+	}
+	if card.TPMSCState != storage.TPMSCStateReady || card.TPMSCReaderName == "" {
+		return fmt.Errorf("VSC 当前状态为 %q，读卡器不可用；请先重启并刷新卡片状态", card.TPMSCState)
+	}
+	return nil
 }
 
 // handleResetPUK POST /api/cards/{uuid}/reset-puk

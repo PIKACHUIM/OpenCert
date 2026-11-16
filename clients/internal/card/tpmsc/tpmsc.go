@@ -80,6 +80,7 @@ var (
 	ErrUserCancelled              = errors.New("TPM VSC 管理操作已取消")
 	ErrRebootRequired             = errors.New("TPM VSC 操作已提交，需重启后完成")
 	ErrReaderUnavailable          = errors.New("TPM VSC reader 当前不可用")
+	ErrPINBackendUnavailable      = errors.New("当前平台未实现 VSC PIN 管理")
 )
 
 // ValidateCreateCardArgs validates secrets before the caller stores a provisioning intent.

@@ -115,6 +115,7 @@ func NewServer(cfg *config.APIConfig, manager *card.Manager, db *storage.DB) (*S
 func (s *Server) registerRoutes() {
 	// 健康检查
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
+	s.mux.HandleFunc("GET /api/tpm/status", s.handleTPMStatus)
 
 	// ---- 认证接口（公开，不需要 API Token）----
 	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -150,6 +151,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("PUT /api/cards/{uuid}", s.handleUpdateCard)
 	s.mux.HandleFunc("DELETE /api/cards/{uuid}", s.handleDeleteCard)
 	s.mux.HandleFunc("POST /api/cards/{uuid}/reset-pin", s.handleResetPIN)
+	s.mux.HandleFunc("POST /api/cards/{uuid}/pin/change", s.handleChangePIN)
 	s.mux.HandleFunc("POST /api/cards/{uuid}/reset-puk", s.handleResetPUK)
 	s.mux.HandleFunc("POST /api/cards/{uuid}/export", s.handleExportCard)
 	s.mux.HandleFunc("POST /api/cards/restore", s.handleRestoreCard)

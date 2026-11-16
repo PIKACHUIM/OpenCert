@@ -343,8 +343,16 @@ export const revokePKICert = (uuid: string) =>
 export const resetCardPIN = (cardUUID: string, data: { old_pin?: string; puk?: string; admin_key?: string; new_pin: string }) =>
   http.post(`/api/cards/${cardUUID}/reset-pin`, data).then((r) => r.data);
 
+// 仅 Windows TPM VSC：使用当前 PIN 直接修改
+export const changeCardPIN = (cardUUID: string, data: { old_pin: string; new_pin: string }) =>
+  http.post(`/api/cards/${cardUUID}/pin/change`, data).then((r) => r.data);
+
 export const resetCardPUK = (cardUUID: string, data: { admin_key: string; current_pin: string; new_puk: string }) =>
   http.post(`/api/cards/${cardUUID}/reset-puk`, data).then((r) => r.data);
+
+// ---- 本机 TPM / VSC 状态 ----
+export const getTPMStatus = (): Promise<{ available: boolean; version: string; admin: boolean; vsc_available: boolean; message?: string }> =>
+  http.get('/api/tpm/status').then((r) => r.data);
 
 // ---- 智能卡导出/恢复 ----
 export const exportCard = (cardUUID: string, data: { user_uuid: string; user_password: string; password?: string; admin_key?: string }) =>

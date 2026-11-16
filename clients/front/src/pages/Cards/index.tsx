@@ -11,7 +11,7 @@ import {
   UndoOutlined, CreditCardOutlined, EditOutlined, PoweroffOutlined,
 } from '@ant-design/icons';
 import PageHeader from '../../components/PageHeader';
-import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, exportCardDownload, restoreCard, updateCard } from '../../api';
+import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, changeCardPIN, exportCardDownload, restoreCard, updateCard, getTPMStatus } from '../../api';
 import type { Card as CardType, Certificate, User, CreateCardRequest } from '../../types';
 import { useAppStore } from '../../store/appStore';
 import { useAuthStore } from '../../store/auth';
@@ -196,6 +196,11 @@ const Cards: React.FC = () => {
 
   useEffect(() => { load(); loadUsers(); }, [filterMode]);
 
+  const [tpmStatus, setTPMStatus] = useState<{ available: boolean; version: string; admin: boolean; vsc_available: boolean; message?: string } | null>(null);
+  useEffect(() => {
+    getTPMStatus().then(setTPMStatus).catch(() => setTPMStatus(null));
+  }, []);
+
   const handleCreate = async () => {
     try {
       const values = await createForm.validateFields();
@@ -234,7 +239,16 @@ const Cards: React.FC = () => {
     try {
       const values = await pinResetForm.validateFields();
       setPinResetting(true);
-      if (values.method === 'pin') {
+      if (pinResetCard.slot_type === 'tpmsc') {
+        // VSC：改 PIN 走 minidriver 原生接口；重置仅支持 PUK
+        if (values.method === 'pin') {
+          await changeCardPIN(pinResetCard.uuid, { old_pin: values.secret, new_pin: values.new_pin });
+        } else if (values.method === 'puk') {
+          await resetCardPIN(pinResetCard.uuid, { puk: values.secret, new_pin: values.new_pin });
+        } else {
+          throw new Error('VSC 暂不支持用 AdminKey 重置 PIN');
+        }
+      } else if (values.method === 'pin') {
         // 使用当前 PIN 修改 PIN（传 old_pin + new_pin）
         await resetCardPIN(pinResetCard.uuid, { old_pin: values.secret, new_pin: values.new_pin });
       } else if (values.method === 'puk') {
@@ -589,8 +603,7 @@ const Cards: React.FC = () => {
           </Button>
           <Button
             type="link" size="small" icon={<LockOutlined />}
-            disabled={record.slot_type === 'tpmsc'}
-            title={record.slot_type === 'tpmsc' ? 'TPMSC PIN/PUK 管理尚未接入' : undefined}
+            title={record.slot_type === 'tpmsc' ? 'VSC 支持改 PIN；忘记 PIN 时用 PUK 解锁' : undefined}
             onClick={() => { setPinResetCard(record); setPinResetOpen(true); }}
           >
             密码
@@ -665,10 +678,21 @@ const Cards: React.FC = () => {
         icon={<CreditCardOutlined />}
         title="智能卡片管理"
         tags={
-          <Radio.Group value={filterMode} onChange={(e) => { setFilterMode(e.target.value); setPage(1); }} size="small" buttonStyle="solid">
-            <Radio.Button value="active">当前账号</Radio.Button>
-            <Radio.Button value="all">全部已登录</Radio.Button>
-          </Radio.Group>
+          <Space size={6}>
+            <Radio.Group value={filterMode} onChange={(e) => { setFilterMode(e.target.value); setPage(1); }} size="small" buttonStyle="solid">
+              <Radio.Button value="active">当前账号</Radio.Button>
+              <Radio.Button value="all">全部已登录</Radio.Button>
+            </Radio.Group>
+            {tpmStatus && (
+              <Tooltip title={tpmStatus.available
+                ? `TPM ${tpmStatus.version}；VSC 接口${tpmStatus.vsc_available ? '可用' : '不可用'}；${tpmStatus.admin ? '已提权' : '未提权'}`
+                : (tpmStatus.message || '未检测到可用 TPM')}>
+                <Tag color={tpmStatus.available ? 'green' : 'default'} style={{ fontSize: 11 }}>
+                  TPM {tpmStatus.available ? tpmStatus.version : '不可用'}
+                </Tag>
+              </Tooltip>
+            )}
+          </Space>
         }
         extra={
           <>
@@ -842,8 +866,8 @@ const Cards: React.FC = () => {
             )}
             {selectedCard.slot_type === 'tpmsc' && (
               <Alert
-                message="VSC 设备管理与 PKI CSR 已接入，PKCS#11 Slot 尚未接入"
-                description="PKI CSR 可通过 Microsoft Smart Card KSP 在 VSC 内创建密钥并签名。下方证书列表来自本地数据库，不是实时卡片枚举；普通 PKCS#11 密钥操作及 PIN/PUK 管理尚未接入。删除会实际销毁 VSC，且不可恢复。"
+                message="VSC 设备管理、PKI CSR 与 PIN 管理已接入，PKCS#11 Slot 尚未接入"
+                description="PKI CSR 可通过 Microsoft Smart Card KSP 在 VSC 内创建密钥并签名；PIN 可直接修改，忘记时用 PUK 解锁。下方证书列表来自本地数据库，不是实时卡片枚举；普通 PKCS#11 密钥操作尚未接入。删除会实际销毁 VSC，且不可恢复。"
                 type="warning" showIcon style={{ marginBottom: 16 }}
               />
             )}
@@ -965,7 +989,10 @@ const Cards: React.FC = () => {
       >
         <Form form={pinResetForm} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="method" label="验证方式" initialValue="pin" rules={[{ required: true }]}>
-            <Select options={[
+            <Select options={pinResetCard?.slot_type === 'tpmsc' ? [
+              { value: 'pin', label: '使用当前 PIN 修改' },
+              { value: 'puk', label: '使用 PUK 解锁并重置' },
+            ] : [
               { value: 'pin', label: '使用当前 PIN 修改' },
               { value: 'puk', label: '使用 PUK 重置' },
               { value: 'admin', label: '使用 Admin Key 重置' },
