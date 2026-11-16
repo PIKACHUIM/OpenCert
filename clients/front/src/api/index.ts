@@ -354,6 +354,13 @@ export const resetCardPUK = (cardUUID: string, data: { admin_key: string; curren
 export const getTPMStatus = (): Promise<{ available: boolean; version: string; admin: boolean; vsc_available: boolean; message?: string }> =>
   http.get('/api/tpm/status').then((r) => r.data);
 
+// ---- VSC 卡上证书（Windows 证书存储口径）----
+export const listCardCertificates = (cardUUID: string): Promise<any[]> =>
+  http.get(`/api/cards/${cardUUID}/certs/on-card`).then((r) => r.data);
+
+export const importPFXToCard = (cardUUID: string, data: { pfx_b64: string; password: string }) =>
+  http.post(`/api/cards/${cardUUID}/certs/import-pfx`, data).then((r) => r.data);
+
 // ---- 智能卡导出/恢复 ----
 export const exportCard = (cardUUID: string, data: { user_uuid: string; user_password: string; password?: string; admin_key?: string }) =>
   http.post(`/api/cards/${cardUUID}/export`, data, { responseType: 'blob' }).then((r) => r.data);

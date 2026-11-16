@@ -11,7 +11,7 @@ import {
   UndoOutlined, CreditCardOutlined, EditOutlined, PoweroffOutlined,
 } from '@ant-design/icons';
 import PageHeader from '../../components/PageHeader';
-import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, changeCardPIN, exportCardDownload, restoreCard, updateCard, getTPMStatus } from '../../api';
+import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, changeCardPIN, exportCardDownload, restoreCard, updateCard, getTPMStatus, listCardCertificates, importPFXToCard } from '../../api';
 import type { Card as CardType, Certificate, User, CreateCardRequest } from '../../types';
 import { useAppStore } from '../../store/appStore';
 import { useAuthStore } from '../../store/auth';
@@ -108,6 +108,16 @@ const Cards: React.FC = () => {
   const [pinResetCard, setPinResetCard] = useState<CardType | null>(null);
   const [pinResetForm] = Form.useForm();
   const [pinResetting, setPinResetting] = useState(false);
+
+  // VSC 卡上证书 / 导入 PFX
+  const [onCardOpen, setOnCardOpen] = useState(false);
+  const [onCardCerts, setOnCardCerts] = useState<any[]>([]);
+  const [onCardLoading, setOnCardLoading] = useState(false);
+  const [pfxOpen, setPfxOpen] = useState(false);
+  const [pfxB64, setPfxB64] = useState('');
+  const [pfxFileName, setPfxFileName] = useState('');
+  const [pfxPassword, setPfxPassword] = useState('');
+  const [pfxImporting, setPfxImporting] = useState(false);
 
   // 创建卡片后一次性显示 PUK/AdminKey
   const [credsModal, setCredsModal] = useState<{ puk: string; admin_key: string; pin: string; instance_id?: string; reader_name?: string; output?: string } | null>(null);
@@ -263,6 +273,52 @@ const Cards: React.FC = () => {
       if (e.message) message.error(e.message);
     } finally {
       setPinResetting(false);
+    }
+  };
+
+  // 读取 VSC 上（Windows 证书存储口径）的证书
+  const handleLoadOnCardCerts = async () => {
+    if (!selectedCard) return;
+    setOnCardLoading(true);
+    setOnCardOpen(true);
+    try {
+      const list = await listCardCertificates(selectedCard.uuid);
+      setOnCardCerts(Array.isArray(list) ? list : []);
+    } catch (e: any) {
+      message.error(e.message || '读取卡上证书失败');
+      setOnCardCerts([]);
+    } finally {
+      setOnCardLoading(false);
+    }
+  };
+
+  // 选择 PFX 文件并转 base64
+  const handlePickPFX = (file: File | undefined) => {
+    if (!file) { setPfxB64(''); setPfxFileName(''); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const idx = result.indexOf(',');
+      setPfxB64(idx >= 0 ? result.slice(idx + 1) : result);
+      setPfxFileName(file.name);
+    };
+    reader.onerror = () => message.error('读取 PFX 文件失败');
+    reader.readAsDataURL(file);
+  };
+
+  const handleImportPFX = async () => {
+    if (!selectedCard) return;
+    if (!pfxB64) { message.warning('请选择 PFX/P12 文件'); return; }
+    setPfxImporting(true);
+    try {
+      await importPFXToCard(selectedCard.uuid, { pfx_b64: pfxB64, password: pfxPassword });
+      message.success('PFX 已导入卡片；如证书未立即显示，请在卡片列表中刷新');
+      setPfxOpen(false);
+      setPfxB64(''); setPfxFileName(''); setPfxPassword('');
+    } catch (e: any) {
+      message.error(e.message || '导入 PFX 失败');
+    } finally {
+      setPfxImporting(false);
     }
   };
 
@@ -844,14 +900,22 @@ const Cards: React.FC = () => {
         onClose={() => setCertDrawerOpen(false)}
         width={750}
         extra={
-          <Button
-            type="primary" size="small" icon={<KeyOutlined />}
-            disabled={selectedCard?.slot_type === 'tpmsc'}
-            title={selectedCard?.slot_type === 'tpmsc' ? 'Smart Card KSP 密钥操作尚未接入' : undefined}
-            onClick={() => setKeygenOpen(true)}
-          >
-            生成密钥对
-          </Button>
+          <Space size={4}>
+            {selectedCard?.slot_type === 'tpmsc' && (
+              <>
+                <Button size="small" icon={<EyeOutlined />} onClick={handleLoadOnCardCerts}>卡上证书</Button>
+                <Button size="small" icon={<ImportOutlined />} onClick={() => setPfxOpen(true)}>导入 PFX</Button>
+              </>
+            )}
+            <Button
+              type="primary" size="small" icon={<KeyOutlined />}
+              disabled={selectedCard?.slot_type === 'tpmsc'}
+              title={selectedCard?.slot_type === 'tpmsc' ? 'Smart Card KSP 密钥操作尚未接入' : undefined}
+              onClick={() => setKeygenOpen(true)}
+            >
+              生成密钥对
+            </Button>
+          </Space>
         }
       >
         {selectedCard && (
@@ -976,6 +1040,64 @@ const Cards: React.FC = () => {
           />
         )}
       </Drawer>
+
+      {/* VSC 卡上证书（Windows 证书存储口径） */}
+      <Modal
+        title="卡上证书（Windows 证书存储口径）"
+        open={onCardOpen}
+        onCancel={() => setOnCardOpen(false)}
+        footer={<Button onClick={() => setOnCardOpen(false)}>关闭</Button>}
+        width={720}
+      >
+        <Alert
+          message="只显示已进入 Windows「个人」存储、且密钥挂在本卡上的证书"
+          description="卡内未导入 Windows 证书存储的孤立证书不会出现在这里；这不代表卡上没有证书。"
+          type="info" showIcon style={{ marginBottom: 12 }}
+        />
+        <Table
+          rowKey="sha1"
+          size="small"
+          loading={onCardLoading}
+          dataSource={onCardCerts}
+          pagination={false}
+          locale={{ emptyText: '没有找到可用的卡上证书' }}
+          columns={[
+            { title: '主题', dataIndex: 'subject', ellipsis: true },
+            { title: '有效期至', dataIndex: 'not_after', width: 120, render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD') : '-' },
+            { title: 'SHA1', dataIndex: 'sha1', width: 150, ellipsis: true },
+          ]}
+        />
+      </Modal>
+
+      {/* 导入 PFX 到 VSC */}
+      <Modal
+        title="导入 PFX 到卡片"
+        open={pfxOpen}
+        onOk={handleImportPFX}
+        onCancel={() => { setPfxOpen(false); setPfxB64(''); setPfxFileName(''); setPfxPassword(''); }}
+        okText="导入" cancelText="取消"
+        confirmLoading={pfxImporting}
+        width={460}
+      >
+        <Alert
+          message="仅支持 RSA 1024/2048 + SHA1/256 的单证书 PFX"
+          description="导入时 Windows 会弹出卡片 PIN 对话框，OpenCert 不读取、不保存 PIN 和 PFX 密码。"
+          type="warning" showIcon style={{ marginBottom: 12 }}
+        />
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <input
+            type="file"
+            accept=".pfx,.p12"
+            onChange={(e) => handlePickPFX(e.target.files?.[0])}
+          />
+          {pfxFileName && <Text type="secondary" style={{ fontSize: 12 }}>已选择：{pfxFileName}</Text>}
+          <Input.Password
+            placeholder="PFX 导出密码"
+            value={pfxPassword}
+            onChange={(e) => setPfxPassword(e.target.value)}
+          />
+        </Space>
+      </Modal>
 
       {/* PIN 重置弹窗 */}
       <Modal
