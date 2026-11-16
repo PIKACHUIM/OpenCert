@@ -20,7 +20,7 @@ func BuildGetInfo() []byte {
 	out = append(out, 0xF5)
 	out = append(out, 0x69)
 	out = append(out, []byte("clientPin")...)
-	out = append(out, 0xF4)
+	out = append(out, 0xF5)
 	out = append(out, 0x64)
 	out = append(out, []byte("plat")...)
 	out = append(out, 0xF4)

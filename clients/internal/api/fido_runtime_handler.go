@@ -53,12 +53,28 @@ func (s *Server) handleFIDOStart(w http.ResponseWriter, r *http.Request) {
 	fidoMu.Unlock()
 
 	store := fido.NewKeyStore("")
+	pinSvc, err := fido.NewPINService(fido.NewPINState(nil))
+	if err != nil {
+		fidoMu.Lock()
+		fidoCancel = nil
+		fidoErr = err.Error()
+		fidoMu.Unlock()
+		cancel()
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	handler := func(cmd uint32, payload []byte) (any, error) {
 		switch cmd {
 		case fido.CmdGetInfo:
 			return fido.GetInfoResponse(), nil
 		case fido.CmdCancel:
 			return map[string]any{"rv": 0}, nil
+		case fido.CmdClientPIN:
+			var body map[string]any
+			if len(payload) > 0 {
+				_ = json.Unmarshal(payload, &body)
+			}
+			return pinSvc.Handle(body), nil
 		case fido.CmdMakeCredential, fido.CmdGetAssertion:
 			var body map[string]any
 			if len(payload) > 0 {

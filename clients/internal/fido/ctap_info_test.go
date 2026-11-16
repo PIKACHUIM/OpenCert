@@ -17,7 +17,7 @@ func TestBuildGetInfoIsValidCBOR(t *testing.T) {
 		t.Fatalf("versions = %v", decoded[1])
 	}
 	opts, ok := decoded[4].(map[any]any)
-	if !ok || opts["up"] != true || opts["clientPin"] != false {
+	if !ok || opts["up"] != true || opts["clientPin"] != true {
 		t.Fatalf("options = %v", decoded[4])
 	}
 	aaguid, ok := decoded[3].([]byte)
