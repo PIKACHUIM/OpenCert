@@ -29,6 +29,34 @@ const KEY_TYPE_OPTIONS = [
   { value: 'rsa4096', label: 'RSA 4096' },
 ];
 
+// VSC 凭据随机生成：使用 Web Crypto，避免 Math.random 的可预测性。
+// PUK 只使用无歧义的可打印字符（去掉 I/O/l/o/0/1），AdminKey 为 24 字节十六进制。
+const VSC_PUK_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+
+const randomFromCharset = (length: number): string => {
+  const out: string[] = [];
+  const buf = new Uint8Array(length * 2);
+  const limit = 256 - (256 % VSC_PUK_CHARSET.length);
+  while (out.length < length) {
+    crypto.getRandomValues(buf);
+    for (const b of buf) {
+      if (b < limit) {
+        out.push(VSC_PUK_CHARSET[b % VSC_PUK_CHARSET.length]);
+        if (out.length === length) break;
+      }
+    }
+  }
+  return out.join('');
+};
+
+const generateVSCPUK = () => randomFromCharset(12);
+
+const generateVSCAdminKey = () => {
+  const buf = new Uint8Array(24);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+};
+
 // 安全等级颜色和标签。仅硬件 Provider 内生成的密钥具备不可导出保证。
 const securityLevelConfig: Record<string, { color: string; label: string; desc: string }> = {
   high: { color: 'red', label: '高', desc: '仅已接入并验证的硬件 Provider 内生成、使用的密钥具有硬件不可导出保证' },
@@ -682,18 +710,11 @@ const Cards: React.FC = () => {
               onChange={(val) => {
                 setCreateSlotType(val);
                 createForm.setFieldsValue(val === 'tpmsc'
-                  ? { security_level: 'high' }
+                  ? { security_level: 'high', puk: generateVSCPUK(), admin_key: generateVSCAdminKey() }
                   : { security_level: 'low', puk: undefined, admin_key: undefined });
               }}
             />
           </Form.Item>
-          {createSlotType === 'tpmsc' && (
-            <Alert
-              message="TPM VSC 生命周期已接入"
-              description="Windows 将请求管理员确认。PIN、可选 PUK 和 48 位十六进制 AdminKey 只用于硬件初始化，不会写入数据库。AdminKey 请自行保管；PKI CSR 使用 Smart Card KSP 创建/签名，PKCS#11 Slot 与 PIN/PUK 管理尚未接入。"
-              type="warning" showIcon style={{ marginBottom: 16 }}
-            />
-          )}
           <Form.Item name="user_uuid" label="所属用户" rules={[{ required: true, message: '请选择用户' }]}>
             <Select
               options={users.map((u) => ({ value: u.uuid, label: u.display_name }))}
@@ -726,17 +747,39 @@ const Cards: React.FC = () => {
           </Form.Item>
           {createSlotType === 'tpmsc' && (
             <>
-              <Form.Item name="puk" label="VSC PUK（可选）" rules={[
+              <Form.Item name="puk" label="VSC PUK（可选，已随机生成）" rules={[
                 { min: 8, message: 'PUK 最少 8 位' },
                 { max: 127, message: 'PUK 最多 127 位' },
-              ]} tooltip="留空则使用 AdminKey 的 challenge-response PIN 重置路径。">
-                <Input.Password placeholder="可选：设置 PUK" maxLength={127} />
+              ]} tooltip="已自动随机生成，可点右侧刷新重新生成；留空则使用 AdminKey 的 challenge-response PIN 重置路径。">
+                <Input.Password
+                  placeholder="可选：设置 PUK"
+                  maxLength={127}
+                  addonAfter={
+                    <Tooltip title="重新随机生成 PUK">
+                      <Button
+                        type="text" size="small" icon={<ReloadOutlined />}
+                        onClick={() => createForm.setFieldsValue({ puk: generateVSCPUK() })}
+                      />
+                    </Tooltip>
+                  }
+                />
               </Form.Item>
-              <Form.Item name="admin_key" label="VSC AdminKey（48 位十六进制）" rules={[
+              <Form.Item name="admin_key" label="VSC AdminKey（48 位十六进制，已随机生成）" rules={[
                 { required: true, message: '请输入 48 位十六进制 AdminKey' },
                 { pattern: /^[0-9a-fA-F]{48}$/, message: 'AdminKey 必须为 48 位十六进制字符' },
-              ]} tooltip="24 字节 TDEA 管理密钥。OpenCert 不保存此值；请在提交前自行保管。">
-                <Input.Password placeholder="输入 48 位十六进制 AdminKey" maxLength={48} />
+              ]} tooltip="24 字节 TDEA 管理密钥，已自动随机生成，可点右侧刷新重新生成。OpenCert 不保存此值；请在提交前自行妥善保存。">
+                <Input.Password
+                  placeholder="48 位十六进制 AdminKey"
+                  maxLength={48}
+                  addonAfter={
+                    <Tooltip title="重新随机生成 AdminKey">
+                      <Button
+                        type="text" size="small" icon={<ReloadOutlined />}
+                        onClick={() => createForm.setFieldsValue({ admin_key: generateVSCAdminKey() })}
+                      />
+                    </Tooltip>
+                  }
+                />
               </Form.Item>
             </>
           )}
