@@ -431,3 +431,9 @@ export const importCert = (formData: FormData) =>
   http.post('/api/pki/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   }).then((r) => r.data);
+// ---- SSH agent ----
+export const getSSHAgentStatus = (): Promise<{ running: boolean; pipe: string; last_error?: string }> =>
+  http.get('/api/ssh/agent').then((r) => r.data);
+
+export const toggleSSHAgent = (enabled: boolean): Promise<{ running: boolean }> =>
+  http.post('/api/ssh/agent', { enabled }).then((r) => r.data);

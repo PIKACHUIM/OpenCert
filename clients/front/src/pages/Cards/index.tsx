@@ -11,7 +11,7 @@ import {
   UndoOutlined, CreditCardOutlined, EditOutlined, PoweroffOutlined,
 } from '@ant-design/icons';
 import PageHeader from '../../components/PageHeader';
-import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, changeCardPIN, exportCardDownload, restoreCard, updateCard, getTPMStatus, listCardCertificates, importPFXToCard, importCERToCard, backupTSB, restoreTSB } from '../../api';
+import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, changeCardPIN, exportCardDownload, restoreCard, updateCard, getTPMStatus, listCardCertificates, importPFXToCard, importCERToCard, backupTSB, restoreTSB, getSSHAgentStatus, toggleSSHAgent } from '../../api';
 import type { Card as CardType, Certificate, User, CreateCardRequest } from '../../types';
 import { useAppStore } from '../../store/appStore';
 import { useAuthStore } from '../../store/auth';
@@ -113,6 +113,7 @@ const Cards: React.FC = () => {
   const [onCardOpen, setOnCardOpen] = useState(false);
   const [onCardCerts, setOnCardCerts] = useState<any[]>([]);
   const [onCardLoading, setOnCardLoading] = useState(false);
+  const [sshAgentRunning, setSshAgentRunning] = useState(false);
   const [pfxOpen, setPfxOpen] = useState(false);
   const [pfxB64, setPfxB64] = useState('');
   const [pfxFileName, setPfxFileName] = useState('');
@@ -289,6 +290,7 @@ const Cards: React.FC = () => {
     if (!selectedCard) return;
     setOnCardLoading(true);
     setOnCardOpen(true);
+    getSSHAgentStatus().then((r) => setSshAgentRunning(r.running)).catch(() => {});
     try {
       const list = await listCardCertificates(selectedCard.uuid);
       setOnCardCerts(Array.isArray(list) ? list : []);
@@ -1079,6 +1081,13 @@ const Cards: React.FC = () => {
           description="卡内未导入 Windows 证书存储的孤立证书不会出现在这里；这不代表卡上没有证书。"
           type="info" showIcon style={{ marginBottom: 12 }}
         />
+        <Space style={{ marginBottom: 8 }}>
+          <Switch size="small" checked={sshAgentRunning} onChange={async (v) => {
+            try { const res = await toggleSSHAgent(v); setSshAgentRunning(res.running); message.success(res.running ? 'SSH agent 已启动' : 'SSH agent 已停止'); }
+            catch (e: any) { message.error(e.message || '切换 SSH agent 失败'); }
+          }} />
+          <Text style={{ fontSize: 12 }}>内置 SSH agent（停止系统 ssh-agent 后使用）</Text>
+        </Space>
         <Table
           rowKey="sha1"
           size="small"
@@ -1089,7 +1098,11 @@ const Cards: React.FC = () => {
           columns={[
             { title: '主题', dataIndex: 'subject', ellipsis: true },
             { title: '有效期至', dataIndex: 'not_after', width: 120, render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD') : '-' },
-            { title: 'SHA1', dataIndex: 'sha1', width: 150, ellipsis: true },
+            { title: 'SHA1', dataIndex: 'sha1', width: 130, ellipsis: true },
+            {
+              title: 'SSH 公钥', dataIndex: 'ssh_public_key', width: 90,
+              render: (v: string) => v ? <Text copyable={{ text: v }} style={{ fontSize: 12 }}>复制</Text> : <Text type="secondary">-</Text>,
+            },
           ]}
         />
       </Modal>
