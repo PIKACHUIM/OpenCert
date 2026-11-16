@@ -14,7 +14,7 @@ import { useTranslation } from 'react-i18next';
 import i18n from '../../i18n';
 import { useAppStore } from '../../store/appStore';
 import type { ThemeMode } from '../../store/appStore';
-import { getSettings, putSettings } from '../../api';
+import { getSettings, putSettings, getFIDORuntime, startFIDO, stopFIDO } from '../../api';
 import type { ClientSettings } from '../../types';
 
 const { Title, Text } = Typography;
@@ -29,6 +29,8 @@ const Settings: React.FC = () => {
   const [settings, setSettings] = useState<ClientSettings | null>(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [fido, setFido] = useState<{ driver_installed: boolean; exe_path?: string; version?: string; message: string; running: boolean; last_error?: string } | null>(null);
+  const [fidoBusy, setFidoBusy] = useState(false);
   const [form] = Form.useForm();
 
   // 主题选项与 t() 关联，确保切换语言后实时刷新
@@ -57,6 +59,18 @@ const Settings: React.FC = () => {
   };
 
   useEffect(() => { if (connected) loadSettings(); }, [connected]);
+
+  const loadFido = () => { getFIDORuntime().then(setFido).catch(() => setFido(null)); };
+  useEffect(() => { if (connected) loadFido(); }, [connected]);
+
+  const toggleFido = async (enable: boolean) => {
+    setFidoBusy(true);
+    try {
+      if (enable) await startFIDO(); else await stopFIDO();
+      loadFido();
+    } catch (e: any) { message.error(e.message || '切换 FIDO 失败'); }
+    finally { setFidoBusy(false); }
+  };
 
   // 保存后端配置
   const handleSaveSettings = async () => {
@@ -209,6 +223,28 @@ const Settings: React.FC = () => {
           </Form.Item>
           <Button onClick={handleTestConnection} loading={testing} icon={<ApiOutlined />}>{t('settings.testConn')}</Button>
         </Form>
+      </Card>
+
+      {/* FIDO 虚拟认证器 */}
+      <Card title={<Space><LockOutlined />FIDO2 虚拟认证器</Space>} style={cardStyle} headStyle={{ borderBottom: darkMode ? '1px solid #21262d' : undefined }}>
+        {fido ? (
+          <>
+            <Space wrap style={{ marginBottom: 12 }}>
+              <Tag color={fido.driver_installed ? 'success' : 'error'}>驱动 {fido.driver_installed ? '已安装' : '未安装'}</Tag>
+              <Tag color={fido.exe_path ? 'success' : 'error'}>fido-go {fido.exe_path ? '已找到' : '缺失'}</Tag>
+              <Tag color={fido.running ? 'processing' : 'default'}>{fido.running ? '运行中' : '未启动'}</Tag>
+              {fido.version && <Tag>{fido.version.split('\n')[0]}</Tag>}
+            </Space>
+            <Alert type={fido.driver_installed && fido.exe_path ? 'info' : 'warning'} showIcon style={{ marginBottom: 12 }}
+              message={fido.message} description={!fido.driver_installed ? '请先安装 TPMSmartCard 的 Fido/usbip 驱动；OpenCert 不随包分发内核驱动。' : undefined} />
+            <Space>
+              <Button type="primary" loading={fidoBusy} disabled={!fido.driver_installed || !fido.exe_path || fido.running} onClick={() => toggleFido(true)}>启动</Button>
+              <Button danger loading={fidoBusy} disabled={!fido.running} onClick={() => toggleFido(false)}>停止</Button>
+              <Button onClick={loadFido}>刷新状态</Button>
+            </Space>
+            {fido.last_error && <Alert type="error" showIcon style={{ marginTop: 12 }} message={fido.last_error} />}
+          </>
+        ) : <Spin />}
       </Card>
 
       {/* 关于 */}

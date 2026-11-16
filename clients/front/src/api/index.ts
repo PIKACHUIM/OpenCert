@@ -437,3 +437,13 @@ export const getSSHAgentStatus = (): Promise<{ running: boolean; pipe: string; l
 
 export const toggleSSHAgent = (enabled: boolean): Promise<{ running: boolean }> =>
   http.post('/api/ssh/agent', { enabled }).then((r) => r.data);
+
+// ---- FIDO 虚拟认证器 ----
+export const getFIDORuntime = (): Promise<{ driver_installed: boolean; exe_path?: string; version?: string; message: string; running: boolean; last_error?: string }> =>
+  http.get('/api/fido/runtime').then((r) => r.data);
+
+export const startFIDO = (): Promise<{ running: boolean }> =>
+  http.post('/api/fido/start').then((r) => r.data);
+
+export const stopFIDO = (): Promise<{ running: boolean }> =>
+  http.post('/api/fido/stop').then((r) => r.data);
