@@ -388,3 +388,34 @@ PKCS11Driver/
 <div align="center">
 <sub>OpenCert Manager · v2.1.0 · 2026-05-26</sub>
 </div>
+
+---
+
+## 🪪 Windows TPM 虚拟智能卡（VSC）管理
+
+客户端内置 VSC 管理能力，不依赖 OpenSC：
+
+| 能力 | 说明 |
+|---|---|
+| 建卡 / 删卡 | 提权 COM 调用 TPM 虚拟智能卡管理器；远程桌面会话下会提前拒绝 |
+| 改 PIN / PUK 解锁 | 直调卡片 minidriver（`msclmd.dll`），失败返回 SCARD 错误码 |
+| 卡上证书 | 枚举 Windows「个人」存储中密钥挂在本卡上的证书，可复制 SSH 公钥 |
+| 导入 PFX | `certutil -csp "Microsoft Base Smart Card Crypto Provider"`，仅支持 RSA1024/2048 + SHA1/256 单证书 |
+| 导入 CER | 按公钥匹配卡上已有密钥容器后写入证书存储 |
+| 整卡备份 / 还原 | `.tsb` v2：store + PCPKEY + 设备注册表 + DPAPI 明文，支持口令加密（AES-256-GCM） |
+| SSH agent | 只读命名管道 `\\.\pipe\openssh-ssh-agent`，卡上私钥签名，私钥不出卡 |
+| FIDO2 | 依赖 usbip 驱动与 `fido-go.exe`（来自 TPMSmartCard），OpenCert 只负责检测、启动与 CTAP2 服务 |
+
+### 备份还原的前置条件
+
+- 只能还原到**同一颗 TPM**；卡片被删除后无法还原。
+- 采集与还原需要管理员权限；DPAPI 解密需要借用 SYSTEM 令牌。
+- 还原后如读卡器未出现，请重启系统或重新插拔。
+
+### FIDO2 环境
+
+1. 安装 TPMSmartCard 的 `Fido/usbip` 驱动（OpenCert 不随包分发内核驱动）。
+2. 将 `fido-go.exe` 放入 `%ProgramFiles%\TPMSmartCard\Fido\`，或设置环境变量 `OPENCERT_FIDO_EXE`。
+3. 在「系统设置 → FIDO2 虚拟认证器」中启动，然后访问 WebAuthn 测试站点。
+
+> 当前 FIDO 认证器为 `clientPin=false` 的无 PIN 设备；SSH agent 目前验证的是 RSA `rsa-sha2-256` 路径。
