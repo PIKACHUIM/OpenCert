@@ -1170,8 +1170,8 @@ const Cards: React.FC = () => {
         width={500}
       >
         <Alert
-          message="当前备份不含 DPAPI 明文"
-          description="只适用于卡片未删除、同一系统的恢复；重装系统后无法还原。备份包等于卡片密钥材料，请离线保管。"
+          message="备份包含 DPAPI 明文（等同卡片密钥材料）"
+          description="采集时会借用 SYSTEM 身份解密卡片数据，还原时按本机身份重新加密并回验。仅支持同一颗 TPM 的恢复；删除卡片后无法还原。请离线保管备份包。"
           type="warning" showIcon style={{ marginBottom: 12 }}
         />
         <Space direction="vertical" style={{ width: '100%' }}>
