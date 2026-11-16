@@ -428,6 +428,41 @@ const CSRPage: React.FC = () => {
                 )}
               </Form.Item>
             </Col>
+            <Col span={12}>
+              <Form.Item name="key_usage" label="密钥用法（可选）" tooltip="写入 CSR 的 KeyUsage 扩展请求；最终由 CA 决定是否采纳">
+                <Select
+                  mode="multiple"
+                  allowClear
+                  placeholder="例如：数字签名、密钥加密"
+                  options={[
+                    { label: '数字签名', value: 'digital_signature' },
+                    { label: '内容承诺', value: 'content_commitment' },
+                    { label: '密钥加密', value: 'key_encipherment' },
+                    { label: '数据加密', value: 'data_encipherment' },
+                    { label: '密钥协商', value: 'key_agreement' },
+                    { label: '证书签发', value: 'cert_sign' },
+                    { label: 'CRL 签发', value: 'crl_sign' },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="ext_key_usage" label="扩展密钥用法（可选）" tooltip="写入 CSR 的 ExtendedKeyUsage 扩展请求；最终由 CA 决定是否采纳">
+                <Select
+                  mode="multiple"
+                  allowClear
+                  placeholder="例如：TLS 服务器、客户端认证"
+                  options={[
+                    { label: 'TLS 服务器', value: 'server_auth' },
+                    { label: 'TLS 客户端', value: 'client_auth' },
+                    { label: '代码签名', value: 'code_signing' },
+                    { label: '邮件保护', value: 'email_protection' },
+                    { label: 'OCSP 签名', value: 'ocsp_signing' },
+                    { label: '时间戳', value: 'timestamping' },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
             <Col span={8}>
               <Form.Item name="key_storage" label="密钥存储位置" rules={[{ required: true }]}>
                 <Select onChange={(v) => setKeyStorage(v)} options={[
