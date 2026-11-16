@@ -8,7 +8,39 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sys/windows/registry"
 )
+
+// Diagnosis 是还原后的三层自检结果。
+type Diagnosis struct {
+	DeviceRegistry bool
+	PCPKeyCount    int
+	StoreFileCount int
+	DPAPIError     string
+}
+
+// Diagnose 检查设备节点注册表、PCPKEY 索引与卡片数据文件是否就位。
+// DPAPI 层需要 SYSTEM 身份，这里只报告“是否可尝试解密”。
+func Diagnose() Diagnosis {
+	var d Diagnosis
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`SYSTEM\CurrentControlSet\Enum\ROOT\SMARTCARDREADER`, registry.QUERY_VALUE|registry.ENUMERATE_SUB_KEYS)
+	if err == nil {
+		d.DeviceRegistry = true
+		key.Close()
+	}
+	if pcp, err := collectPCPKeys(); err == nil {
+		d.PCPKeyCount = len(pcp)
+	}
+	filepath.WalkDir(vscStoreRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr == nil && !entry.IsDir() {
+			d.StoreFileCount++
+		}
+		return nil
+	})
+	return d
+}
 
 // RestoreFiles 把 .tsb 中的 store / pcp / registry 写回本机。
 //

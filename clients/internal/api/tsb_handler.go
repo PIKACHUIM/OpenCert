@@ -106,6 +106,7 @@ func (s *Server) handleRestoreTSB(w http.ResponseWriter, r *http.Request) {
 		"parts":          len(manifest.Parts),
 		"includes_dpapi": manifest.IncludesDPAPI,
 		"note":           "如读卡器未出现，请重启系统或重新插拔后再刷新",
+		"diagnosis":      backup.Diagnose(),
 	})
 }
 
