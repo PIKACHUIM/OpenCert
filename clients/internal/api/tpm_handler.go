@@ -11,10 +11,11 @@ import (
 func (s *Server) handleTPMStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := tpmsc.GetTPMStatus()
 	resp := map[string]any{
-		"available":     status.Available,
-		"version":       status.Version,
-		"admin":         status.Admin,
-		"vsc_available": tpmsc.IsAvailable(),
+		"available": status.Available,
+		"version":   status.Version,
+		"admin":     status.Admin,
+		// VSC 需要 TPM 就绪，否则创建一定失败，不能只按 tpmvscmgr 是否存在判断。
+		"vsc_available": tpmsc.IsAvailable() && status.Available,
 	}
 	if err != nil {
 		resp["message"] = err.Error()
