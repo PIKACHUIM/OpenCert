@@ -3,6 +3,7 @@
 // 文件布局：
 //   - 未加密：标准 ZIP，含 manifest.json 与各部件。
 //   - 加密：magic "TSBENC2\n" + salt(16) + nonce(12) + AES-256-GCM(zip 明文)。
+//
 // 口令经 PBKDF2-HMAC-SHA256（120000 次）派生 32 字节密钥。
 package backup
 
