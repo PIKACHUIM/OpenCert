@@ -30,3 +30,6 @@ var errKeyStoreUnsupported = errors.New("当前平台未实现 FIDO 凭据存储
 func (k *KeyStore) Put(StoredCredential) error             { return errKeyStoreUnsupported }
 func (k *KeyStore) Find([]byte) (*StoredCredential, error) { return nil, errKeyStoreUnsupported }
 func (k *KeyStore) Increment([]byte) (uint32, error)       { return 0, errKeyStoreUnsupported }
+
+// FindByRP 在非 Windows 平台不可用。
+func (k *KeyStore) FindByRP(string) (*StoredCredential, error) { return nil, errKeyStoreUnsupported }

@@ -179,3 +179,20 @@ func (k *KeyStore) Increment(id []byte) (uint32, error) {
 	}
 	return 0, fmt.Errorf("凭据不存在")
 }
+
+// FindByRP 返回指定 RP 的第一条凭据。
+func (k *KeyStore) FindByRP(rpID string) (*StoredCredential, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	creds, err := k.load()
+	if err != nil {
+		return nil, err
+	}
+	for i := range creds {
+		if creds[i].RPID == rpID {
+			c := creds[i]
+			return &c, nil
+		}
+	}
+	return nil, nil
+}

@@ -12,6 +12,8 @@ import (
 	"github.com/fxamacker/cbor/v2"
 )
 
+var errCredentialExcluded = fmt.Errorf("凭据已存在")
+
 // AAGUID 固定为全零：这是软件虚拟认证器，不是厂商硬件。
 var aaguid = make([]byte, 16)
 
@@ -32,6 +34,9 @@ func HandleCTAP(store *KeyStore, cmd uint32, body map[string]any) (map[string]an
 		return map[string]any{"rv": 1}, nil
 	}
 	if err != nil {
+		if err == errCredentialExcluded {
+			return map[string]any{"rv": 0x19}, nil
+		}
 		return map[string]any{"rv": 1, "data": map[string]string{"error": err.Error()}}, nil
 	}
 	return map[string]any{"rv": 0, "data": map[string]string{
@@ -61,6 +66,19 @@ func makeCredential(store *KeyStore, req []byte) ([]byte, error) {
 		return nil, fmt.Errorf("缺少 rp.id")
 	}
 	_ = cbor.Unmarshal(m[3], &user)
+
+	// excludeList：已存在同一凭据时按 CTAP2 返回 0x19（CREDENTIAL_EXCLUDED）。
+	var exclude []struct {
+		ID []byte `cbor:"id"`
+	}
+	if raw, ok := m[5]; ok {
+		_ = cbor.Unmarshal(raw, &exclude)
+	}
+	for _, e := range exclude {
+		if found, err := store.Find(e.ID); err == nil && found != nil {
+			return nil, errCredentialExcluded
+		}
+	}
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -122,6 +140,14 @@ func getAssertion(store *KeyStore, req []byte) ([]byte, error) {
 		}
 	}
 	if cred == nil {
+		// 没有 allowList 时按 rpId 找一张常驻凭据。
+		if len(allow) == 0 {
+			if found, err := store.FindByRP(rpID); err == nil && found != nil {
+				cred = found
+			}
+		}
+	}
+	if cred == nil {
 		return nil, fmt.Errorf("没有匹配的凭据")
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(cred.PrivateKey)
@@ -146,6 +172,8 @@ func getAssertion(store *KeyStore, req []byte) ([]byte, error) {
 		1: map[string]any{"type": "public-key", "id": cred.ID},
 		2: authData,
 		3: sig,
+		4: map[string]any{"id": cred.UserHandle, "name": cred.UserName, "displayName": cred.DisplayName},
+		5: 1,
 	})
 }
 
