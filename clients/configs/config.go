@@ -171,11 +171,15 @@ func ResolveConfigPath() string {
 
 // defaultDBPath 返回默认数据库文件路径（可执行文件所在目录的 data 子目录）。
 func defaultDBPath() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return filepath.Join("data", "clients.db")
+	// 兼容旧安装：可执行文件旁的 data/clients.db 优先，避免升级后丢数据。
+	if exe, err := os.Executable(); err == nil {
+		legacy := filepath.Join(filepath.Dir(exe), "data", "clients.db")
+		if _, statErr := os.Stat(legacy); statErr == nil {
+			return legacy
+		}
 	}
-	return filepath.Join(filepath.Dir(exe), "data", "clients.db")
+	// go run 的 exe 在 go-build 临时目录，绝不能把数据库建在那里。
+	return filepath.Join(userDataDir(), "data", "clients.db")
 }
 
 // userDataDir 返回用户数据目录。
