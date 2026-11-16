@@ -11,7 +11,7 @@ import {
   UndoOutlined, CreditCardOutlined, EditOutlined, PoweroffOutlined,
 } from '@ant-design/icons';
 import PageHeader from '../../components/PageHeader';
-import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, changeCardPIN, exportCardDownload, restoreCard, updateCard, getTPMStatus, listCardCertificates, importPFXToCard, importCERToCard } from '../../api';
+import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, changeCardPIN, exportCardDownload, restoreCard, updateCard, getTPMStatus, listCardCertificates, importPFXToCard, importCERToCard, backupTSB, restoreTSB } from '../../api';
 import type { Card as CardType, Certificate, User, CreateCardRequest } from '../../types';
 import { useAppStore } from '../../store/appStore';
 import { useAuthStore } from '../../store/auth';
@@ -122,6 +122,10 @@ const Cards: React.FC = () => {
   const [cerB64, setCerB64] = useState('');
   const [cerFileName, setCerFileName] = useState('');
   const [cerImporting, setCerImporting] = useState(false);
+  const [tsbOpen, setTsbOpen] = useState(false);
+  const [tsbPassword, setTsbPassword] = useState('');
+  const [tsbBusy, setTsbBusy] = useState(false);
+  const [tsbRestoreB64, setTsbRestoreB64] = useState('');
 
   // 创建卡片后一次性显示 PUK/AdminKey
   const [credsModal, setCredsModal] = useState<{ puk: string; admin_key: string; pin: string; instance_id?: string; reader_name?: string; output?: string } | null>(null);
@@ -925,6 +929,7 @@ const Cards: React.FC = () => {
                 <Button size="small" icon={<EyeOutlined />} onClick={handleLoadOnCardCerts}>卡上证书</Button>
                 <Button size="small" icon={<ImportOutlined />} onClick={() => setPfxOpen(true)}>导入 PFX</Button>
                 <Button size="small" icon={<ImportOutlined />} onClick={() => setCerOpen(true)}>导入 CER</Button>
+                <Button size="small" icon={<ExportOutlined />} onClick={() => setTsbOpen(true)}>整卡备份</Button>
               </>
             )}
             <Button
@@ -1153,6 +1158,60 @@ const Cards: React.FC = () => {
             }}
           />
           {cerFileName && <Text type="secondary" style={{ fontSize: 12 }}>已选择：{cerFileName}</Text>}
+        </Space>
+      </Modal>
+
+      {/* 整卡备份 / 还原 .tsb */}
+      <Modal
+        title="整卡备份 / 还原（.tsb）"
+        open={tsbOpen}
+        onCancel={() => setTsbOpen(false)}
+        footer={null}
+        width={500}
+      >
+        <Alert
+          message="当前备份不含 DPAPI 明文"
+          description="只适用于卡片未删除、同一系统的恢复；重装系统后无法还原。备份包等于卡片密钥材料，请离线保管。"
+          type="warning" showIcon style={{ marginBottom: 12 }}
+        />
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Input.Password placeholder="备份口令（留空则不加密，不推荐）" value={tsbPassword} onChange={(e) => setTsbPassword(e.target.value)} />
+          <Button block loading={tsbBusy} onClick={async () => {
+            if (!selectedCard) return;
+            setTsbBusy(true);
+            try {
+              const res = await backupTSB(selectedCard.uuid, tsbPassword);
+              const bytes = Uint8Array.from(atob(res.data_b64), (c) => c.charCodeAt(0));
+              const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+              const a = document.createElement('a');
+              a.href = url; a.download = res.filename || 'card.tsb'; a.click();
+              URL.revokeObjectURL(url);
+              message.success('备份已生成并开始下载');
+            } catch (e: any) { message.error(e.message || '备份失败'); }
+            finally { setTsbBusy(false); }
+          }}>生成备份并下载</Button>
+          <input type="file" accept=".tsb" onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (!file) { setTsbRestoreB64(''); return; }
+            const reader = new FileReader();
+            reader.onload = () => {
+              const text = String(reader.result || '');
+              const idx = text.indexOf(',');
+              setTsbRestoreB64(idx >= 0 ? text.slice(idx + 1) : text);
+              message.info('已选择备份文件，点击下方按钮还原');
+            };
+            reader.readAsDataURL(file);
+          }} />
+          <Button danger block disabled={!tsbRestoreB64} loading={tsbBusy} onClick={async () => {
+            if (!selectedCard || !tsbRestoreB64) return;
+            setTsbBusy(true);
+            try {
+              const res = await restoreTSB(selectedCard.uuid, { data_b64: tsbRestoreB64, password: tsbPassword });
+              message.success(res.note || '还原完成；如读卡器未出现请重启');
+              setTsbOpen(false); setTsbRestoreB64('');
+            } catch (e: any) { message.error(e.message || '还原失败'); }
+            finally { setTsbBusy(false); }
+          }}>还原到本机</Button>
         </Space>
       </Modal>
 

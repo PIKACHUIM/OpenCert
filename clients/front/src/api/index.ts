@@ -361,6 +361,13 @@ export const listCardCertificates = (cardUUID: string): Promise<any[]> =>
 export const importPFXToCard = (cardUUID: string, data: { pfx_b64: string; password: string }) =>
   http.post(`/api/cards/${cardUUID}/certs/import-pfx`, data).then((r) => r.data);
 
+// ---- VSC 整卡备份 / 还原（.tsb）----
+export const backupTSB = (cardUUID: string, password: string) =>
+  http.post(`/api/cards/${cardUUID}/tsb/backup`, { password }).then((r) => r.data);
+
+export const restoreTSB = (cardUUID: string, data: { data_b64: string; password: string }) =>
+  http.post(`/api/cards/${cardUUID}/tsb/restore`, data).then((r) => r.data);
+
 export const importCERToCard = (cardUUID: string, data: { cert_b64: string; container_uuid?: string }) =>
   http.post(`/api/cards/${cardUUID}/certs/import-cer`, data).then((r) => r.data);
 
