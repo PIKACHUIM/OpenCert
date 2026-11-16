@@ -18,6 +18,7 @@ type CardCertificate struct {
 	ContainerName string    `json:"container_name"`
 	ProviderName  string    `json:"provider_name"`
 	CertPEM       string    `json:"cert_pem"`
+	SSHPublicKey  string    `json:"ssh_public_key,omitempty"`
 }
 
 // ListCardCertificates 在非 Windows 平台不可用。

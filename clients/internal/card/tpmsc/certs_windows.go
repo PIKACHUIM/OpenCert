@@ -15,6 +15,7 @@ import (
 	"time"
 	"unsafe"
 
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/sys/windows"
 )
 
@@ -29,6 +30,7 @@ type CardCertificate struct {
 	ContainerName string    `json:"container_name"`
 	ProviderName  string    `json:"provider_name"`
 	CertPEM       string    `json:"cert_pem"`
+	SSHPublicKey  string    `json:"ssh_public_key,omitempty"`
 }
 
 const (
@@ -120,6 +122,10 @@ func readCardCertificate(ctx *windows.CertContext, readerName string) (CardCerti
 		return CardCertificate{}, false
 	}
 	sum := sha1.Sum(der)
+	sshKey := ""
+	if pk, err := ssh.NewPublicKey(parsed.PublicKey); err == nil {
+		sshKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk))) + " opencert:" + parsed.Subject.CommonName
+	}
 	return CardCertificate{
 		Subject:       parsed.Subject.String(),
 		Issuer:        parsed.Issuer.String(),
@@ -130,6 +136,7 @@ func readCardCertificate(ctx *windows.CertContext, readerName string) (CardCerti
 		ContainerName: container,
 		ProviderName:  provider,
 		CertPEM:       string(pemEncodeCert(der)),
+		SSHPublicKey:  sshKey,
 	}, true
 }
 
