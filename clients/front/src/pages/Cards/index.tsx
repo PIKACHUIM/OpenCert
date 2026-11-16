@@ -57,6 +57,19 @@ const generateVSCAdminKey = () => {
   return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
 };
 
+// UUID 二次确认校验：忽略大小写与首尾空白；空值交给 required 规则。
+// 必须挂在只包含 Input 的 Form.Item 上，否则 antd 会把 value/onChange 注入给第一个子节点。
+const uuidConfirmRules = (expected?: string) => [
+  { required: true, message: '请输入卡片 UUID' },
+  {
+    validator: (_: unknown, value?: string) => {
+      if (!value) return Promise.resolve();
+      const ok = value.trim().toLowerCase() === (expected || '').trim().toLowerCase();
+      return ok ? Promise.resolve() : Promise.reject(new Error('UUID 不匹配'));
+    },
+  },
+];
+
 // 安全等级颜色和标签。仅硬件 Provider 内生成的密钥具备不可导出保证。
 const securityLevelConfig: Record<string, { color: string; label: string; desc: string }> = {
   high: { color: 'red', label: '高', desc: '仅已接入并验证的硬件 Provider 内生成、使用的密钥具有硬件不可导出保证' },
@@ -1070,14 +1083,13 @@ const Cards: React.FC = () => {
           type="info" showIcon style={{ marginBottom: 16 }}
         />
         <Form form={exportForm} layout="vertical">
-          <Form.Item name="confirm_uuid" label="请输入卡片 UUID 以确认" rules={[
-            { required: true, message: '请输入卡片 UUID' },
-            { validator: (_, value) => value === exportCard?.uuid ? Promise.resolve() : Promise.reject('UUID 不匹配') },
-          ]}>
-            <div style={{ marginBottom: 4, padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>
+          <Form.Item label="请输入卡片 UUID 以确认" required style={{ marginBottom: 4 }}>
+            <div style={{ padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>
               <Text copyable style={{ fontSize: 12, fontFamily: 'monospace' }}>{exportCard?.uuid}</Text>
             </div>
-            <Input placeholder={exportCard?.uuid} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+          </Form.Item>
+          <Form.Item name="confirm_uuid" rules={uuidConfirmRules(exportCard?.uuid)} style={{ marginBottom: 24 }}>
+            <Input placeholder="粘贴上方 UUID 以确认" autoComplete="off" spellCheck={false} style={{ fontFamily: 'monospace', fontSize: 12 }} />
           </Form.Item>
           <Form.Item name="user_password" label="当前用户密码" rules={[{ required: true, message: '请输入用户密码' }]}>
             <Input.Password placeholder="验证当前用户身份" />
@@ -1106,15 +1118,16 @@ const Cards: React.FC = () => {
       >
         <Form form={restoreForm} layout="vertical">
           {selectedCard && (
-            <Form.Item name="confirm_uuid" label="请输入卡片 UUID 以确认恢复" rules={[
-              { required: true, message: '请输入卡片 UUID' },
-              { validator: (_, value) => value === selectedCard?.uuid ? Promise.resolve() : Promise.reject('UUID 不匹配') },
-            ]}>
-              <div style={{ marginBottom: 4, padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>
-                <Text copyable style={{ fontSize: 12, fontFamily: 'monospace' }}>{selectedCard.uuid}</Text>
-              </div>
-              <Input placeholder={selectedCard?.uuid} style={{ fontFamily: 'monospace', fontSize: 12 }} />
-            </Form.Item>
+            <>
+              <Form.Item label="请输入卡片 UUID 以确认恢复" required style={{ marginBottom: 4 }}>
+                <div style={{ padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>
+                  <Text copyable style={{ fontSize: 12, fontFamily: 'monospace' }}>{selectedCard.uuid}</Text>
+                </div>
+              </Form.Item>
+              <Form.Item name="confirm_uuid" rules={uuidConfirmRules(selectedCard.uuid)} style={{ marginBottom: 24 }}>
+                <Input placeholder="粘贴上方 UUID 以确认" autoComplete="off" spellCheck={false} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+              </Form.Item>
+            </>
           )}
           <Form.Item name="ocs_file" label="选择 .ocs 备份文件" rules={[{ required: true, message: '请选择文件' }]}
             valuePropName="fileList" getValueFromEvent={(e: any) => e?.fileList}
@@ -1148,14 +1161,13 @@ const Cards: React.FC = () => {
           type="error" showIcon style={{ marginBottom: 16 }}
         />
         <Form form={deleteForm} layout="vertical">
-          <Form.Item name="confirm_uuid" label="请输入卡片 UUID 以确认" rules={[
-            { required: true, message: '请输入卡片 UUID' },
-            { validator: (_, value) => value === deleteCard2?.uuid ? Promise.resolve() : Promise.reject('UUID 不匹配') },
-          ]}>
-            <div style={{ marginBottom: 4, padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>
+          <Form.Item label="请输入卡片 UUID 以确认" required style={{ marginBottom: 4 }}>
+            <div style={{ padding: '4px 8px', background: '#f5f5f5', borderRadius: 4 }}>
               <Text copyable style={{ fontSize: 12, fontFamily: 'monospace' }}>{deleteCard2?.uuid}</Text>
             </div>
-            <Input placeholder={deleteCard2?.uuid} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+          </Form.Item>
+          <Form.Item name="confirm_uuid" rules={uuidConfirmRules(deleteCard2?.uuid)} style={{ marginBottom: 24 }}>
+            <Input placeholder="粘贴上方 UUID 以确认" autoComplete="off" spellCheck={false} style={{ fontFamily: 'monospace', fontSize: 12 }} />
           </Form.Item>
           <Form.Item name="user_password" label="当前用户密码" rules={[{ required: true, message: '请输入用户密码' }]}>
             <Input.Password placeholder="验证当前用户身份" />
