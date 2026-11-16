@@ -53,7 +53,7 @@ func (s *Server) handleFIDOStart(w http.ResponseWriter, r *http.Request) {
 	fidoMu.Unlock()
 
 	store := fido.NewKeyStore("")
-	pinSvc, err := fido.NewPINService(fido.NewPINState(nil))
+	pinSvc, err := fido.NewPINService(fido.NewPersistentPINState(""))
 	if err != nil {
 		fidoMu.Lock()
 		fidoCancel = nil
@@ -82,7 +82,7 @@ func (s *Server) handleFIDOStart(w http.ResponseWriter, r *http.Request) {
 					return map[string]any{"rv": 1}, nil
 				}
 			}
-			return fido.HandleCTAP(store, cmd, body)
+			return fido.HandleCTAP(store, pinSvc, cmd, body)
 		default:
 			return map[string]any{"rv": 1}, nil
 		}

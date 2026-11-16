@@ -12,13 +12,16 @@ import (
 	"github.com/fxamacker/cbor/v2"
 )
 
-var errCredentialExcluded = fmt.Errorf("凭据已存在")
+var (
+	errCredentialExcluded = fmt.Errorf("凭据已存在")
+	errPINAuthInvalid     = fmt.Errorf("pinUvAuthParam 校验失败")
+)
 
 // AAGUID 固定为全零：这是软件虚拟认证器，不是厂商硬件。
 var aaguid = make([]byte, 16)
 
 // HandleCTAP 处理 MAKE_CREDENTIAL / GET_ASSERTION，返回 base64 的 cbor_resp。
-func HandleCTAP(store *KeyStore, cmd uint32, body map[string]any) (map[string]any, error) {
+func HandleCTAP(store *KeyStore, pins *PINService, cmd uint32, body map[string]any) (map[string]any, error) {
 	raw, _ := body["cbor_req"].(string)
 	req, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil || len(req) == 0 {
@@ -27,15 +30,18 @@ func HandleCTAP(store *KeyStore, cmd uint32, body map[string]any) (map[string]an
 	var out []byte
 	switch cmd {
 	case CmdMakeCredential:
-		out, err = makeCredential(store, req)
+		out, err = makeCredential(store, pins, req)
 	case CmdGetAssertion:
-		out, err = getAssertion(store, req)
+		out, err = getAssertion(store, pins, req)
 	default:
 		return map[string]any{"rv": 1}, nil
 	}
 	if err != nil {
 		if err == errCredentialExcluded {
 			return map[string]any{"rv": 0x19}, nil
+		}
+		if err == errPINAuthInvalid {
+			return map[string]any{"rv": 0x33}, nil
 		}
 		return map[string]any{"rv": 1, "data": map[string]string{"error": err.Error()}}, nil
 	}
@@ -44,7 +50,7 @@ func HandleCTAP(store *KeyStore, cmd uint32, body map[string]any) (map[string]an
 	}}, nil
 }
 
-func makeCredential(store *KeyStore, req []byte) ([]byte, error) {
+func makeCredential(store *KeyStore, pins *PINService, req []byte) ([]byte, error) {
 	var m map[int]cbor.RawMessage
 	if err := cbor.Unmarshal(req, &m); err != nil {
 		return nil, fmt.Errorf("解析请求失败: %w", err)
@@ -100,7 +106,16 @@ func makeCredential(store *KeyStore, req []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	authData := authenticatorData(rp.ID, 0x41, 0) // UP | AT
+	flags := byte(0x41) // UP | AT
+	if len(m[8]) > 0 {
+		var param []byte
+		_ = cbor.Unmarshal(m[8], &param)
+		if pins == nil || !pins.VerifyAuth(clientDataHash, param) {
+			return nil, errPINAuthInvalid
+		}
+		flags |= 0x04 // UV
+	}
+	authData := authenticatorData(rp.ID, flags, 0)
 	authData = append(authData, aaguid...)
 	authData = append(authData, byte(len(credID)>>8), byte(len(credID)))
 	authData = append(authData, credID...)
@@ -113,7 +128,7 @@ func makeCredential(store *KeyStore, req []byte) ([]byte, error) {
 	return cbor.Marshal(map[string]any{"fmt": "none", "attStmt": map[string]any{}, "authData": authData})
 }
 
-func getAssertion(store *KeyStore, req []byte) ([]byte, error) {
+func getAssertion(store *KeyStore, pins *PINService, req []byte) ([]byte, error) {
 	var m map[int]cbor.RawMessage
 	if err := cbor.Unmarshal(req, &m); err != nil {
 		return nil, fmt.Errorf("解析请求失败: %w", err)
@@ -161,7 +176,16 @@ func getAssertion(store *KeyStore, req []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	authData := authenticatorData(rpID, 0x01, counter)
+	flags := byte(0x01)
+	if len(m[6]) > 0 {
+		var param []byte
+		_ = cbor.Unmarshal(m[6], &param)
+		if pins == nil || !pins.VerifyAuth(clientDataHash, param) {
+			return nil, errPINAuthInvalid
+		}
+		flags |= 0x04
+	}
+	authData := authenticatorData(rpID, flags, counter)
 	digest := sha256.Sum256(append(authData, clientDataHash...))
 	sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
 	if err != nil {

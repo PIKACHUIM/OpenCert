@@ -20,7 +20,7 @@ func TestMakeCredentialAndAssertion(t *testing.T) {
 		3: map[string]any{"id": []byte{1, 2, 3}, "name": "alice", "displayName": "Alice"},
 		4: []any{map[string]any{"type": "public-key", "alg": -7}},
 	})
-	resp, err := HandleCTAP(store, CmdMakeCredential, map[string]any{"cbor_req": base64.StdEncoding.EncodeToString(req)})
+	resp, err := HandleCTAP(store, nil, CmdMakeCredential, map[string]any{"cbor_req": base64.StdEncoding.EncodeToString(req)})
 	if err != nil {
 		t.Fatalf("makeCredential: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestMakeCredentialAndAssertion(t *testing.T) {
 		2: hash,
 		3: []any{map[string]any{"type": "public-key", "id": credID}},
 	})
-	resp2, err := HandleCTAP(store, CmdGetAssertion, map[string]any{"cbor_req": base64.StdEncoding.EncodeToString(assertReq)})
+	resp2, err := HandleCTAP(store, nil, CmdGetAssertion, map[string]any{"cbor_req": base64.StdEncoding.EncodeToString(assertReq)})
 	if err != nil || resp2["rv"] != 0 {
 		t.Fatalf("getAssertion: err=%v resp=%v", err, resp2)
 	}
