@@ -19,6 +19,9 @@ func RestoreFiles(ctx context.Context, files map[string][]byte) error {
 		return fmt.Errorf("备份内容为空")
 	}
 	for name, data := range files {
+		if strings.HasPrefix(name, "dpapi/") {
+			continue // 明文在 store 写回后处理，避免被密文覆盖
+		}
 		switch {
 		case strings.HasPrefix(name, "store/"):
 			rel := strings.TrimPrefix(name, "store/")
@@ -48,6 +51,22 @@ func RestoreFiles(ctx context.Context, files map[string][]byte) error {
 				continue
 			}
 			if err := writeFile(target, data); err != nil {
+				return err
+			}
+		case strings.HasPrefix(name, "dpapi/"):
+			rel := strings.TrimPrefix(name, "dpapi/")
+			target, err := safeJoin(vscStoreRoot, rel)
+			if err != nil {
+				return err
+			}
+			encrypted, err := protectDPAPI(data)
+			if err != nil {
+				return fmt.Errorf("重新加密 %s 失败: %w", rel, err)
+			}
+			if _, err := unprotectDPAPI(encrypted); err != nil {
+				return fmt.Errorf("重新加密 %s 回验失败: %w", rel, err)
+			}
+			if err := writeFile(target, encrypted); err != nil {
 				return err
 			}
 		case strings.HasPrefix(name, "registry/"):
