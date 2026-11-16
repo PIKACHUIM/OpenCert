@@ -139,12 +139,11 @@ func getAssertion(store *KeyStore, req []byte) ([]byte, error) {
 			break
 		}
 	}
-	if cred == nil {
-		// 没有 allowList 时按 rpId 找一张常驻凭据。
-		if len(allow) == 0 {
-			if found, err := store.FindByRP(rpID); err == nil && found != nil {
-				cred = found
-			}
+	credentialCount := 0
+	if len(allow) == 0 {
+		if list, err := store.ListByRP(rpID); err == nil && len(list) > 0 {
+			cred = &list[0]
+			credentialCount = len(list)
 		}
 	}
 	if cred == nil {
@@ -173,8 +172,15 @@ func getAssertion(store *KeyStore, req []byte) ([]byte, error) {
 		2: authData,
 		3: sig,
 		4: map[string]any{"id": cred.UserHandle, "name": cred.UserName, "displayName": cred.DisplayName},
-		5: 1,
+		5: max(credentialCount, 1),
 	})
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func authenticatorData(rpID string, flags byte, counter uint32) []byte {

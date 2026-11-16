@@ -196,3 +196,20 @@ func (k *KeyStore) FindByRP(rpID string) (*StoredCredential, error) {
 	}
 	return nil, nil
 }
+
+// ListByRP 返回指定 RP 的全部凭据（用于常驻凭据登录）。
+func (k *KeyStore) ListByRP(rpID string) ([]StoredCredential, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	creds, err := k.load()
+	if err != nil {
+		return nil, err
+	}
+	var out []StoredCredential
+	for i := range creds {
+		if creds[i].RPID == rpID {
+			out = append(out, creds[i])
+		}
+	}
+	return out, nil
+}

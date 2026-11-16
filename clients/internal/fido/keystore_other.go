@@ -33,3 +33,6 @@ func (k *KeyStore) Increment([]byte) (uint32, error)       { return 0, errKeySto
 
 // FindByRP 在非 Windows 平台不可用。
 func (k *KeyStore) FindByRP(string) (*StoredCredential, error) { return nil, errKeyStoreUnsupported }
+
+// ListByRP 在非 Windows 平台不可用。
+func (k *KeyStore) ListByRP(string) ([]StoredCredential, error) { return nil, errKeyStoreUnsupported }
