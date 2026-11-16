@@ -8,7 +8,15 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
+)
+
+// CTAP2 clientPIN 错误码对应的哨兵错误。
+var (
+	errPINInvalid     = errors.New("PIN 不正确")
+	errPINBlocked     = errors.New("PIN 已锁定")
+	errPINAuthBlocked = errors.New("PIN 认证已锁定")
 )
 
 // CTAP2 clientPIN 子命令。

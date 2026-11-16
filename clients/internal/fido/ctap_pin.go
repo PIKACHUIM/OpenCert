@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 
 	"github.com/fxamacker/cbor/v2"
@@ -36,7 +37,16 @@ func (s *PINService) Handle(body map[string]any) map[string]any {
 	}
 	resp, err := s.handle(req)
 	if err != nil {
-		return map[string]any{"rv": 1, "data": map[string]string{"error": err.Error()}}
+		rv := 0x01
+		switch {
+		case errors.Is(err, errPINInvalid):
+			rv = 0x31
+		case errors.Is(err, errPINBlocked):
+			rv = 0x32
+		case errors.Is(err, errPINAuthBlocked):
+			rv = 0x34
+		}
+		return map[string]any{"rv": rv, "data": map[string]string{"error": err.Error()}}
 	}
 	return map[string]any{"rv": 0, "data": map[string]string{
 		"cbor_resp": base64.StdEncoding.EncodeToString(resp),
@@ -76,7 +86,7 @@ func (s *PINService) handle(req []byte) ([]byte, error) {
 		}
 		ok, _ := s.State.VerifyHash(old)
 		if !ok {
-			return nil, fmt.Errorf("当前 PIN 不正确")
+			return nil, s.pinError()
 		}
 		pin, err := s.decryptPin(m[3], m[5], 64)
 		if err != nil {
@@ -93,7 +103,7 @@ func (s *PINService) handle(req []byte) ([]byte, error) {
 		}
 		ok, _ := s.State.VerifyHash(pin)
 		if !ok {
-			return nil, fmt.Errorf("PIN 不正确，剩余 %d 次", s.State.Retries())
+			return nil, s.pinError()
 		}
 		token := make([]byte, 32)
 		if _, err := rand.Read(token); err != nil {
@@ -115,6 +125,13 @@ func (s *PINService) handle(req []byte) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("不支持的 clientPIN 子命令 0x%02X", sub)
 	}
+}
+
+func (s *PINService) pinError() error {
+	if s.State.Retries() <= 0 {
+		return errPINBlocked
+	}
+	return fmt.Errorf("%w（剩余 %d 次）", errPINInvalid, s.State.Retries())
 }
 
 // VerifyAuth 校验 pinUvAuthParam = HMAC-SHA256(pinToken, clientDataHash)。
