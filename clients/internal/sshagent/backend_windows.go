@@ -128,7 +128,13 @@ func (b *KSPBackend) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error
 	if err != nil {
 		return nil, fmt.Errorf("卡上签名失败: %w", err)
 	}
-	switch entry.public.(type) {
+	return toSSHSignature(entry.public, key, sig)
+}
+
+// toSSHSignature 把 crypto.Signer 的原始签名转成 SSH 线格式：
+// RSA 为 PKCS#1 v1.5 原始字节，ECDSA 需要把 DER 的 r||s 转成 mpint 对。
+func toSSHSignature(public crypto.PublicKey, key ssh.PublicKey, sig []byte) (*ssh.Signature, error) {
+	switch public.(type) {
 	case *rsa.PublicKey:
 		return &ssh.Signature{Format: "rsa-sha2-256", Blob: sig}, nil
 	case *ecdsa.PublicKey:
