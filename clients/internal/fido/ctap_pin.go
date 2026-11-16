@@ -11,10 +11,11 @@ import (
 
 // PINService 处理 CTAP2 clientPIN 子命令，并保存本次会话的 pinUvAuthToken。
 type PINService struct {
-	State      *PINState
-	key        *pinCrypto
-	token      []byte
-	Authorized bool
+	State       *PINState
+	key         *pinCrypto
+	token       []byte
+	permissions byte
+	Authorized  bool
 }
 
 // NewPINService 生成临时 keyAgreement 密钥。
@@ -100,6 +101,16 @@ func (s *PINService) handle(req []byte) ([]byte, error) {
 		}
 		s.token = token
 		s.Authorized = true
+		s.permissions = 0x03 // 默认允许 mc + ga
+		if sub == PINSubGetTokenPerm {
+			var perms uint8
+			if raw, ok := m[9]; ok {
+				_ = cbor.Unmarshal(raw, &perms)
+			}
+			if perms != 0 {
+				s.permissions = perms
+			}
+		}
 		return cbor.Marshal(map[int]any{2: token})
 	default:
 		return nil, fmt.Errorf("不支持的 clientPIN 子命令 0x%02X", sub)
@@ -107,12 +118,27 @@ func (s *PINService) handle(req []byte) ([]byte, error) {
 }
 
 // VerifyAuth 校验 pinUvAuthParam = HMAC-SHA256(pinToken, clientDataHash)。
-func (s *PINService) VerifyAuth(clientDataHash, param []byte) bool {
+func (s *PINService) VerifyAuth(clientDataHash, param []byte, required byte) bool {
 	if len(s.token) == 0 || len(param) == 0 {
+		return false
+	}
+	if required != 0 && s.permissions&required == 0 {
 		return false
 	}
 	mac := hmacSHA256(s.token, clientDataHash)
 	return subtle.ConstantTimeCompare(mac[:16], param) == 1
+}
+
+// RequiresUV 判断请求的 options.uv 是否要求已通过 PIN 认证。
+func (s *PINService) RequiresUV(raw cbor.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var opts map[string]bool
+	if err := cbor.Unmarshal(raw, &opts); err != nil {
+		return false
+	}
+	return opts["uv"]
 }
 
 func (s *PINService) sessionKey(peer cbor.RawMessage) ([]byte, error) {

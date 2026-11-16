@@ -107,10 +107,13 @@ func makeCredential(store *KeyStore, pins *PINService, req []byte) ([]byte, erro
 	}
 
 	flags := byte(0x41) // UP | AT
+	if pins != nil && pins.RequiresUV(m[7]) && !pins.Authorized {
+		return nil, errPINAuthInvalid
+	}
 	if len(m[8]) > 0 {
 		var param []byte
 		_ = cbor.Unmarshal(m[8], &param)
-		if pins == nil || !pins.VerifyAuth(clientDataHash, param) {
+		if pins == nil || !pins.VerifyAuth(clientDataHash, param, 0x01) {
 			return nil, errPINAuthInvalid
 		}
 		flags |= 0x04 // UV
@@ -180,7 +183,7 @@ func getAssertion(store *KeyStore, pins *PINService, req []byte) ([]byte, error)
 	if len(m[6]) > 0 {
 		var param []byte
 		_ = cbor.Unmarshal(m[6], &param)
-		if pins == nil || !pins.VerifyAuth(clientDataHash, param) {
+		if pins == nil || !pins.VerifyAuth(clientDataHash, param, 0x02) {
 			return nil, errPINAuthInvalid
 		}
 		flags |= 0x04
