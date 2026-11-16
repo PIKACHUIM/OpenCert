@@ -160,6 +160,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/cards/{card_uuid}/certs", s.handleListCerts)
 	s.mux.HandleFunc("GET /api/cards/{uuid}/certs/on-card", s.handleListCardCertificates)
 	s.mux.HandleFunc("POST /api/cards/{uuid}/certs/import-pfx", s.handleImportPFXToCard)
+	s.mux.HandleFunc("POST /api/cards/{uuid}/certs/import-cer", s.handleImportCERToCard)
 	s.mux.HandleFunc("POST /api/cards/{card_uuid}/certs", s.handleCreateCert)
 	s.mux.HandleFunc("POST /api/cards/{card_uuid}/certs/import", s.handleImportCertWithKey)
 	s.mux.HandleFunc("GET /api/cards/{card_uuid}/certs/{uuid}", s.handleGetCert)

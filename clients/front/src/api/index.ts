@@ -361,6 +361,9 @@ export const listCardCertificates = (cardUUID: string): Promise<any[]> =>
 export const importPFXToCard = (cardUUID: string, data: { pfx_b64: string; password: string }) =>
   http.post(`/api/cards/${cardUUID}/certs/import-pfx`, data).then((r) => r.data);
 
+export const importCERToCard = (cardUUID: string, data: { cert_b64: string; container_uuid?: string }) =>
+  http.post(`/api/cards/${cardUUID}/certs/import-cer`, data).then((r) => r.data);
+
 // ---- 智能卡导出/恢复 ----
 export const exportCard = (cardUUID: string, data: { user_uuid: string; user_password: string; password?: string; admin_key?: string }) =>
   http.post(`/api/cards/${cardUUID}/export`, data, { responseType: 'blob' }).then((r) => r.data);

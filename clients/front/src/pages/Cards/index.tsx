@@ -11,7 +11,7 @@ import {
   UndoOutlined, CreditCardOutlined, EditOutlined, PoweroffOutlined,
 } from '@ant-design/icons';
 import PageHeader from '../../components/PageHeader';
-import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, changeCardPIN, exportCardDownload, restoreCard, updateCard, getTPMStatus, listCardCertificates, importPFXToCard } from '../../api';
+import { getCards, createCard, deleteCard, getCerts, generateKey, deleteCert, getUsers, resetCardPIN, changeCardPIN, exportCardDownload, restoreCard, updateCard, getTPMStatus, listCardCertificates, importPFXToCard, importCERToCard } from '../../api';
 import type { Card as CardType, Certificate, User, CreateCardRequest } from '../../types';
 import { useAppStore } from '../../store/appStore';
 import { useAuthStore } from '../../store/auth';
@@ -118,6 +118,10 @@ const Cards: React.FC = () => {
   const [pfxFileName, setPfxFileName] = useState('');
   const [pfxPassword, setPfxPassword] = useState('');
   const [pfxImporting, setPfxImporting] = useState(false);
+  const [cerOpen, setCerOpen] = useState(false);
+  const [cerB64, setCerB64] = useState('');
+  const [cerFileName, setCerFileName] = useState('');
+  const [cerImporting, setCerImporting] = useState(false);
 
   // 创建卡片后一次性显示 PUK/AdminKey
   const [credsModal, setCredsModal] = useState<{ puk: string; admin_key: string; pin: string; instance_id?: string; reader_name?: string; output?: string } | null>(null);
@@ -319,6 +323,21 @@ const Cards: React.FC = () => {
       message.error(e.message || '导入 PFX 失败');
     } finally {
       setPfxImporting(false);
+    }
+  };
+
+  const handleImportCER = async () => {
+    if (!selectedCard || !cerB64) { message.warning('请选择 .cer/.crt/.pem 文件'); return; }
+    setCerImporting(true);
+    try {
+      await importCERToCard(selectedCard.uuid, { cert_b64: cerB64 });
+      message.success('证书已绑定到卡上密钥');
+      setCerOpen(false);
+      setCerB64(''); setCerFileName('');
+    } catch (e: any) {
+      message.error(e.message || '导入证书失败');
+    } finally {
+      setCerImporting(false);
     }
   };
 
@@ -905,6 +924,7 @@ const Cards: React.FC = () => {
               <>
                 <Button size="small" icon={<EyeOutlined />} onClick={handleLoadOnCardCerts}>卡上证书</Button>
                 <Button size="small" icon={<ImportOutlined />} onClick={() => setPfxOpen(true)}>导入 PFX</Button>
+                <Button size="small" icon={<ImportOutlined />} onClick={() => setCerOpen(true)}>导入 CER</Button>
               </>
             )}
             <Button
@@ -1096,6 +1116,43 @@ const Cards: React.FC = () => {
             value={pfxPassword}
             onChange={(e) => setPfxPassword(e.target.value)}
           />
+        </Space>
+      </Modal>
+
+      {/* 导入 CER 并绑定卡上已有密钥 */}
+      <Modal
+        title="导入证书并绑定卡上密钥"
+        open={cerOpen}
+        onOk={handleImportCER}
+        onCancel={() => { setCerOpen(false); setCerB64(''); setCerFileName(''); }}
+        okText="导入" cancelText="取消"
+        confirmLoading={cerImporting}
+        width={460}
+      >
+        <Alert
+          message="证书必须与卡上已有密钥的公钥匹配"
+          description="支持 PEM/DER 单证书。先用 CSR 在卡内生成密钥，再把 CA 签发的证书从这里导入；P7B 请先解包成单证书。"
+          type="info" showIcon style={{ marginBottom: 12 }}
+        />
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <input
+            type="file"
+            accept=".cer,.crt,.pem,.der"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) { setCerB64(''); setCerFileName(''); return; }
+              const reader = new FileReader();
+              reader.onload = () => {
+                const text = String(reader.result || '');
+                const idx = text.indexOf(',');
+                setCerB64(idx >= 0 ? text.slice(idx + 1) : text);
+                setCerFileName(file.name);
+              };
+              reader.onerror = () => message.error('读取证书文件失败');
+              reader.readAsDataURL(file);
+            }}
+          />
+          {cerFileName && <Text type="secondary" style={{ fontSize: 12 }}>已选择：{cerFileName}</Text>}
         </Space>
       </Modal>
 
