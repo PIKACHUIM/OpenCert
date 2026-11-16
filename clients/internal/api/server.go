@@ -116,6 +116,7 @@ func (s *Server) registerRoutes() {
 	// 健康检查
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/tpm/status", s.handleTPMStatus)
+	s.mux.HandleFunc("GET /api/fido/runtime", s.handleFIDORuntimeStatus)
 	s.mux.HandleFunc("GET /api/ssh/agent", s.handleSSHAgentStatus)
 	s.mux.HandleFunc("POST /api/ssh/agent", s.handleSSHAgentToggle)
 
