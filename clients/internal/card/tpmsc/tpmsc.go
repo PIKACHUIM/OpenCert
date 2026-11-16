@@ -58,6 +58,9 @@ type CreateCardResult struct {
 // SmartCardKSPProviderName is the Windows CNG provider used for TPM VSC key containers.
 const SmartCardKSPProviderName = "Microsoft Smart Card Key Storage Provider"
 
+// NewSmartCardKeyProvider 返回当前平台的 Smart Card KSP 提供者。
+func NewSmartCardKeyProvider() SmartCardKeyProvider { return newSmartCardKeyProvider() }
+
 // SmartCardKSPContainerName builds the fully-qualified reader/container name used by CNG.
 func SmartCardKSPContainerName(readerName, containerName string) string {
 	return "\\\\.\\" + readerName + "\\" + containerName
