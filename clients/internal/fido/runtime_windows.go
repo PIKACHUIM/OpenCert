@@ -37,6 +37,12 @@ func FindFIDOGo() string {
 			filepath.Join(base, "TPMSmartCard", "fido-go.exe"),
 		)
 	}
+	for _, base := range installLocations() {
+		candidates = append(candidates,
+			filepath.Join(base, "Fido", "fido-go.exe"),
+			filepath.Join(base, "fido-go.exe"),
+		)
+	}
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
 		candidates = append(candidates,
@@ -50,6 +56,45 @@ func FindFIDOGo() string {
 		}
 	}
 	return ""
+}
+
+// installLocations 从卸载表里读取 TPMSmartCard 的安装目录，覆盖自定义安装路径。
+func installLocations() []string {
+	roots := []struct {
+		root registry.Key
+		path string
+	}{
+		{registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`},
+		{registry.LOCAL_MACHINE, `SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`},
+	}
+	var out []string
+	for _, r := range roots {
+		k, err := registry.OpenKey(r.root, r.path, registry.ENUMERATE_SUB_KEYS)
+		if err != nil {
+			continue
+		}
+		names, err := k.ReadSubKeyNames(-1)
+		k.Close()
+		if err != nil {
+			continue
+		}
+		for _, name := range names {
+			sub, err := registry.OpenKey(r.root, r.path+`\`+name, registry.QUERY_VALUE)
+			if err != nil {
+				continue
+			}
+			display, _, _ := sub.GetStringValue("DisplayName")
+			location, _, _ := sub.GetStringValue("InstallLocation")
+			sub.Close()
+			if location == "" {
+				continue
+			}
+			if strings.Contains(strings.ToLower(display), "tpmsmartcard") || strings.Contains(strings.ToLower(display), "tpm smart card") {
+				out = append(out, location)
+			}
+		}
+	}
+	return out
 }
 
 // DriverInstalled 检查 usbip 虚拟总线驱动是否已安装（ROOT\VHCI_UDE 或 USBIPWIN\VHCI）。
