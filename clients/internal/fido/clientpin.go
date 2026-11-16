@@ -18,6 +18,7 @@ const (
 	PINSubSetPIN          = 0x03
 	PINSubChangePIN       = 0x04
 	PINSubGetPINToken     = 0x05
+	PINSubGetTokenPerm    = 0x06
 )
 
 // PINRetries 是允许的连续错误次数。

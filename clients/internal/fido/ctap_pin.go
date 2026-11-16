@@ -85,7 +85,7 @@ func (s *PINService) handle(req []byte) ([]byte, error) {
 			return nil, err
 		}
 		return cbor.Marshal(map[int]any{})
-	case PINSubGetPINToken:
+	case PINSubGetPINToken, PINSubGetTokenPerm:
 		pin, err := s.decryptHash(m[3], m[6])
 		if err != nil {
 			return nil, err
