@@ -334,7 +334,7 @@ const LoginPage: React.FC = () => {
               key: 'local',
               label: (<Space size={4}><UserOutlined />本地登录</Space>),
               children: (
-                <Form form={localForm} layout="vertical" onFinish={() => handleLocalLogin()} initialValues={{ username: 'admin' }}>
+                <Form form={localForm} layout="vertical" onFinish={() => handleLocalLogin()} initialValues={{ username: 'root' }}>
                   <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
                     <Input prefix={<UserOutlined style={{ color: '#8b949e' }} />} placeholder="用户名" size="large" autoComplete="username" />
                   </Form.Item>
@@ -432,7 +432,7 @@ const LoginPage: React.FC = () => {
             </Button>
           ) : (
             <Text style={{ fontSize: 12, color: darkMode ? '#6e7681' : '#bbb' }}>
-              {tab === 'local' ? '默认账号：admin / admin' : '同时支持本地与云端多账号并行登录'}
+              {tab === 'local' ? '默认账号：root / root' : '同时支持本地与云端多账号并行登录'}
             </Text>
           )}
         </div>
