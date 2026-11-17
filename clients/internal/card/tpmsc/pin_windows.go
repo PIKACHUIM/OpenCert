@@ -22,14 +22,15 @@ import (
 // 注意：本实现未在真实 TPM 设备上验证过；失败时返回带 SCARD/HRESULT 的错误码。
 
 const (
-	scardShareShared         = 2
-	scardProtocolT0          = 1
-	scardProtocolT1          = 2
-	scardAttrAtrString       = 0x00090303
-	cardDataCurrentVersion   = 7
-	cardDataFallbackVersion  = 6
-	pinChangeFlagChangePIN   = 0x00000001
-	pinChangeFlagUnblock     = 0x00000002
+	scardShareShared        = 2
+	scardProtocolT0         = 1
+	scardProtocolT1         = 2
+	scardAttrAtrString      = 0x00090303
+	cardDataCurrentVersion  = 7
+	cardDataFallbackVersion = 6
+	// 真机验证：Minidriver 的 UNBLOCK=1、CHANGEPIN=2（与常见直觉相反）。
+	pinChangeFlagUnblock     = 0x00000001
+	pinChangeFlagChangePIN   = 0x00000002
 	roleUserPinID            = 1
 	scardSuccess             = 0
 	scardEInvalidParameter   = 0x80100004
@@ -314,36 +315,99 @@ func changeAuthenticator(ctx context.Context, readerName, authenticator, newPIN 
 }
 
 func callChangeAuthenticator(cd *cardData, flag uintptr, oldBytes, newBytes []byte) error {
+	code, _ := invokeChangeEx(cd, flag, roleUserPinID, roleUserPinID, oldBytes, newBytes, 0)
+	if flag == pinChangeFlagUnblock {
+		if err := invokeUnblockLegacy(cd, oldBytes, newBytes); err == nil {
+			return nil
+		} else {
+		}
+	}
+	if code == scardEInvalidParameter && flag == pinChangeFlagChangePIN {
+		// 部分 VSC 实现要求 cRetryCount 非 0。
+		code, _ = invokeChangeEx(cd, flag, roleUserPinID, roleUserPinID, oldBytes, newBytes, 10)
+	}
+	if code == scardEInvalidParameter || code == scardEUnsupportedFeature {
+		if lerr := invokeChangeLegacy(cd, flag, oldBytes, newBytes); lerr == nil {
+			return nil
+		} else {
+			code = scardEUnsupportedFeature
+		}
+	}
+	if code != scardSuccess {
+		return mapSCardError(code, "修改 VSC PIN")
+	}
+	return nil
+}
+
+func invokeChangeEx(cd *cardData, flag, authID, targetID uintptr, oldBytes, newBytes []byte, retry uint32) (uint32, uint32) {
 	if cd.pfnCardChangeAuthenticatorEx == 0 {
-		return fmt.Errorf("VSC minidriver 不支持修改 PIN（缺少 pfnCardChangeAuthenticatorEx）")
+		return scardEUnsupportedFeature, 0
 	}
 	var attempts uint32
-	var oldPtr, newPtr uintptr
-	if len(oldBytes) > 0 {
-		oldPtr = uintptr(unsafe.Pointer(&oldBytes[0]))
-	}
-	if len(newBytes) > 0 {
-		newPtr = uintptr(unsafe.Pointer(&newBytes[0]))
-	}
-	result, _, _ := syscall.SyscallN(
+	r, _, _ := syscall.SyscallN(
 		cd.pfnCardChangeAuthenticatorEx,
 		uintptr(unsafe.Pointer(cd)),
 		flag,
-		roleUserPinID,
-		oldPtr,
+		authID,
+		uintptr(unsafe.Pointer(&oldBytes[0])),
 		uintptr(len(oldBytes)),
-		roleUserPinID,
-		newPtr,
+		targetID,
+		uintptr(unsafe.Pointer(&newBytes[0])),
 		uintptr(len(newBytes)),
-		0,
+		uintptr(retry),
 		uintptr(unsafe.Pointer(&attempts)),
 	)
-	runtime.KeepAlive(oldBytes)
-	runtime.KeepAlive(newBytes)
-	runtime.KeepAlive(cd)
+	return uint32(r), attempts
+}
 
-	if code := uint32(result); code != scardSuccess {
-		return mapSCardError(code, "修改 VSC PIN")
+func invokeUnblockLegacy(cd *cardData, puk, newPIN []byte) error {
+	if cd.pfnCardUnblockPin == 0 {
+		return fmt.Errorf("卡片未提供 CardUnblockPin")
+	}
+	user, err := windows.UTF16PtrFromString("user")
+	if err != nil {
+		return err
+	}
+	r, _, _ := syscall.SyscallN(
+		cd.pfnCardUnblockPin,
+		uintptr(unsafe.Pointer(cd)),
+		uintptr(unsafe.Pointer(user)),
+		uintptr(unsafe.Pointer(&puk[0])),
+		uintptr(len(puk)),
+		uintptr(unsafe.Pointer(&newPIN[0])),
+		uintptr(len(newPIN)),
+		0,
+		0,
+	)
+	if uint32(r) != scardSuccess {
+		return mapSCardError(uint32(r), "解锁 VSC PIN")
+	}
+	return nil
+}
+
+func invokeChangeLegacy(cd *cardData, flag uintptr, oldBytes, newBytes []byte) error {
+	if cd.pfnCardChangeAuthenticator == 0 {
+		return fmt.Errorf("卡片未提供 legacy ChangeAuthenticator")
+	}
+	user, err := windows.UTF16PtrFromString("user")
+	if err != nil {
+		return err
+	}
+	var attempts uint32
+	r, _, _ := syscall.SyscallN(
+		cd.pfnCardChangeAuthenticator,
+		uintptr(unsafe.Pointer(cd)),
+		uintptr(unsafe.Pointer(user)),
+		uintptr(unsafe.Pointer(&oldBytes[0])),
+		uintptr(len(oldBytes)),
+		uintptr(unsafe.Pointer(&newBytes[0])),
+		uintptr(len(newBytes)),
+		10,
+		flag,
+		uintptr(unsafe.Pointer(&attempts)),
+	)
+	if uint32(r) != scardSuccess {
+		return mapSCardError(uint32(r), "修改 VSC PIN")
 	}
 	return nil
 }
