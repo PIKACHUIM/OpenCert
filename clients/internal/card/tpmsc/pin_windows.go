@@ -315,22 +315,17 @@ func changeAuthenticator(ctx context.Context, readerName, authenticator, newPIN 
 }
 
 func callChangeAuthenticator(cd *cardData, flag uintptr, oldBytes, newBytes []byte) error {
-	code, _ := invokeChangeEx(cd, flag, roleUserPinID, roleUserPinID, oldBytes, newBytes, 0)
 	if flag == pinChangeFlagUnblock {
-		if err := invokeUnblockLegacy(cd, oldBytes, newBytes); err == nil {
-			return nil
-		} else {
-		}
+		// 解锁走独立的 CardUnblockPin；ChangeAuthenticatorEx 的 UNBLOCK 分支在 VSC 上不可用。
+		return invokeUnblockLegacy(cd, oldBytes, newBytes)
 	}
-	if code == scardEInvalidParameter && flag == pinChangeFlagChangePIN {
-		// 部分 VSC 实现要求 cRetryCount 非 0。
+	code, _ := invokeChangeEx(cd, flag, roleUserPinID, roleUserPinID, oldBytes, newBytes, 0)
+	if code == scardEInvalidParameter {
 		code, _ = invokeChangeEx(cd, flag, roleUserPinID, roleUserPinID, oldBytes, newBytes, 10)
 	}
 	if code == scardEInvalidParameter || code == scardEUnsupportedFeature {
 		if lerr := invokeChangeLegacy(cd, flag, oldBytes, newBytes); lerr == nil {
 			return nil
-		} else {
-			code = scardEUnsupportedFeature
 		}
 	}
 	if code != scardSuccess {
@@ -377,10 +372,10 @@ func invokeUnblockLegacy(cd *cardData, puk, newPIN []byte) error {
 		uintptr(unsafe.Pointer(&newPIN[0])),
 		uintptr(len(newPIN)),
 		0,
-		0,
+		pinChangeFlagUnblock, // 真机验证：dwFlags 必须为 UNBLOCK，否则卡片返回 0x80100004
 	)
 	if uint32(r) != scardSuccess {
-		return mapSCardError(uint32(r), "解锁 VSC PIN")
+		return fmt.Errorf("解锁 VSC PIN失败（0x%08X）", uint32(r))
 	}
 	return nil
 }
